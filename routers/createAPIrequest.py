@@ -21,7 +21,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     
     newAPIRequest = models.apiRequest(
         method="POST",
-        content=json.dumps(apirequest.entry),
+        content= apirequest.model_dump_json(), #json.dumps(apirequest.entry),
         response="OK",
         status_code=200,
     )
@@ -31,7 +31,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     await db.refresh(newAPIRequest)
 
 
-    try:
+    '''try:
         name = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
         wa_id = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["wa_id"]
         display_phone_number = apirequest.entry[0]["changes"][0]["value"]["metadata"]["display_phone_number"]
@@ -45,7 +45,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         display_phone_number=display_phone_number,
         phone_number_id=phone_number_id,
         db=db
-    )
+    )'''
 
     return {"status": "created"}
 
