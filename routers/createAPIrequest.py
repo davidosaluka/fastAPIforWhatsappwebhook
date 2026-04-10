@@ -11,10 +11,14 @@ from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
 import os
 from dotenv import load_dotenv
+import replyhandler
 
 load_dotenv()
 router = APIRouter()
 VERIFY_TOKEN =  os.getenv("VERIFY_TOKEN")
+AUTH = os.getenv("AUTHORIZATION")
+GRAPH_URL = os.getenv("GRAPH_URL")
+print("grap urrl is: ",  GRAPH_URL)
 
 @router.post("", status_code=status.HTTP_200_OK)
 async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSession, Depends(get_db)]):
@@ -29,6 +33,46 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     db.add(newAPIRequest)
     await db.commit()
     await db.refresh(newAPIRequest)
+    
+    _response = apirequest.entry[0]["changes"][0]["value"]["messages"]
+    if not _response:
+        return {"status": "ok"}
+    message = _response[0]
+    if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
+        json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
+        template_id = json_response.get("template_id")  
+        flow_token  = json_response.get("flow_token")    
+        name        = json_response.get("name")          
+        email       = json_response.get("email")         
+        status      = json_response.get("status")        
+        sender_wa_number = message["from"] 
+
+        print("senders wa number: " + sender_wa_number)
+
+        match template_id:
+            case "user_registration":
+                # handle registration
+                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
+        
+            case "order_details":
+                newOrder = models.Orders(
+                status="awaiting_pickup",
+                sender_wa_number= sender_wa_number
+                )
+
+                db.add(newOrder)
+                await db.commit()
+                await db.refresh(newOrder)
+                await replyhandler.request_pickup_location(sender_wa_number, AUTH, GRAPH_URL)
+
+            case _:
+                print(f"Unknown template_id: {template_id}")
+
+    elif message["type"] == "location":
+        lat = message["location"]["latitude"]
+        lng = message["location"]["longitude"]
+        sender_wa_number = message["from"]
+        await replyhandler.handle_location(sender_wa_number, lat, lng, AUTH, GRAPH_URL, db)
 
 
     '''try:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime
 import random
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 import string
@@ -44,5 +44,13 @@ class Orders(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     order_number: Mapped[str] = mapped_column(String(16), default=generate_order_number, unique=True, nullable=False)
+    sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
+    status:       Mapped[str] = mapped_column(String(50), nullable=False)             # "awaiting_pickup", "awaiting_dropoff", "confirmed" etc.
+    pickup_lat:   Mapped[float] = mapped_column(Float, nullable=True)
+    pickup_lng :   Mapped[float] = mapped_column(Float, nullable=True)
+    dropoff_lat :   Mapped[float] = mapped_column(Float, nullable=True)
+    dropoff_lng  :   Mapped[float] = mapped_column(Float, nullable=True)
+    created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
 
     

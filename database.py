@@ -8,7 +8,11 @@ load_dotenv()
 
 '''postGres/Supabase config'''
 DB_URL = os.getenv("DATABASE_URL")
-engine = create_async_engine(DB_URL)
+engine = create_async_engine(
+        DB_URL,     
+        connect_args={
+        "statement_cache_size": 0
+    })
 
 '''sqlite config below'''
 #DB_URL = "sqlite+aiosqlite:///./intime.db"
