@@ -34,7 +34,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     await db.commit()
     await db.refresh(newAPIRequest)
     
-    _response = apirequest.entry[0]["changes"][0]["value"]["messages"]
+    _response = apirequest.entry[0]["changes"][0]["value"].get("messages") 
+   # _response = apirequest.entry[0]["changes"][0]["value"]["messages"]
     if not _response:
         return {"status": "ok"}
     message = _response[0]
