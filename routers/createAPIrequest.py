@@ -38,6 +38,24 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if not _response:
         return {"status": "ok"}
     message = _response[0]
+
+    if message["type"] == "button":
+        print("i got into this block of code")
+        sender_wa_number = message["from"]
+        if message["button"]["payload"] == "Send an Order":
+            result = await db.execute(
+            select(models.User)
+            .where(models.User.display_phone_number == sender_wa_number)
+            )
+            is_existing_user = result.scalars().first()
+            if is_existing_user:
+                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
+            else:
+                await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
+        elif message["button"]["payload"] == "Contact Support":
+            custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
+            await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
+        
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
         template_id = json_response.get("template_id")  
@@ -51,7 +69,20 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         match template_id:
             case "user_registration":
-                # handle registration
+                
+                wa_id = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["wa_id"]
+                display_phone_number = sender_wa_number
+                phone_number_id = apirequest.entry[0]["changes"][0]["value"]["metadata"]["phone_number_id"]
+                await createUser(
+                            name=name,
+                            wa_id=sender_wa_number,
+                            display_phone_number=sender_wa_number,
+                            phone_number_id=sender_wa_number,
+                            db=db
+                        )
+
+
+                
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
             case "order_details":
@@ -73,6 +104,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         lng = message["location"]["longitude"]
         sender_wa_number = message["from"]
         await replyhandler.handle_location(sender_wa_number, lat, lng, AUTH, GRAPH_URL, db)
+
+    elif message["type"] == "text":
+        sender_wa_number = message["from"]
+        await replyhandler.send_default_template (sender_wa_number, AUTH, GRAPH_URL)
 
 
     '''try:

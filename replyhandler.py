@@ -6,6 +6,31 @@ import models
 import httpx
 
 
+
+async def send_default_template(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "default_message",
+                "language": { "code": "en" }
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+    return
+
 async def send_custom_message(sender_wa_number, message , auth, graph_url):
 
     req_body = {
@@ -31,8 +56,42 @@ async def send_custom_message(sender_wa_number, message , auth, graph_url):
     return
 
 
+async def send_registration_template(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "w",
+                "language": { "code": "en" },
+                "components": [
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0"
+                    
+                }
+                ]
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+        #print(response.text[0]["messages"][0]["id"])
+    return
+
+
 async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url):
-    url = graph_url
+    
     req_body = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -132,6 +191,22 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     )
     return result.scalar_one_or_none()
 
+async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
+    message = "Getting Riders for you, please hold"
+    await send_custom_message(sender_wa_number, message , auth, graph_url)
+    riders = await db.execute(
+        select(models.Riders)
+        .where(models.Riders.availabilty_status == "available")
+    )
+    riders = riders.scalars().all()
+    for rider in riders:
+        message = "NEW DISPATCH REQUEST! \n" + order_details
+        
+        await send_custom_message(sender_wa_number=rider.rider_wa_number, message=message , auth=auth, graph_url=graph_url)
+    return
+
+
+
 
 async def handle_location(sender_wa_number, lat, lng, auth, graph_url, db):
     ride = await get_active_ride(sender_wa_number, db)
@@ -155,5 +230,13 @@ async def handle_location(sender_wa_number, lat, lng, auth, graph_url, db):
             ride.dropoff_lng = lng
             ride.status = "confirmed"
             await db.commit()
-            #await confirm_booking(sender_wa_number, auth, graph_url)
+            
+            order_details = {
+                "package_description": ride.package_description,
+                "pick_up_location": ride.pickup_lat + " , " + ride.pickup_lng,
+                "drop_off_location": ride.dropoff_lat + " , " + ride.dropoff_lng,
+                "offered_price": ride.customer_intital_offered_price
+
+            }
+            await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_number=ride.order_number)
   
