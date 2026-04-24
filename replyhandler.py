@@ -123,7 +123,16 @@ async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
         #print(response.text[0]["messages"][0]["id"])
     return
 
-
+'''async def request_package_image (sender_wa_number, auth, graph_url):
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "image",
+            "image": {
+                "id": "1474439550701963"
+            }
+        }'''
 
 async def request_pickup_location (sender_wa_number, auth, graph_url):
     req_body = {
@@ -200,15 +209,59 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
     )
     riders = riders.scalars().all()
     for rider in riders:
-        message = "NEW DISPATCH REQUEST! \n" + order_details
+        message = (
+            
+            f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+            f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+            f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+            f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+        )
+
+
+        req_body={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": rider.rider_wa_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                "header": { "type": "text", "text": f"NEW DISPATCH REQUEST!\n" },
+                "body": { "text": message },
+                "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": f"order_id= {order_details['order_id']}", 
+                    "flow_id": "1513067607105184",
+                    "flow_cta": "Accept or Negotiate",
+                    "flow_action": "navigate",
+                    "flow_action_payload": {
+                    "screen": "QUESTION_ONE"
+                    }
+                }
+                }
+            }
+        }
+        headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+         }
+      
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("rider message sent")
+        print(response.status_code, response.text)
+        #print(response.text[0]["messages"][0]["id"])
+    
         
-        await send_custom_message(sender_wa_number=rider.rider_wa_number, message=message , auth=auth, graph_url=graph_url)
+        #await send_custom_message(sender_wa_number=rider.rider_wa_number, message=message , auth=auth, graph_url=graph_url)
     return
 
 
 
 
-async def handle_location(sender_wa_number, lat, lng, auth, graph_url, db):
+async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, db):
     ride = await get_active_ride(sender_wa_number, db)
     
     if not ride:
@@ -221,6 +274,7 @@ async def handle_location(sender_wa_number, lat, lng, auth, graph_url, db):
         case "awaiting_pickup":
             ride.pickup_lat = lat
             ride.pickup_lng = lng
+            ride.pickup_location_name = address
             ride.status = "awaiting_dropoff"
             await db.commit()
             await request_dropoff_location(sender_wa_number, auth, graph_url)
@@ -228,15 +282,22 @@ async def handle_location(sender_wa_number, lat, lng, auth, graph_url, db):
         case "awaiting_dropoff":
             ride.dropoff_lat = lat
             ride.dropoff_lng = lng
+            ride.dropoff_location_name = address
             ride.status = "confirmed"
             await db.commit()
             
             order_details = {
                 "package_description": ride.package_description,
-                "pick_up_location": ride.pickup_lat + " , " + ride.pickup_lng,
-                "drop_off_location": ride.dropoff_lat + " , " + ride.dropoff_lng,
-                "offered_price": ride.customer_intital_offered_price
+                "pick_up_location": ride.pickup_location_name,
+                "drop_off_location": ride.dropoff_location_name,
+                "offered_price": ride.customer_intital_offered_price,
+                "order_id": ride.order_number
 
             }
-            await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_number=ride.order_number)
+            print("order_details is: ")
+            print(order_details)
+            await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
+
+
+
   

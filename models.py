@@ -46,13 +46,16 @@ class Orders(Base):
     order_number: Mapped[str] = mapped_column(String(16), default=generate_order_number, unique=True, nullable=False)
     sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
     package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
-    customer_intital_offered_price: Mapped[str] = mapped_column(Integer, nullable=True)
-    final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(Integer, nullable=True)
+    customer_intital_offered_price: Mapped[str] = mapped_column(String, nullable=True)
+    final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(String, nullable=True)
     status:       Mapped[str] = mapped_column(String(50), nullable=False)             # "awaiting_pickup", "awaiting_dropoff", "confirmed" etc.
+    pickup_location_name: Mapped[str] = mapped_column(String, nullable=True)
     pickup_lat:   Mapped[float] = mapped_column(Float, nullable=True)
     pickup_lng :   Mapped[float] = mapped_column(Float, nullable=True)
     dropoff_lat :   Mapped[float] = mapped_column(Float, nullable=True)
     dropoff_lng  :   Mapped[float] = mapped_column(Float, nullable=True)
+    dropoff_location_name: Mapped[str] = mapped_column(String, nullable=True)
+    package_image_id: Mapped[int] = mapped_column(String, nullable=True)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 class Riders(Base):

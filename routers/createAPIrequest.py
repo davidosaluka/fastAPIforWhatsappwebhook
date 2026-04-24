@@ -1,7 +1,7 @@
 from typing import Annotated
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, status, Request, HTTPException, Depends, APIRouter
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
@@ -41,7 +41,6 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     message = _response[0]
 
     if message["type"] == "button":
-        print("i got into this block of code")
         sender_wa_number = message["from"]
         if message["button"]["payload"] == "Send an Order":
             result = await db.execute(
@@ -63,7 +62,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         flow_token  = json_response.get("flow_token")    
         name        = json_response.get("name")          
         email       = json_response.get("email")         
-        status      = json_response.get("status")        
+        status      = json_response.get("status")
+        customer_intital_offered_price = json_response.get("final_price")
+        package_description = json_response.get("final_desc")       
         sender_wa_number = message["from"] 
 
         print("senders wa number: " + sender_wa_number)
@@ -87,15 +88,28 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
             case "order_details":
+
+                await db.execute(
+                update(models.Orders)
+                .where(models.Orders.sender_wa_number == sender_wa_number)
+                .where(models.Orders.status.in_(["awaiting_pickup", "awaiting_dropoff"]))
+                .values(status="cancelled")
+                )
+                await db.commit()
+
                 newOrder = models.Orders(
                 status="awaiting_pickup",
-                sender_wa_number= sender_wa_number
+                sender_wa_number= sender_wa_number,
+                customer_intital_offered_price=customer_intital_offered_price,
+                package_description=package_description
+
                 )
 
                 db.add(newOrder)
                 await db.commit()
                 await db.refresh(newOrder)
-                await replyhandler.request_pickup_location(sender_wa_number, AUTH, GRAPH_URL)
+                await replyhandler.send_custom_message(sender_wa_number, "Please take and upload an image of the package you are sending", AUTH, GRAPH_URL)
+
 
             case _:
                 print(f"Unknown template_id: {template_id}")
@@ -103,13 +117,25 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     elif message["type"] == "location":
         lat = message["location"]["latitude"]
         lng = message["location"]["longitude"]
+        address = message["location"]["address"]
         sender_wa_number = message["from"]
-        await replyhandler.handle_location(sender_wa_number, lat, lng, AUTH, GRAPH_URL, db)
+        await replyhandler.handle_location(sender_wa_number, lat, lng, address, AUTH, GRAPH_URL, db)
 
     elif message["type"] == "text":
         sender_wa_number = message["from"]
         await replyhandler.send_default_template (sender_wa_number, AUTH, GRAPH_URL)
 
+    elif message ["type"] == "image":
+        sender_wa_number = message["from"]
+        await db.execute(
+                update(models.Orders)
+                .where(models.Orders.sender_wa_number == sender_wa_number)
+                .where(models.Orders.status.in_(["awaiting_pickup"]))
+                .values(package_image_id=message["image"]["id"])
+                )
+        await db.commit()
+        await replyhandler.request_pickup_location(sender_wa_number, AUTH, GRAPH_URL)
+        
 
     '''try:
         name = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
