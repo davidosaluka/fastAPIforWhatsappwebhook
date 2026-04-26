@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 import requests
@@ -231,12 +231,12 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
                 "name": "flow",
                 "parameters": {
                     "flow_message_version": "3",
-                    "flow_token": f"order_id= {order_details['order_id']}", 
+                    "flow_token": f"order_id={order_details['order_id']}", 
                     "flow_id": "1513067607105184",
                     "flow_cta": "Accept or Negotiate",
                     "flow_action": "navigate",
                     "flow_action_payload": {
-                    "screen": "QUESTION_ONE"
+                    "screen": "RECOMMEND"
                     }
                 }
                 }
@@ -299,5 +299,52 @@ async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, 
             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
 
 
+async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
+    order_status = await db.execute(
+    select(models.Orders.status)
+    .where(models.Orders.order_number == order_number)
+    )
+    order_status = order_status.scalar_one_or_none()
 
-  
+    rider_details = await db.execute(
+    select(models.Riders)
+    .where(models.Riders.rider_wa_number == sender_wa_number)
+        )
+    rider_details = rider_details.scalar_one_or_none()
+
+    if order_status == "confirmed":
+        customer_wa_number = await db.execute(
+            select(models.Orders.sender_wa_number)
+            .where(models.Orders.order_number == order_number)
+        )
+        customer_wa_number = customer_wa_number.scalar_one_or_none()
+        rider_message = f"You can communicate with the customer on this number: {customer_wa_number}. Please proceed to the pickup location"
+        customer_message = (
+            f"Ride has been accepted. Rider is proceeding to your pickup location and would be in contact with you shortly\n\n"
+            f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
+            f"Rider's phone number: {rider_details.rider_wa_number}"
+            )
+        
+        #sending a message to the rider
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)         
+        
+        #sending a message to the customer
+        await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=AUTH, graph_url=GRAPH_URL) 
+        
+        await db.execute(
+           update(models.Orders)
+           .where(models.Orders.order_number == order_number)
+           .values(status="rider_accepted")
+        )
+        await db.commit()
+
+
+    else:
+        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+
+
+async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db):
+    pass
+        
+

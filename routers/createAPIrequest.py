@@ -59,15 +59,22 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
         template_id = json_response.get("template_id")  
-        flow_token  = json_response.get("flow_token")    
+        flow_token  = json_response.get("flow_token") 
+        order_number = flow_token.split("=")[1] if flow_token else None   
         name        = json_response.get("name")          
         email       = json_response.get("email")         
         status      = json_response.get("status")
         customer_intital_offered_price = json_response.get("final_price")
         package_description = json_response.get("final_desc")       
         sender_wa_number = message["from"] 
+        rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
 
-        print("senders wa number: " + sender_wa_number)
+
+        if rider_selected_option_for_current_ride:
+            if rider_selected_option_for_current_ride == "0_Accept":
+                await replyhandler.handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
+            else:
+                await replyhandler.handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
 
         match template_id:
             case "user_registration":
