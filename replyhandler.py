@@ -55,6 +55,43 @@ async def send_custom_message(sender_wa_number, message , auth, graph_url):
         #print(response.text[0]["messages"][0]["id"])
     return
 
+async def send_custom_flow(wa_number, order_number, message,header, flow_id, flow_cta, screen_name, auth, graph_url):
+    req_body={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": wa_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                "header": { "type": "text", "text": header },
+                "body": { "text": message },
+                "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": f"order_id={order_number}", 
+                    "flow_id": flow_id,
+                    "flow_cta": flow_cta,
+                    "flow_action": "navigate",
+                    "flow_action_payload": {
+                    "screen": screen_name
+                    }
+                }
+                }
+            }
+        }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+         }
+      
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+
+
+    return
+
 
 async def send_registration_template(sender_wa_number, auth, graph_url):
     
@@ -216,9 +253,19 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
             f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
             f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
         )
+        await send_custom_flow(
+            wa_number=rider.rider_wa_number,
+            order_number=order_details['order_id'],
+            message=message,
+            header=f"NEW DISPATCH REQUEST!\n",
+            flow_id="1513067607105184",
+            flow_cta="Accept or Negotiate",
+            screen_name="RECOMMEND",
+            auth=auth,
+            graph_url=graph_url
+        )
 
-
-        req_body={
+        '''req_body={
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": rider.rider_wa_number,
@@ -250,12 +297,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
       
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body, headers=headers)
-        print("rider message sent")
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
-    
-        
-        #await send_custom_message(sender_wa_number=rider.rider_wa_number, message=message , auth=auth, graph_url=graph_url)
+        '''
     return
 
 
@@ -345,6 +387,50 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
 
 
 async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db):
-    pass
+    message = (
+        "Kindly click the button below to input your counter offer: "
+        )
+
+
+    req_body={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                #"header": { "type": "text", "text": f"NEW DISPATCH REQUEST!\n" },
+                "body": { "text": message },
+                "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": f"order_id={order_number}", 
+                    "flow_id": "1448553113617488",
+                    "flow_cta": "Input Price",
+                    "flow_action": "navigate",
+                    "flow_action_payload": {
+                    "screen": "NEGOTIATE_SCREEN"
+                    }
+                }
+                }
+            }
+        }
+    headers = {
+        "Authorization": f"Bearer {AUTH}",
+        "Content-Type": "application/json"
+
+         }
+      
+    async with httpx.AsyncClient() as client:
+        response = await client.post(GRAPH_URL, json=req_body, headers=headers)
+
+    customer_wa_number = await db.execute(
+            select(models.Orders.sender_wa_number)
+            .where(models.Orders.order_number == order_number)
+        )
+    customer_wa_number = customer_wa_number.scalar_one_or_none()
+
+
         
 

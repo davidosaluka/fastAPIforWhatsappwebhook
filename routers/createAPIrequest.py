@@ -60,7 +60,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
         template_id = json_response.get("template_id")  
         flow_token  = json_response.get("flow_token") 
-        order_number = flow_token.split("=")[1] if flow_token else None   
+        order_number = flow_token.split("=")[1] if flow_token and flow_token != "unused" else None   
         name        = json_response.get("name")          
         email       = json_response.get("email")         
         status      = json_response.get("status")
