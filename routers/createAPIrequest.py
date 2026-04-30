@@ -58,9 +58,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
         template_id = json_response.get("template_id")  
-        flow_token  = json.loads(json_response.get("flow_token")) 
-        order_number = flow_token.get("order_number") if flow_token and flow_token != "unused" else None   
-        rider_wa_number = flow_token.get("rider_wa_number") if flow_token and flow_token != "unused" else None 
+        raw_token = json_response.get("flow_token")
+        flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" else {}
+        order_number = flow_token.get("order_number")
+        rider_wa_number = flow_token.get("rider_wa_number")
         name        = json_response.get("name")
         rider_proposed_amount = json_response.get("proposed_amount") 
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
@@ -83,7 +84,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await replyhandler.message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db)
 
         if customer_fare_increase_amount:
-            print("i goofed and got here instead")
+            
             result = await db.execute(
             select(models.Orders)
             .where(models.Orders.order_number == order_number)

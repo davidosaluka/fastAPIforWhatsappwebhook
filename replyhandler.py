@@ -401,40 +401,17 @@ async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, orde
         "Kindly click the button below to input your counter offer: "
         )
 
-
-    req_body={
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "flow",
-                #"header": { "type": "text", "text": f"NEW DISPATCH REQUEST!\n" },
-                "body": { "text": message },
-                "action": {
-                "name": "flow",
-                "parameters": {
-                    "flow_message_version": "3",
-                    "flow_token": f"order_id={order_number}", 
-                    "flow_id": "1448553113617488",
-                    "flow_cta": "Input Price",
-                    "flow_action": "navigate",
-                    "flow_action_payload": {
-                    "screen": "NEGOTIATE_SCREEN"
-                    }
-                }
-                }
-            }
-        }
-    headers = {
-        "Authorization": f"Bearer {AUTH}",
-        "Content-Type": "application/json"
-
-         }
-      
-    async with httpx.AsyncClient() as client:
-        response = await client.post(GRAPH_URL, json=req_body, headers=headers)
-
+    await send_custom_flow(
+            wa_number=sender_wa_number,
+            flow_token={"order_number": order_number},
+            message=message,
+            header="-",
+            flow_id="1448553113617488",
+            flow_cta="Input Price",
+            screen_name="NEGOTIATE_SCREEN",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
 
 
 async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db:AsyncSession):
@@ -474,7 +451,7 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
         #sending a message to the customer about the riders offering the prices
         await send_custom_flow(
             wa_number=customer_wa_number,
-            flow_token={"order_number": order_number},
+            flow_token={"order_number": order_number, "rider_wa_number": sender_wa_number},
             message=customer_message,
             header="This rider is offering these prices instead\n\n",
             flow_id="949497837687906",
@@ -513,7 +490,7 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
     .where(models.Orders.order_number == order_number)
     )
     order_status = order_status.scalar_one_or_none()
-
+    print(f"riders number is: {rider_wa_number}")
     rider_details = await db.execute(
     select(models.Riders)
     .where(models.Riders.rider_wa_number == rider_wa_number)
