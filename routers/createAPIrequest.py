@@ -18,7 +18,6 @@ router = APIRouter()
 VERIFY_TOKEN =  os.getenv("VERIFY_TOKEN")
 AUTH = os.getenv("AUTHORIZATION")
 GRAPH_URL = os.getenv("GRAPH_URL")
-print("grap urrl is: ",  GRAPH_URL)
 
 @router.post("", status_code=status.HTTP_200_OK)
 async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSession, Depends(get_db)]):
@@ -59,9 +58,13 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
         template_id = json_response.get("template_id")  
-        flow_token  = json_response.get("flow_token") 
-        order_number = flow_token.split("=")[1] if flow_token and flow_token != "unused" else None   
-        name        = json_response.get("name")          
+        flow_token  = json.loads(json_response.get("flow_token")) 
+        order_number = flow_token.get("order_number") if flow_token and flow_token != "unused" else None   
+        rider_wa_number = flow_token.get("rider_wa_number") if flow_token and flow_token != "unused" else None 
+        name        = json_response.get("name")
+        rider_proposed_amount = json_response.get("proposed_amount") 
+        customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
+        custRespToRiderOff = json_response.get("custRespToRiderOff")       
         email       = json_response.get("email")         
         status      = json_response.get("status")
         customer_intital_offered_price = json_response.get("final_price")
@@ -75,6 +78,42 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await replyhandler.handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
             else:
                 await replyhandler.handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
+
+        if rider_proposed_amount:
+            await replyhandler.message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db)
+
+        if customer_fare_increase_amount:
+            print("i goofed and got here instead")
+            result = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.order_number == order_number)
+            )
+
+            result = result.scalar_one_or_none()
+
+            order_details = {
+                "package_description": result.package_description,
+                "pick_up_location": result.pickup_location_name,
+                "drop_off_location": result.dropoff_location_name,
+                "offered_price": customer_fare_increase_amount,
+                "order_id": result.order_number
+
+            }
+            await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
+        if custRespToRiderOff:
+            if custRespToRiderOff == "acceptingRiderOffer":
+                await replyhandler.handle_case_where_customer_has_accepted_the_ride(
+                    sender_wa_number=sender_wa_number, 
+                    rider_wa_number=rider_wa_number,
+                    order_number=order_number,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL,
+                    db=db
+                    )
+            elif custRespToRiderOff == "rejectingRiderOffer":
+                message = "Offer was declined by customer"
+                await replyhandler.send_custom_message(sender_wa_number=rider_wa_number, message=message, auth=AUTH, graph_url=GRAPH_URL)
+
 
         match template_id:
             case "user_registration":
@@ -186,7 +225,7 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
 
 
 
-print("token value is: ", VERIFY_TOKEN )
+
 @router.get("", status_code=status.HTTP_200_OK)
 def validateWhatsAPPGetRequest(
     hub_mode: str = Query(alias="hub.mode"),

@@ -55,7 +55,7 @@ async def send_custom_message(sender_wa_number, message , auth, graph_url):
         #print(response.text[0]["messages"][0]["id"])
     return
 
-async def send_custom_flow(wa_number, order_number, message,header, flow_id, flow_cta, screen_name, auth, graph_url):
+async def send_custom_flow(wa_number, flow_token, message,header, flow_id, flow_cta, screen_name, auth, graph_url):
     req_body={
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -69,7 +69,7 @@ async def send_custom_flow(wa_number, order_number, message,header, flow_id, flo
                 "name": "flow",
                 "parameters": {
                     "flow_message_version": "3",
-                    "flow_token": f"order_id={order_number}", 
+                    "flow_token": json.dumps(flow_token), 
                     "flow_id": flow_id,
                     "flow_cta": flow_cta,
                     "flow_action": "navigate",
@@ -80,6 +80,9 @@ async def send_custom_flow(wa_number, order_number, message,header, flow_id, flo
                 }
             }
         }
+    
+    print("req_body")
+    print(req_body)
     headers = {
         "Authorization": f"Bearer {auth}",
         "Content-Type": "application/json"
@@ -245,6 +248,8 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         .where(models.Riders.availabilty_status == "available")
     )
     riders = riders.scalars().all()
+    
+    
     for rider in riders:
         message = (
             
@@ -253,17 +258,22 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
             f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
             f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
         )
-        await send_custom_flow(
+        print("message is: ")
+        print(message)
+        
+        result = await send_custom_flow(
             wa_number=rider.rider_wa_number,
-            order_number=order_details['order_id'],
+            flow_token={"order_number": order_details['order_id']},
             message=message,
-            header=f"NEW DISPATCH REQUEST!\n",
+            header=f"DISPATCH REQUEST!\n",
             flow_id="1513067607105184",
             flow_cta="Accept or Negotiate",
             screen_name="RECOMMEND",
             auth=auth,
             graph_url=graph_url
         )
+        print("find me here2 and result is")
+        print(result)
 
         '''req_body={
             "messaging_product": "whatsapp",
@@ -386,7 +396,7 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
 
 
-async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db):
+async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
     message = (
         "Kindly click the button below to input your counter offer: "
         )
@@ -425,12 +435,120 @@ async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, orde
     async with httpx.AsyncClient() as client:
         response = await client.post(GRAPH_URL, json=req_body, headers=headers)
 
-    customer_wa_number = await db.execute(
+
+
+async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db:AsyncSession):
+    order_status = await db.execute(
+    select(models.Orders.status)
+    .where(models.Orders.order_number == order_number)
+    )
+    order_status = order_status.scalar_one_or_none()
+
+    rider_details = await db.execute(
+    select(models.Riders)
+    .where(models.Riders.rider_wa_number == sender_wa_number)
+        )
+    rider_details = rider_details.scalar_one_or_none()
+
+    if order_status == "confirmed":
+        customer_wa_number = await db.execute(
             select(models.Orders.sender_wa_number)
             .where(models.Orders.order_number == order_number)
         )
-    customer_wa_number = customer_wa_number.scalar_one_or_none()
+        customer_wa_number = customer_wa_number.scalar_one_or_none()
 
+        customer_message = (
+            f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
+            f"Rider's offered price: {rider_proposed_amount}\n\n" 
+            f"Rider's rating: 4.5 stars"
+            )
+        
+        asking_customer_to_increase_price_msg = (
+            f"If you do not agree to any of the prices above," 
+            f"you can increase your fare price by clicking of the button below"
+            "and other riders would be searched for"
+        )
+        
+        
+        
+        #sending a message to the customer about the riders offering the prices
+        await send_custom_flow(
+            wa_number=customer_wa_number,
+            flow_token={"order_number": order_number},
+            message=customer_message,
+            header="This rider is offering these prices instead\n\n",
+            flow_id="949497837687906",
+            flow_cta="Accept this offer",
+            screen_name="customer_accept_or_reject_rider_offer",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
+
+         #sending a message to the customer asking if they want to increase fare. This should be outside the loop
+        await send_custom_flow(
+            wa_number=customer_wa_number,
+            flow_token={"order_number": order_number},
+            message=asking_customer_to_increase_price_msg,
+            header="🔔",
+            flow_id="950647507961316",
+            flow_cta="I want to increase my fare",
+            screen_name="CUST_INCREASE_FARE_SCREEN",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
+
+        
+
+    else:
+        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+
+
+
+
+
+async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rider_wa_number, order_number, auth, graph_url, db:AsyncSession):
+    order_status = await db.execute(
+    select(models.Orders.status)
+    .where(models.Orders.order_number == order_number)
+    )
+    order_status = order_status.scalar_one_or_none()
+
+    rider_details = await db.execute(
+    select(models.Riders)
+    .where(models.Riders.rider_wa_number == rider_wa_number)
+        )
+    rider_details = rider_details.scalar_one_or_none()
+
+    if order_status == "confirmed":
+        customer_wa_number = sender_wa_number
+
+        rider_message = f"You can communicate with the customer on this number: {customer_wa_number}. Please proceed to the pickup location"
+        customer_message = (
+            f"Ride has been accepted. Rider is proceeding to your pickup location and would be in contact with you shortly\n\n"
+            f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
+            f"Rider's phone number: {rider_details.rider_wa_number}"
+            )
+        
+        #sending a message to the rider
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=auth, graph_url=graph_url)         
+        
+        #sending a message to the customer
+        await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=auth, graph_url=graph_url) 
+        
+        await db.execute(
+           update(models.Orders)
+           .where(models.Orders.order_number == order_number)
+           .values(status="rider_accepted")
+        )
+        await db.commit()
+
+
+    else:
+        rider_message = f"Sorry! this order has already been picked up by another rider"
+        cust_message = f"Sorry! this order has already been picked up by another rider and the details has been sent to you"
+        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)   
+        await send_custom_message(sender_wa_number=customer_wa_number, message=cust_message, auth=auth, graph_url=graph_url)   
 
         
 
