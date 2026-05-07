@@ -277,7 +277,7 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     return result.scalar_one_or_none()
 
 async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
-    message = f"Your order number is:\n {order_details['order_number']}.\n\n I am now searching for available Riders for you, please hold"
+    message = f"Your order number is:\n{order_details['order_number']}.\n\nI am now searching for available Riders for you, please hold"
     await send_custom_message(sender_wa_number, message , auth, graph_url)
     riders = await db.execute(
         select(models.Riders)
@@ -476,7 +476,7 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
         customer_message = (
             f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
             f"Rider's offered price: {rider_proposed_amount}\n\n"
-            f"Order Number: {order.order_number}" 
+            f"Order Number: {order.order_number}\n\n" 
             f"Rider's rating: 4.5 stars"
             )
         
