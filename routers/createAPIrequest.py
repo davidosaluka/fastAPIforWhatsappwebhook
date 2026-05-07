@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Annotated
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, status, Request, HTTPException, Depends, APIRouter
@@ -68,18 +69,27 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         custRespToRiderOff = json_response.get("custRespToRiderOff")       
         email       = json_response.get("email")         
         status      = json_response.get("status")
-        customer_intital_offered_price = json_response.get("final_price")
-        package_description = json_response.get("final_desc")       
+        customer_intital_offered_price = json_response.get("customer_intital_offered_price")
+        package_description = json_response.get("package_description")       
         sender_wa_number = message["from"] 
         rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
+        recipient_phone_number = json_response.get("recipient_phone_number")
 
 
         if rider_selected_option_for_current_ride:
-            if rider_selected_option_for_current_ride == "0_Accept":
-                await replyhandler.handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
+            order_sla_details = await db.execute(
+                select(models.Orders.sla_expires_by)
+                .where(models.Orders.order_number == order_number)
+            )    
+            order_sla_details_result = order_sla_details.scalar_one_or_none()
+            order_still_valid =  order_sla_details_result > datetime.now(UTC)
+            if order_still_valid:
+                if rider_selected_option_for_current_ride == "0_Accept":
+                    await replyhandler.handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
+                else:
+                    await replyhandler.handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
             else:
-                await replyhandler.handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
-
+                await replyhandler.send_custom_message(sender_wa_number=sender_wa_number, message="Dispatch request is expired and has already been completed by another rider", auth=AUTH, graph_url=GRAPH_URL)
         if rider_proposed_amount:
             await replyhandler.message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db)
 
@@ -139,17 +149,29 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await db.execute(
                 update(models.Orders)
                 .where(models.Orders.sender_wa_number == sender_wa_number)
-                .where(models.Orders.status.in_(["awaiting_pickup", "awaiting_dropoff"]))
+                .where(models.Orders.status.in_(["confirmed"]))
                 .values(status="cancelled")
                 )
                 await db.commit()
 
                 newOrder = models.Orders(
-                status="awaiting_pickup",
+                status="confirmed",
                 sender_wa_number= sender_wa_number,
                 customer_intital_offered_price=customer_intital_offered_price,
-                package_description=package_description
-
+                package_description=package_description,
+                recipient_phone_number=recipient_phone_number,
+                pickup_location_name=(
+                    f"{json_response.get('pickup_HouseFlat_Number_0')},"
+                    f"{json_response.get('pickup_Street_Name_1')}, "
+                    f"{json_response.get('pickup_City_2')}, "
+                    f"{json_response.get('pickup_State_3')}, "
+                ),
+                dropoff_location_name=(
+                    f"{json_response.get('dropoff_HouseFlat_Number_0')}, "
+                    f"{json_response.get('dropoff_Street_Name_1')}, "
+                    f"{json_response.get('dropoff_City_2')}, "
+                    f"{json_response.get('dropoff_State_3')}, "
+                ),
                 )
 
                 db.add(newOrder)
@@ -161,29 +183,50 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             case _:
                 print(f"Unknown template_id: {template_id}")
 
-    elif message["type"] == "location":
-        lat = message["location"]["latitude"]
-        lng = message["location"]["longitude"]
-        address = message["location"]["address"]
-        sender_wa_number = message["from"]
-        await replyhandler.handle_location(sender_wa_number, lat, lng, address, AUTH, GRAPH_URL, db)
+    # elif message["type"] == "location":
+    #     lat = message["location"]["latitude"]
+    #     lng = message["location"]["longitude"]
+    #     address = message["location"]["address"]
+    #     sender_wa_number = message["from"]
+    #     await replyhandler.handle_location(sender_wa_number, lat, lng, address, AUTH, GRAPH_URL, db)
 
     elif message["type"] == "text":
         sender_wa_number = message["from"]
-        await replyhandler.send_default_template (sender_wa_number, AUTH, GRAPH_URL)
+        username = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
+        await replyhandler.send_default_template (sender_wa_number, username, AUTH, GRAPH_URL)
 
     elif message ["type"] == "image":
         sender_wa_number = message["from"]
-        await db.execute(
-                update(models.Orders)
-                .where(models.Orders.sender_wa_number == sender_wa_number)
-                .where(models.Orders.status.in_(["awaiting_pickup"]))
-                .values(package_image_id=message["image"]["id"])
-                )
-        await db.commit()
-        await replyhandler.request_pickup_location(sender_wa_number, AUTH, GRAPH_URL)
-        
 
+        result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number == sender_wa_number)
+        .where(models.Orders.customer_intital_offered_price.is_not(None))
+        .where(models.Orders.package_image_id.is_(None))
+        .where(models.Orders.sla_expires_by > datetime.now(UTC))
+        .order_by(models.Orders.created_at.desc())
+        )
+        result = result.scalar_one_or_none()
+
+        if result:
+            await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.sender_wa_number == sender_wa_number)
+                    .where(models.Orders.status.in_(["confirmed"]))
+                    .values(package_image_id=message["image"]["id"])
+                    )
+            await db.commit()
+            ride = await replyhandler.get_active_ride(sender_wa_number, db)
+            order_details = {
+                    "package_description": ride.package_description,
+                    "pick_up_location": ride.pickup_location_name,
+                    "drop_off_location": ride.dropoff_location_name,
+                    "offered_price": ride.customer_intital_offered_price,
+                    "order_number": ride.order_number
+                }
+            await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
+        else:
+            await replyhandler.send_something_went_wrong_template(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL)
     '''try:
         name = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
         wa_id = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["wa_id"]

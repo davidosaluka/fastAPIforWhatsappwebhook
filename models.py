@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import random
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -44,7 +44,8 @@ class Orders(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     order_number: Mapped[str] = mapped_column(String(16), default=generate_order_number, unique=True, nullable=False)
-    sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
+    sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False) 
+    recipient_phone_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
     package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
     customer_intital_offered_price: Mapped[str] = mapped_column(String, nullable=True)
     final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(String, nullable=True)
@@ -56,6 +57,7 @@ class Orders(Base):
     dropoff_lng  :   Mapped[float] = mapped_column(Float, nullable=True)
     dropoff_location_name: Mapped[str] = mapped_column(String, nullable=True)
     package_image_id: Mapped[int] = mapped_column(String, nullable=True)
+    sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 class Riders(Base):

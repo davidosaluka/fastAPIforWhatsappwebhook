@@ -7,7 +7,7 @@ import httpx
 
 
 
-async def send_default_template(sender_wa_number, auth, graph_url):
+async def send_default_template(sender_wa_number, username, auth, graph_url):
     
     req_body = {
             "messaging_product": "whatsapp",
@@ -16,7 +16,18 @@ async def send_default_template(sender_wa_number, auth, graph_url):
             "type": "template",
             "template": {
                 "name": "default_message",
-                "language": { "code": "en" }
+                "language": { "code": "en" },
+                   "components": [
+                    {
+                        "type": "header",
+                        "parameters": [
+                        {
+                            "type": "text",
+                            "text": username
+                        }
+                        ]
+                    }
+                    ]
             }
             }
     headers = {
@@ -25,11 +36,36 @@ async def send_default_template(sender_wa_number, auth, graph_url):
 
     }
     
-
+    print(req_body)
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body, headers=headers)
         print(response.status_code, response.text)
     return
+
+async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "start_over_template",
+                "language": { "code": "en" }      
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+    print(req_body)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+    return
+
 
 async def send_custom_message(sender_wa_number, message , auth, graph_url):
 
@@ -202,46 +238,46 @@ async def request_pickup_location (sender_wa_number, auth, graph_url):
         #print(response.text[0]["messages"][0]["id"])
     return
 
-async def request_dropoff_location (sender_wa_number, auth, graph_url):
-    req_body = {
-  "messaging_product": "whatsapp",
-  "recipient_type": "individual",
-  "type": "interactive",
-  "to": sender_wa_number,
-  "interactive": {
-    "type": "location_request_message",
-    "body": {
-      "text": "Please select your DROP-OFF location "
-    },
-    "action": {
-      "name": "send_location"
-    }
-  }
-}
+# async def request_dropoff_location (sender_wa_number, auth, graph_url):
+#     req_body = {
+#   "messaging_product": "whatsapp",
+#   "recipient_type": "individual",
+#   "type": "interactive",
+#   "to": sender_wa_number,
+#   "interactive": {
+#     "type": "location_request_message",
+#     "body": {
+#       "text": "Please select your DROP-OFF location "
+#     },
+#     "action": {
+#       "name": "send_location"
+#     }
+#   }
+# }
 
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
+#     headers = {
+#         "Authorization": f"Bearer {auth}",
+#         "Content-Type": "application/json"
 
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
-    return
+#     }
+#     async with httpx.AsyncClient() as client:
+#         response = await client.post(graph_url, json=req_body, headers=headers)
+#         print(response.status_code, response.text)
+#         #print(response.text[0]["messages"][0]["id"])
+#     return
 
 
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.sender_wa_number == sender_wa_number)
-        .where(models.Orders.status.in_(["awaiting_pickup", "awaiting_dropoff"]))
+        .where(models.Orders.status.in_(["confirmed"]))
         .order_by(models.Orders.created_at.desc())
     )
     return result.scalar_one_or_none()
 
 async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
-    message = "Getting Riders for you, please hold"
+    message = f"Your order number is:\n {order_details['order_number']}.\n\n I am now searching for available Riders for you, please hold"
     await send_custom_message(sender_wa_number, message , auth, graph_url)
     riders = await db.execute(
         select(models.Riders)
@@ -257,13 +293,14 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
             f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
             f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
             f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+            f"ORDER NUMBER: {order_details['order_number']}\n\n"
         )
         print("message is: ")
         print(message)
         
         result = await send_custom_flow(
             wa_number=rider.rider_wa_number,
-            flow_token={"order_number": order_details['order_id']},
+            flow_token={"order_number": order_details['order_number']},
             message=message,
             header=f"DISPATCH REQUEST!\n",
             flow_id="1513067607105184",
@@ -272,8 +309,8 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
             auth=auth,
             graph_url=graph_url
         )
-        print("find me here2 and result is")
-        print(result)
+       
+       
 
         '''req_body={
             "messaging_product": "whatsapp",
@@ -313,42 +350,42 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
 
 
 
-async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, db):
-    ride = await get_active_ride(sender_wa_number, db)
+# async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, db):
+#     ride = await get_active_ride(sender_wa_number, db)
     
-    if not ride:
-        # no active ride, something went wrong
-        message = "Something went wrong, please start again."
-        await send_custom_message(sender_wa_number, message , auth, graph_url)
-        return
+#     if not ride:
+#         # no active ride, something went wrong
+#         message = "Something went wrong, please start again."
+#         await send_custom_message(sender_wa_number, message , auth, graph_url)
+#         return
 
-    match ride.status:
-        case "awaiting_pickup":
-            ride.pickup_lat = lat
-            ride.pickup_lng = lng
-            ride.pickup_location_name = address
-            ride.status = "awaiting_dropoff"
-            await db.commit()
-            await request_dropoff_location(sender_wa_number, auth, graph_url)
+#     match ride.status:
+#         case "awaiting_pickup":
+#             ride.pickup_lat = lat
+#             ride.pickup_lng = lng
+#             ride.pickup_location_name = address
+#             ride.status = "awaiting_dropoff"
+#             await db.commit()
+#             await request_dropoff_location(sender_wa_number, auth, graph_url)
 
-        case "awaiting_dropoff":
-            ride.dropoff_lat = lat
-            ride.dropoff_lng = lng
-            ride.dropoff_location_name = address
-            ride.status = "confirmed"
-            await db.commit()
+#         case "awaiting_dropoff":
+#             ride.dropoff_lat = lat
+#             ride.dropoff_lng = lng
+#             ride.dropoff_location_name = address
+#             ride.status = "confirmed"
+#             await db.commit()
             
-            order_details = {
-                "package_description": ride.package_description,
-                "pick_up_location": ride.pickup_location_name,
-                "drop_off_location": ride.dropoff_location_name,
-                "offered_price": ride.customer_intital_offered_price,
-                "order_id": ride.order_number
+#             order_details = {
+#                 "package_description": ride.package_description,
+#                 "pick_up_location": ride.pickup_location_name,
+#                 "drop_off_location": ride.dropoff_location_name,
+#                 "offered_price": ride.customer_intital_offered_price,
+#                 "order_id": ride.order_number
 
-            }
-            print("order_details is: ")
-            print(order_details)
-            await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
+#             }
+#             print("order_details is: ")
+#             print(order_details)
+#             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
 
 
 async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
@@ -415,19 +452,21 @@ async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, orde
 
 
 async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db:AsyncSession):
-    order_status = await db.execute(
-    select(models.Orders.status)
-    .where(models.Orders.order_number == order_number)
+    order_result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.order_number == order_number)
     )
-    order_status = order_status.scalar_one_or_none()
 
-    rider_details = await db.execute(
-    select(models.Riders)
-    .where(models.Riders.rider_wa_number == sender_wa_number)
-        )
-    rider_details = rider_details.scalar_one_or_none()
+    order = order_result.scalar_one_or_none()
 
-    if order_status == "confirmed":
+    rider_result = await db.execute(
+        select(models.Riders)
+        .where(models.Riders.rider_wa_number == sender_wa_number)
+    )
+
+    rider_details = rider_result.scalar_one_or_none()
+
+    if order and order.status == "confirmed":
         customer_wa_number = await db.execute(
             select(models.Orders.sender_wa_number)
             .where(models.Orders.order_number == order_number)
@@ -436,7 +475,8 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
 
         customer_message = (
             f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
-            f"Rider's offered price: {rider_proposed_amount}\n\n" 
+            f"Rider's offered price: {rider_proposed_amount}\n\n"
+            f"Order Number: {order.order_number}" 
             f"Rider's rating: 4.5 stars"
             )
         
