@@ -91,6 +91,30 @@ async def send_custom_message(sender_wa_number, message , auth, graph_url):
         #print(response.text[0]["messages"][0]["id"])
     return
 
+async def send_image(sender_wa_number, auth, graph_url, image_id):
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "image",
+            "image": {
+                "id": image_id
+            }
+            }
+    headers = {
+    "Authorization": f"Bearer {auth}",
+    "Content-Type": "application/json"
+
+    }
+      
+    async with httpx.AsyncClient() as client:
+        await client.post(graph_url, json=req_body, headers=headers)
+
+    return
+
+
+
+
 async def send_custom_flow(wa_number, flow_token, message,header, flow_id, flow_cta, screen_name, auth, graph_url):
     req_body={
             "messaging_product": "whatsapp",
@@ -298,7 +322,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         print("message is: ")
         print(message)
         
-        result = await send_custom_flow(
+        await send_custom_flow(
             wa_number=rider.rider_wa_number,
             flow_token={"order_number": order_details['order_number']},
             message=message,
@@ -309,42 +333,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
             auth=auth,
             graph_url=graph_url
         )
-       
-       
-
-        '''req_body={
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": rider.rider_wa_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "flow",
-                "header": { "type": "text", "text": f"NEW DISPATCH REQUEST!\n" },
-                "body": { "text": message },
-                "action": {
-                "name": "flow",
-                "parameters": {
-                    "flow_message_version": "3",
-                    "flow_token": f"order_id={order_details['order_id']}", 
-                    "flow_id": "1513067607105184",
-                    "flow_cta": "Accept or Negotiate",
-                    "flow_action": "navigate",
-                    "flow_action_payload": {
-                    "screen": "RECOMMEND"
-                    }
-                }
-                }
-            }
-        }
-        headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-         }
-      
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        '''
+        await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
     return
 
 
@@ -556,7 +545,8 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted")
+           .values(status="rider_accepted", final_price_agreed_by_cust_and_rider="12000", rider_wa_number=rider_wa_number)
+           
         )
         await db.commit()
 

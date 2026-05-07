@@ -45,6 +45,7 @@ class Orders(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     order_number: Mapped[str] = mapped_column(String(16), default=generate_order_number, unique=True, nullable=False)
     sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False) 
+    rider_wa_number:      Mapped[str] = mapped_column(String(50), nullable=True) 
     recipient_phone_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
     package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
     customer_intital_offered_price: Mapped[str] = mapped_column(String, nullable=True)

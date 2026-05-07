@@ -107,7 +107,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 "pick_up_location": result.pickup_location_name,
                 "drop_off_location": result.dropoff_location_name,
                 "offered_price": customer_fare_increase_amount,
-                "order_number": result.order_number
+                "order_number": result.order_number,
+                "image_id": result.package_image_id
 
             }
             await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
@@ -222,7 +223,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "pick_up_location": ride.pickup_location_name,
                     "drop_off_location": ride.dropoff_location_name,
                     "offered_price": ride.customer_intital_offered_price,
-                    "order_number": ride.order_number
+                    "order_number": ride.order_number,
+                    "image_id": ride.package_image_id
                 }
             await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
         else:
