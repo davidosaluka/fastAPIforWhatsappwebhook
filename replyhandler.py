@@ -1,3 +1,4 @@
+import asyncio
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
@@ -376,13 +377,43 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
 #             print(order_details)
 #             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
 
+async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
+    req_body = {
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "type": "interactive",
+  "to": sender_wa_number,
+  "interactive": {
+    "type": "location_request_message",
+    "body": {
+      "text": "Please select your PICK-UP location "
+    },
+    "action": {
+      "name": "send_location"
+    }
+  }
+}
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+    return
+
+
+
 
 async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
-    order_status = await db.execute(
-    select(models.Orders.status)
+    order_result = await db.execute(
+    select(models.Orders)
     .where(models.Orders.order_number == order_number)
     )
-    order_status = order_status.scalar_one_or_none()
+    order = order_result.scalar_one_or_none()
+    order_status = order.status
 
     rider_details = await db.execute(
     select(models.Riders)
@@ -402,6 +433,16 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
             f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
             f"Rider's phone number: {rider_details.rider_wa_number}"
             )
+        recipient_message = (
+            f"Hello, A dispatch request is on its way to you!"
+            f"ORDER DESCRIPTION 📦: {order.package_description}\n\n"
+            f"PICKUP LOCATION📍: {order.pickup_location_name}\n\n"
+            f"DROPOFF LOCATION📍: {order.dropoff_location_name}\n\n"
+            f"ORDER NUMBER: {order.order_number}\n\n"
+            f"RIDER'S NAME: {rider_details.first_name} {rider_details.last_name}\n\n"
+            f"RIDER'S PHONE NUMBER: {rider_details.rider_wa_number}"
+        )
+        recipient_wa_number = order.recipient_phone_number
         
         #sending a message to the rider
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)         
@@ -409,12 +450,30 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         #sending a message to the customer
         await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=AUTH, graph_url=GRAPH_URL) 
         
+        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
+        
+
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
            .values(status="rider_accepted")
         )
         await db.commit()
+
+        await asyncio.sleep(300)
+
+
+        await send_custom_flow(
+            wa_number=rider_details.rider_wa_number,
+            flow_token={"order_number": order.order_number},
+            message="Click the button below when you have picked up the package to be delivered",
+            header=f"Have you picked up the package?\n\n",
+            flow_id="1521319786323152",
+            flow_cta="Picked Up Package?",
+            screen_name="flow_to_ask_if_rider_has_picked_up_package",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
 
 
     else:
@@ -514,11 +573,13 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
 
 
 async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rider_wa_number, order_number, auth, graph_url, db:AsyncSession):
-    order_status = await db.execute(
-    select(models.Orders.status)
+    order_result = await db.execute(
+    select(models.Orders)
     .where(models.Orders.order_number == order_number)
     )
-    order_status = order_status.scalar_one_or_none()
+    order = order_result.scalar_one_or_none()
+    order_status = order.status
+
     print(f"riders number is: {rider_wa_number}")
     rider_details = await db.execute(
     select(models.Riders)
@@ -535,12 +596,24 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
             f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
             f"Rider's phone number: {rider_details.rider_wa_number}"
             )
-        
+
+        recipient_message = (
+            f"Hello, A dispatch request is on its way to you!"
+            f"ORDER DESCRIPTION 📦: {order.package_description}\n\n"
+            f"PICKUP LOCATION📍: {order.pickup_location_name}\n\n"
+            f"DROPOFF LOCATION📍: {order.dropoff_location_name}\n\n"
+            f"ORDER NUMBER: {order.order_number}\n\n"
+            f"RIDER'S NAME: {rider_details.first_name} {rider_details.last_name}\n\n"
+            f"RIDER'S PHONE NUMBER: {rider_details.rider_wa_number}"
+        )
+        recipient_wa_number = order.recipient_phone_number
         #sending a message to the rider
-        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=auth, graph_url=graph_url)         
+        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)         
         
         #sending a message to the customer
         await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=auth, graph_url=graph_url) 
+
+        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
         
         await db.execute(
            update(models.Orders)
@@ -549,6 +622,22 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
            
         )
         await db.commit()
+
+        await asyncio.sleep(300)
+
+
+        await send_custom_flow(
+            wa_number=rider_wa_number,
+            flow_token={"order_number": order.order_number},
+            message="Click the button below when you have picked up the package to be delivered",
+            header=f"Have you picked up the package?\n\n",
+            flow_id="1521319786323152",
+            flow_cta="Picked Up Package?",
+            screen_name="flow_to_ask_if_rider_has_picked_up_package",
+            auth=auth,
+            graph_url=graph_url #modify
+        )
+
 
 
     else:

@@ -1,4 +1,8 @@
+import asyncio
 from datetime import UTC, datetime
+import random
+import string
+import time
 from typing import Annotated
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, status, Request, HTTPException, Depends, APIRouter
@@ -63,6 +67,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" else {}
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
+        
         name        = json_response.get("name")
         rider_proposed_amount = json_response.get("proposed_amount") 
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
@@ -73,8 +78,125 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         package_description = json_response.get("package_description")       
         sender_wa_number = message["from"] 
         rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
+        rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
+        rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
         recipient_phone_number = json_response.get("recipient_phone_number")
 
+
+
+        if rider_in_pickup_location and rider_in_pickup_location == "At_Pickup": 
+            order_details = await db.execute(
+                select(models.Orders)
+                .where(models.Orders.order_number == order_number)
+            )    
+            order_details = order_details.scalar_one_or_none()
+
+            #notify sender on arrival of rider at pickup location
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.sender_wa_number, 
+                message="Rider has gotten to your location. You can call the rider or expect a call from then any moment from now" , 
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+
+            
+            await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order_number)
+            .values(delivery_progression_status="package_picked_up")
+            )
+            await db.commit()
+
+            await asyncio.sleep(300)
+            five_digit_code = ''.join(random.choices(string.digits, k=5))
+            message_for_sender = (
+                f"The Code is: {five_digit_code}.\n"
+                "You don't have to do anything with this code.\n"
+                "The Same code has been sent to the recipient of the package and the rider as well.\n"
+                "We are only sending you this code as a backup in the event that the recipient didnt recieve the code for whatever reason.\n"
+                "Feel free to share this code with the recipient as the dispatch rider would demand it before delivering the package.\n"
+                "DO NOT SHARE THIS CODE WITH THE RIDER ONLY SHARE WITH THE RECIPIENT"
+            )
+            message_for_rider= (
+                f"The Code is: {five_digit_code}. \n"
+                "Confirm this code from the recipient before delivering the package"
+            )
+            message_for_recipient = (
+                "Just Notifying you that Rider has gotten to the pickup location and would be coming to you soon.\n\n" 
+                f"The Code is: {five_digit_code}. \n\n"
+                "The Rider would request this code of you before delivering you package"
+            )
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.sender_wa_number, 
+                message=message_for_sender,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.rider_wa_number, 
+                message=message_for_rider,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.recipient_phone_number, 
+                message=message_for_recipient,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+
+            await replyhandler.send_custom_flow (
+                wa_number=order_details.rider_wa_number,
+                flow_token={"order_number": order_details.order_number},
+                message="Click the button below when you have dropped off the package successfully",
+                header=f"Have you delivered the package yet?\n\n",
+                flow_id="1549615230214062",
+                flow_cta="Have you Delivered the Package?",
+                screen_name="flow_to_ask_if_rider_has_dropped_off_package",
+                auth=AUTH,
+                graph_url=GRAPH_URL #modify
+            )
+
+        if rider_in_dropoff_location and rider_in_dropoff_location == "At_dropoff":
+            order_details = await db.execute(
+                select(models.Orders)
+                .where(models.Orders.order_number == order_number)
+            )    
+            order_details = order_details.scalar_one_or_none()
+            message_for_sender_and_recipient_and_rider = (
+                f"Package has been delivered successfully!\n"
+                "Thank you for choosing inTime!\n"
+               
+            )
+            await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order_number)
+            .values(delivery_progression_status="package_delivered")
+            )
+            await db.commit()
+
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.sender_wa_number, 
+                message=message_for_sender_and_recipient_and_rider,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.rider_wa_number, 
+                message=message_for_sender_and_recipient_and_rider,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+            await replyhandler.send_custom_message(
+                sender_wa_number=order_details.recipient_phone_number, 
+                message=message_for_sender_and_recipient_and_rider,
+                auth=AUTH, 
+                graph_url=GRAPH_URL
+            )
+
+            
 
         if rider_selected_option_for_current_ride:
             order_sla_details = await db.execute(

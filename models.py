@@ -58,6 +58,7 @@ class Orders(Base):
     dropoff_lng  :   Mapped[float] = mapped_column(Float, nullable=True)
     dropoff_location_name: Mapped[str] = mapped_column(String, nullable=True)
     package_image_id: Mapped[int] = mapped_column(String, nullable=True)
+    delivery_progression_status: Mapped[str] = mapped_column(String, nullable=True)
     sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
