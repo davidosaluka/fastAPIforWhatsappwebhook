@@ -456,7 +456,7 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted")
+           .values(status="rider_accepted", rider_wa_number=sender_wa_number, final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider)
         )
         await db.commit()
 
@@ -618,8 +618,8 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted", final_price_agreed_by_cust_and_rider="12000", rider_wa_number=rider_wa_number)
-           
+           .values(status="rider_accepted", rider_wa_number=rider_wa_number)
+            
         )
         await db.commit()
 
