@@ -38,7 +38,14 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     await db.commit()
     await db.refresh(newAPIRequest)
     
-    _response = apirequest.entry[0]["changes"][0]["value"].get("messages") 
+    try:
+        entry = apirequest.entry[0] if apirequest.entry else {}
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        _response = value.get("messages")
+    except (IndexError, AttributeError, KeyError):
+        _response = None
+
    # _response = apirequest.entry[0]["changes"][0]["value"]["messages"]
     if not _response:
         return {"status": "ok"}
@@ -107,56 +114,14 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )
             await db.commit()
 
-            await asyncio.sleep(300)
-            five_digit_code = ''.join(random.choices(string.digits, k=5))
-            message_for_sender = (
-                f"The Code is: {five_digit_code}.\n"
-                "You don't have to do anything with this code.\n"
-                "The Same code has been sent to the recipient of the package and the rider as well.\n"
-                "We are only sending you this code as a backup in the event that the recipient didnt recieve the code for whatever reason.\n"
-                "Feel free to share this code with the recipient as the dispatch rider would demand it before delivering the package.\n"
-                "DO NOT SHARE THIS CODE WITH THE RIDER ONLY SHARE WITH THE RECIPIENT"
-            )
-            message_for_rider= (
-                f"The Code is: {five_digit_code}. \n"
-                "Confirm this code from the recipient before delivering the package"
-            )
-            message_for_recipient = (
-                "Just Notifying you that Rider has gotten to the pickup location and would be coming to you soon.\n\n" 
-                f"The Code is: {five_digit_code}. \n\n"
-                "The Rider would request this code of you before delivering you package"
-            )
-            await replyhandler.send_custom_message(
-                sender_wa_number=order_details.sender_wa_number, 
-                message=message_for_sender,
-                auth=AUTH, 
-                graph_url=GRAPH_URL
-            )
-
-            await replyhandler.send_custom_message(
-                sender_wa_number=order_details.rider_wa_number, 
-                message=message_for_rider,
-                auth=AUTH, 
-                graph_url=GRAPH_URL
-            )
-            await replyhandler.send_custom_message(
-                sender_wa_number=order_details.recipient_phone_number, 
-                message=message_for_recipient,
-                auth=AUTH, 
-                graph_url=GRAPH_URL
-            )
-
-            await replyhandler.send_custom_flow (
-                wa_number=order_details.rider_wa_number,
-                flow_token={"order_number": order_details.order_number},
-                message="Click the button below when you have dropped off the package successfully",
-                header=f"Have you delivered the package yet?\n\n",
-                flow_id="1549615230214062",
-                flow_cta="Have you Delivered the Package?",
-                screen_name="flow_to_ask_if_rider_has_dropped_off_package",
+            asyncio.create_task(_delayed_pickup_arrival_notifications(
+                sender_wa=order_details.sender_wa_number,
+                rider_wa=order_details.rider_wa_number,
+                recipient_phone=order_details.recipient_phone_number,
+                order_num=order_details.order_number,
                 auth=AUTH,
-                graph_url=GRAPH_URL #modify
-            )
+                graph_url=GRAPH_URL
+            ))
 
         if rider_in_dropoff_location and rider_in_dropoff_location == "At_dropoff":
             order_details = await db.execute(
@@ -251,20 +216,23 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         match template_id:
             case "user_registration":
-                
-                wa_id = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["wa_id"]
-                display_phone_number = sender_wa_number
-                phone_number_id = apirequest.entry[0]["changes"][0]["value"]["metadata"]["phone_number_id"]
+                try:
+                    contacts = value.get("contacts", [{}])
+                    wa_id = contacts[0].get("wa_id", sender_wa_number) if contacts else sender_wa_number
+                    metadata = value.get("metadata", {})
+                    phone_number_id = metadata.get("phone_number_id", sender_wa_number)
+                except Exception:
+                    wa_id = sender_wa_number
+                    phone_number_id = sender_wa_number
+
                 await createUser(
                             name=name,
                             wa_id=sender_wa_number,
                             display_phone_number=sender_wa_number,
-                            phone_number_id=sender_wa_number,
+                            phone_number_id=phone_number_id,
                             db=db
                         )
 
-
-                
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
             case "order_details":
@@ -315,10 +283,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
     elif message["type"] == "text":
         sender_wa_number = message["from"]
-        username = apirequest.entry[0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
-        await replyhandler.send_default_template (sender_wa_number, username, AUTH, GRAPH_URL)
+        contacts = value.get("contacts", [{}])
+        profile = contacts[0].get("profile", {}) if contacts else {}
+        username = profile.get("name", "User")
+        await replyhandler.send_default_template(sender_wa_number, username, AUTH, GRAPH_URL)
 
-    elif message ["type"] == "image":
+    elif message["type"] == "image":
         sender_wa_number = message["from"]
 
         result = await db.execute(
@@ -329,7 +299,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         .where(models.Orders.sla_expires_by > datetime.now(UTC))
         .order_by(models.Orders.created_at.desc())
         )
-        result = result.scalar_one_or_none()
+        result = result.scalars().first()
 
         if result:
             await db.execute(
@@ -340,7 +310,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     )
             await db.commit()
             ride = await replyhandler.get_active_ride(sender_wa_number, db)
-            order_details = {
+            if ride:
+                order_details = {
                     "package_description": ride.package_description,
                     "pick_up_location": ride.pickup_location_name,
                     "drop_off_location": ride.dropoff_location_name,
@@ -348,7 +319,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "order_number": ride.order_number,
                     "image_id": ride.package_image_id
                 }
-            await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
+                await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
+            else:
+                await replyhandler.send_something_went_wrong_template(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL)
         else:
             await replyhandler.send_something_went_wrong_template(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL)
     '''try:
@@ -404,6 +377,60 @@ def validateWhatsAPPGetRequest(
         return PlainTextResponse(content=hub_challenge, status_code=200)
     
     raise HTTPException(status_code=403, detail="Verification failed")
+
+
+async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_phone, order_num, auth, graph_url, delay=300):
+    await asyncio.sleep(delay)
+    five_digit_code = ''.join(random.choices(string.digits, k=5))
+    message_for_sender = (
+        f"The Code is: {five_digit_code}.\n"
+        "You don't have to do anything with this code.\n"
+        "The Same code has been sent to the recipient of the package and the rider as well.\n"
+        "We are only sending you this code as a backup in the event that the recipient didnt recieve the code for whatever reason.\n"
+        "Feel free to share this code with the recipient as the dispatch rider would demand it before delivering the package.\n"
+        "DO NOT SHARE THIS CODE WITH THE RIDER ONLY SHARE WITH THE RECIPIENT"
+    )
+    message_for_rider = (
+        f"The Code is: {five_digit_code}. \n"
+        "Confirm this code from the recipient before delivering the package"
+    )
+    message_for_recipient = (
+        "Just Notifying you that Rider has gotten to the pickup location and would be coming to you soon.\n\n" 
+        f"The Code is: {five_digit_code}. \n\n"
+        "The Rider would request this code of you before delivering you package"
+    )
+    await replyhandler.send_custom_message(
+        sender_wa_number=sender_wa, 
+        message=message_for_sender,
+        auth=auth, 
+        graph_url=graph_url
+    )
+
+    await replyhandler.send_custom_message(
+        sender_wa_number=rider_wa, 
+        message=message_for_rider,
+        auth=auth, 
+        graph_url=graph_url
+    )
+    await replyhandler.send_custom_message(
+        sender_wa_number=recipient_phone, 
+        message=message_for_recipient,
+        auth=auth, 
+        graph_url=graph_url
+    )
+
+    await replyhandler.send_custom_flow(
+        wa_number=rider_wa,
+        flow_token={"order_number": order_num},
+        message="Click the button below when you have dropped off the package successfully",
+        header="Have you delivered the package yet?\n\n",
+        flow_id="1549615230214062",
+        flow_cta="Have you Delivered the Package?",
+        screen_name="flow_to_ask_if_rider_has_dropped_off_package",
+        auth=auth,
+        graph_url=graph_url
+    )
+
 
 
 
