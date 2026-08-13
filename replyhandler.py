@@ -673,18 +673,67 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
 
 
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
-    """Handles freeform text messages using intent detection + Groq + Llama 3."""
-
+    """Deterministic routing for incoming freeform text messages."""
     text_lower = text_body.lower().strip()
 
-    # --- Step 1: Order Intent Check (PRIORITY) ---
+    # --- 1. TRACKING INTENT ---
+    tracking_patterns = [
+        "track my order", "track order", "order status", "where is my order",
+        "where is my package", "where's my order", "status of my order",
+        "check my order", "check order status", "track package"
+    ]
+    if any(p in text_lower for p in tracking_patterns) or text_lower == "track":
+        order = await get_active_ride(sender_wa_number, db)
+        if order:
+            rider_info = f"Rider Phone: *{order.rider_wa_number}*" if order.rider_wa_number else "Searching for available riders..."
+            msg = (
+                f"📦 *Order Status Update*\n\n"
+                f"Order Number: *{order.order_number}*\n"
+                f"Status: *{order.status.replace('_', ' ').title()}*\n"
+                f"Pickup: {order.pickup_location_name or 'Not set'}\n"
+                f"Dropoff: {order.dropoff_location_name or 'Not set'}\n"
+                f"Package: {order.package_description or 'Not specified'}\n\n"
+                f"🧑‍✈️ {rider_info}"
+            )
+        else:
+            msg = "You currently have no active delivery orders."
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    # --- 2. CANCEL ORDER INTENT ---
+    cancellation_patterns = [
+        "cancel my order", "cancel order", "cancel delivery", "cancel ride"
+    ]
+    if any(p in text_lower for p in cancellation_patterns) or text_lower == "cancel":
+        order = await get_active_ride(sender_wa_number, db)
+        if order and order.status in ["confirmed", "awaiting_pickup"]:
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order.order_number)
+                .values(status="cancelled")
+            )
+            await db.commit()
+            msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
+        elif order:
+            msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."
+        else:
+            msg = "You currently have no active order to cancel."
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    # --- 3. CREATE ORDER INTENT (HIGH PRIORITY) ---
     order_phrases = [
         "send an order", "place an order", "send order", "place order",
         "i want to send", "book a rider", "book rider", "send a package",
         "send package", "need a rider", "need rider", "new order", "create order",
         "send parcel", "dispatch parcel", "deliver package", "how do i send",
         "how to send", "how do i book", "how to book", "how can i send",
-        "how do i place", "want to send a package"
+        "how do i place", "want to send a package", "i need to send",
+        "i want to deliver", "i need to deliver", "i want to dispatch",
+        "i need a dispatch", "how do i make a delivery", "how can i make a delivery",
+        "make a delivery", "make delivery", "create an order", "deliver a package",
+        "deliver something", "send something", "dispatch a package", "dispatch something",
+        "get a rider", "want a rider"
     ]
     exact_order_words = ["send", "order", "dispatch", "deliver", "package", "parcel"]
 
@@ -698,50 +747,62 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await send_registration_template(sender_wa_number, auth, graph_url)
         return
 
-    # --- Step 2: Query / Status Intent Check for Groq AI ---
-    query_keywords = ["where", "status", "track", "when", "cancel", "how", "what", "why", "price", "cost", "rate", "contact", "support", "problem", "issue", "delay"]
-    is_query_or_question = any(re.search(r'\b' + re.escape(kw) + r'\b', text_lower) for kw in query_keywords) or "?" in text_lower
+    # --- 4. PLAIN-TEXT ADDRESS / ORDER DATA IN CHAT ---
+    address_patterns = [
+        r'\bfrom\s+.+\sto\s+.+',
+        r'\bpickup\s*:\s*.+\s*dropoff\s*:\s*.+',
+        r'\bdeliver\s+to\s+.+',
+        r'\btake\s+.+\sto\s+.+'
+    ]
+    is_plain_text_address = any(re.search(pat, text_lower) for pat in address_patterns)
 
-    if not is_query_or_question:
-        # --- Greetings → send default template ---
-        greeting_pattern = r'\b(hello|hi|hey|good morning|good afternoon|good evening|start|menu|help)\b'
-        if re.search(greeting_pattern, text_lower) and len(text_lower.split()) <= 4:
-            await send_default_template(sender_wa_number, username, auth, graph_url)
-            return
+    if is_plain_text_address:
+        registered = await is_user_registered(sender_wa_number, db)
+        await send_custom_message(
+            sender_wa_number,
+            "To process your delivery securely and accurately, please use the Order Details button below to enter your pickup and dropoff details.",
+            auth,
+            graph_url
+        )
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
 
-    # --- Step 3: Open-ended questions -> Groq AI ---
+    # --- 5. GREETINGS ---
+    greeting_pattern = r'^\s*(hello|hi|hey|good morning|good afternoon|good evening|start|menu|help)\s*$'
+    if re.search(greeting_pattern, text_lower):
+        await send_default_template(sender_wa_number, username, auth, graph_url)
+        return
+
+    # --- 6. GENERAL ASSISTANCE (Groq AI with Strict System Prompt Boundaries) ---
     try:
         order = await get_active_ride(sender_wa_number, db)
-
         if order:
             order_context = (
-                f"The user has an active delivery order.\n"
-                f"Order Number: {order.order_number}\n"
-                f"Status: {order.status}\n"
-                f"Pickup: {order.pickup_location_name or 'Not set'}\n"
-                f"Dropoff: {order.dropoff_location_name or 'Not set'}\n"
-                f"Package: {order.package_description or 'Not specified'}\n"
-                f"Rider: {'Assigned' if order.rider_wa_number else 'Still searching for a rider'}"
+                f"Active order: {order.order_number} (Status: {order.status})."
             )
         else:
-            order_context = "The user has no active delivery order at the moment."
+            order_context = "No active delivery order."
 
         system_prompt = (
-            f"You are a friendly, helpful customer support assistant for InTime, a premier dispatch and delivery service in Nigeria. "
-            f"You are chatting with {username} via WhatsApp. "
+            f"You are the friendly, helpful customer support assistant for InTime, a premier dispatch and delivery service in Nigeria.\n"
+            f"Customer Name: {username}.\n"
+            f"Current Context: {order_context}.\n"
             f"COMPANY KNOWLEDGE:\n"
             f"- Official Website: https://sendintime.com.ng\n"
             f"- Contact Email: contact@sendintime.com.ng (or intimesender@gmail.com)\n"
             f"- Support Phone: +234 815 103 3428\n"
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
-            f"- Service Details: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n"
-            f"CRITICAL ORDERING RULES:\n"
-            f"1. NEVER ask the user to type addresses, package descriptions, or prices in plain text chat.\n"
-            f"2. NEVER attempt to create or modify orders directly in text messages.\n"
-            f"3. All orders MUST be placed using the interactive WhatsApp buttons ('Send an Order' / 'Order Details').\n"
-            f"4. If the user asks how to send a package or place an order, tell them to tap the 'Send an Order' or 'Order Details' button that appears in this chat.\n"
-            f"Current Context: {order_context}.\n"
-            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points."
+            f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
+            f"STRICT TRANSACTIONAL BOUNDARIES:\n"
+            f"1. You DO NOT create, modify, cancel, or confirm delivery orders.\n"
+            f"2. You DO NOT collect pickup addresses, dropoff addresses, prices, or package details in text chat.\n"
+            f"3. You DO NOT invent order numbers, order statuses, rider details, or transaction confirmations.\n"
+            f"4. All delivery bookings MUST be created using the interactive WhatsApp buttons ('Send an Order' / 'Order Details').\n"
+            f"5. If the user asks how to send a package, book a rider, or place an order, tell them to tap the 'Send an Order' or 'Order Details' button in WhatsApp.\n"
+            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown formatting, no asterisks, no bullet points."
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
