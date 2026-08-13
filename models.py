@@ -48,7 +48,7 @@ class Orders(Base):
     rider_wa_number:      Mapped[str] = mapped_column(String(50), nullable=True) 
     recipient_phone_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
     package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
-    customer_intital_offered_price: Mapped[str] = mapped_column(String, nullable=True)
+    customer_initial_offered_price: Mapped[str] = mapped_column("customer_intital_offered_price", String, nullable=True)
     final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(String, nullable=True)
     status:       Mapped[str] = mapped_column(String(50), nullable=False)             # "awaiting_pickup", "awaiting_dropoff", "confirmed" etc.
     pickup_location_name: Mapped[str] = mapped_column(String, nullable=True)
@@ -62,6 +62,15 @@ class Orders(Base):
     sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
+    @property
+    def customer_intital_offered_price(self):
+        return self.customer_initial_offered_price
+
+    @customer_intital_offered_price.setter
+    def customer_intital_offered_price(self, value):
+        self.customer_initial_offered_price = value
+
+
 class Riders(Base):
     __tablename__ = "riders"
 
@@ -72,7 +81,15 @@ class Riders(Base):
     rider_phonenumber_2: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     kyc_status: Mapped[str] = mapped_column(String(50), nullable=False)
-    availabilty_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    availability_status: Mapped[str] = mapped_column("availabilty_status", String(50), nullable=False)
+
+    @property
+    def availabilty_status(self):
+        return self.availability_status
+
+    @availabilty_status.setter
+    def availabilty_status(self, value):
+        self.availability_status = value
 
 
     
