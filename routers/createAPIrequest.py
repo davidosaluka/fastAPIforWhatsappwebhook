@@ -96,7 +96,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             elif name or email:
                 template_id = "user_registration"
 
-        customer_intital_offered_price = str(raw_price) if raw_price is not None else "0"
+        customer_initial_offered_price = str(raw_price) if raw_price is not None else "0"
         package_description = str(raw_desc) if raw_desc is not None else "Package"
         recipient_phone_number = str(raw_recipient) if raw_recipient is not None else sender_wa_number
 
@@ -272,8 +272,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 newOrder = models.Orders(
                 status="confirmed",
                 sender_wa_number= sender_wa_number,
-                customer_intital_offered_price=customer_intital_offered_price,
-                final_price_agreed_by_cust_and_rider=customer_intital_offered_price,
+                customer_initial_offered_price=customer_initial_offered_price,
+                final_price_agreed_by_cust_and_rider=customer_initial_offered_price,
                 package_description=package_description,
                 recipient_phone_number=recipient_phone_number,
                 pickup_location_name=", ".join([str(v).strip() for v in [json_response.get('pickup_HouseFlat_Number_0'), json_response.get('pickup_Street_Name_1'), json_response.get('pickup_City_2'), json_response.get('pickup_State_3')] if v and str(v).lower() != "none"]) or "Pickup Location",
@@ -310,7 +310,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         result = await db.execute(
         select(models.Orders)
         .where(models.Orders.sender_wa_number == sender_wa_number)
-        .where(models.Orders.customer_intital_offered_price.is_not(None))
+        .where(models.Orders.customer_initial_offered_price.is_not(None))
         .where(models.Orders.package_image_id.is_(None))
         .where(models.Orders.sla_expires_by > datetime.now(UTC))
         .order_by(models.Orders.created_at.desc())
@@ -331,7 +331,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "package_description": ride.package_description,
                     "pick_up_location": ride.pickup_location_name,
                     "drop_off_location": ride.dropoff_location_name,
-                    "offered_price": ride.customer_intital_offered_price,
+                    "offered_price": ride.customer_initial_offered_price,
                     "order_number": ride.order_number,
                     "image_id": ride.package_image_id
                 }

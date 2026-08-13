@@ -308,7 +308,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
     await send_custom_message(sender_wa_number, message , auth, graph_url)
     riders = await db.execute(
         select(models.Riders)
-        .where(models.Riders.availabilty_status == "available")
+        .where(models.Riders.availability_status == "available")
         .where(models.Riders.rider_wa_number != sender_wa_number)  # exclude sender if they're also a rider
     )
     riders = riders.scalars().all()
@@ -630,7 +630,7 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
         await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
         
-        final_price = agreed_price or (order.customer_intital_offered_price if order else None) or "12000"
+        final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
