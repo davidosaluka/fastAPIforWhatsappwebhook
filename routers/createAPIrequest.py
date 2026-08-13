@@ -56,7 +56,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         if message["button"]["payload"] == "Send an Order":
             result = await db.execute(
             select(models.User)
-            .where(models.User.display_phone_number == sender_wa_number)
+            .where((models.User.display_phone_number == sender_wa_number) | (models.User.wa_id == sender_wa_number))
             )
             is_existing_user = result.scalars().first()
             if is_existing_user:

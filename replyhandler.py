@@ -681,7 +681,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         if is_order_intent:
             result = await db.execute(
                 select(models.User)
-                .where(models.User.display_phone_number == sender_wa_number)
+                .where((models.User.display_phone_number == sender_wa_number) | (models.User.wa_id == sender_wa_number))
             )
             is_registered = result.scalars().first()
             if is_registered:
