@@ -369,8 +369,18 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 async def createUser(name, wa_id, display_phone_number, phone_number_id, db: AsyncSession):
 
+    possible_numbers = list(set(
+        replyhandler.get_phone_variants(wa_id) +
+        replyhandler.get_phone_variants(display_phone_number) +
+        replyhandler.get_phone_variants(phone_number_id)
+    ))
+
     result = await db.execute(
-        select(models.User).where((models.User.phone_number_id == phone_number_id) | (models.User.wa_id == wa_id) | (models.User.display_phone_number == display_phone_number))
+        select(models.User).where(
+            (models.User.phone_number_id.in_(possible_numbers)) |
+            (models.User.wa_id.in_(possible_numbers)) |
+            (models.User.display_phone_number.in_(possible_numbers))
+        )
     )
     existing_user = result.scalars().first()
     if existing_user:

@@ -294,11 +294,43 @@ async def request_pickup_location (sender_wa_number, auth, graph_url):
 #     return
 
 
+def normalize_phone_number(phone: str) -> str:
+    """
+    Converts any Nigerian phone number into canonical WhatsApp format (2348151033428).
+    Handles 080..., 081..., 090..., 070..., 091..., +234..., 234...
+    """
+    if not phone:
+        return ""
+    clean = re.sub(r'[^\d]', '', str(phone))
+    if clean.startswith("0") and len(clean) == 11:
+        return "234" + clean[1:]
+    if len(clean) == 10 and clean[0] in ['7', '8', '9']:
+        return "234" + clean
+    return clean
+
+
+def get_phone_variants(phone: str) -> list[str]:
+    """
+    Generates all equivalent representations of a phone number (e.g. 081..., 23481..., +23481..., 81...).
+    """
+    if not phone:
+        return []
+    canonical = normalize_phone_number(phone)
+    if len(canonical) == 13 and canonical.startswith("234"):
+        local_fmt = "0" + canonical[3:]
+        plus_fmt = "+" + canonical
+        raw_fmt = canonical[3:]
+        return list(set([phone, canonical, local_fmt, plus_fmt, raw_fmt]))
+    return [phone]
+
+
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
+    possible_numbers = get_phone_variants(sender_wa_number)
     result = await db.execute(
         select(models.Orders)
-        .where(models.Orders.sender_wa_number == sender_wa_number)
+        .where(models.Orders.sender_wa_number.in_(possible_numbers))
         .where(models.Orders.status.in_(["confirmed"]))
+        .where(models.Orders.sla_expires_by > datetime.now(UTC))
         .order_by(models.Orders.created_at.desc())
     )
     return result.scalars().first()
@@ -741,10 +773,8 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         
 
 async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Checks if a user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants (+ or no +)."""
-    clean_num = sender_wa_number.lstrip("+")
-    plus_num = f"+{clean_num}"
-    possible_numbers = list(set([sender_wa_number, clean_num, plus_num]))
+    """Checks if a user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants."""
+    possible_numbers = get_phone_variants(sender_wa_number)
 
     result = await db.execute(
         select(models.User).where(
