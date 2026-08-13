@@ -449,8 +449,10 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         
         #sending a message to the customer
         await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=AUTH, graph_url=GRAPH_URL) 
+
+        await send_custom_message(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
         
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
+        #await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
         
 
         await db.execute(
@@ -613,7 +615,7 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         #sending a message to the customer
         await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=auth, graph_url=graph_url) 
 
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
+        await send_custom_message(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
         
         await db.execute(
            update(models.Orders)
