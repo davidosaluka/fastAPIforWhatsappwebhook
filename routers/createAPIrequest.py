@@ -77,13 +77,13 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         custRespToRiderOff = json_response.get("custRespToRiderOff")       
         email       = json_response.get("email")         
         status      = json_response.get("status")
-        customer_intital_offered_price = json_response.get("customer_intital_offered_price")
-        package_description = json_response.get("package_description")       
+        customer_intital_offered_price = json_response.get("customer_intital_offered_price") or json_response.get("offered_price") or "0"
+        package_description = json_response.get("package_description") or "Package"
         sender_wa_number = message["from"] 
         rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
-        recipient_phone_number = json_response.get("recipient_phone_number")
+        recipient_phone_number = json_response.get("recipient_phone_number") or json_response.get("recipient_phone") or json_response.get("recipient_phone_number_0") or sender_wa_number
 
         if not template_id:
             if customer_intital_offered_price or package_description or recipient_phone_number or json_response.get("pickup_HouseFlat_Number_0"):

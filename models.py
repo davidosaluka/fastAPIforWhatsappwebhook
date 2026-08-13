@@ -48,7 +48,7 @@ class Orders(Base):
     rider_wa_number:      Mapped[str] = mapped_column(String(50), nullable=True) 
     recipient_phone_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
     package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
-    customer_initial_offered_price: Mapped[str] = mapped_column(String, nullable=True)
+    customer_intital_offered_price: Mapped[str] = mapped_column(String, nullable=True)
     final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(String, nullable=True)
     status:       Mapped[str] = mapped_column(String(50), nullable=False)             # "awaiting_pickup", "awaiting_dropoff", "confirmed" etc.
     pickup_location_name: Mapped[str] = mapped_column(String, nullable=True)
@@ -72,7 +72,7 @@ class Riders(Base):
     rider_phonenumber_2: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     kyc_status: Mapped[str] = mapped_column(String(50), nullable=False)
-    availability_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    availabilty_status: Mapped[str] = mapped_column(String(50), nullable=False)
 
 
     
