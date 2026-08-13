@@ -54,11 +54,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if message["type"] == "button":
         sender_wa_number = message["from"]
         if message["button"]["payload"] == "Send an Order":
-            result = await db.execute(
-            select(models.User)
-            .where((models.User.display_phone_number == sender_wa_number) | (models.User.wa_id == sender_wa_number))
-            )
-            is_existing_user = result.scalars().first()
+            is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
             if is_existing_user:
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
             else:

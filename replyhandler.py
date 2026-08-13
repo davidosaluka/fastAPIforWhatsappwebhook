@@ -656,6 +656,22 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
         
 
+async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
+    """Checks if a user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants (+ or no +)."""
+    clean_num = sender_wa_number.lstrip("+")
+    plus_num = f"+{clean_num}"
+    possible_numbers = list(set([sender_wa_number, clean_num, plus_num]))
+
+    result = await db.execute(
+        select(models.User).where(
+            (models.User.display_phone_number.in_(possible_numbers)) |
+            (models.User.wa_id.in_(possible_numbers)) |
+            (models.User.phone_number_id.in_(possible_numbers))
+        )
+    )
+    return result.scalars().first() is not None
+
+
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
     """Handles freeform text messages using intent detection + Groq + Llama 3."""
 
@@ -679,12 +695,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         is_order_intent = any(phrase in text_lower for phrase in order_phrases) or (text_lower in exact_order_words)
 
         if is_order_intent:
-            result = await db.execute(
-                select(models.User)
-                .where((models.User.display_phone_number == sender_wa_number) | (models.User.wa_id == sender_wa_number))
-            )
-            is_registered = result.scalars().first()
-            if is_registered:
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
                 await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
             else:
                 await send_registration_template(sender_wa_number, auth, graph_url)
