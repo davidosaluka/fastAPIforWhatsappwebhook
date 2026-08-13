@@ -292,6 +292,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await db.commit()
                 await db.refresh(newOrder)
                 await replyhandler.send_custom_message(sender_wa_number, "Please take and upload an image of the package you are sending", AUTH, GRAPH_URL)
+                asyncio.create_task(replyhandler.schedule_user_session_timeout(newOrder.order_number, sender_wa_number, AUTH, GRAPH_URL))
 
 
             case _:

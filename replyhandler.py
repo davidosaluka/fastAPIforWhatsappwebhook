@@ -358,6 +358,52 @@ async def get_active_ride_by_number(order_number: str, db: AsyncSession):
     return result.scalars().first()
 
 
+async def schedule_user_session_timeout(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors user input inactivity during order initialization (e.g. pending package image upload).
+    Sends a friendly reminder after 5 minutes, and auto-expires the session after 15 minutes.
+    """
+    # 1. First reminder after 5 minutes (300 seconds)
+    await asyncio.sleep(300)
+
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        order = await get_active_ride_by_number(order_number, db)
+        # If user already uploaded image or order state changed, exit immediately
+        if not order or order.status != "confirmed" or order.package_image_id is not None:
+            return
+
+        reminder_msg = (
+            f"⏰ *Pending Order Reminder*\n\n"
+            f"We're still waiting for a photo of your package to complete Order *{order_number}* and alert nearby riders.\n\n"
+            f"Please snap and upload the photo whenever you're ready!"
+        )
+        await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+
+    # 2. Session timeout / expiry after another 10 minutes (600 seconds -> 15 minutes total)
+    await asyncio.sleep(600)
+
+    async with AsyncSessionLocal() as db:
+        order = await get_active_ride_by_number(order_number, db)
+        if not order or order.status != "confirmed" or order.package_image_id is not None:
+            return
+
+        # Mark order as expired in DB
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order_number)
+            .values(status="expired")
+        )
+        await db.commit()
+
+        timeout_msg = (
+            f"⌛ *Session Expired*\n\n"
+            f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
+            f"Whenever you're ready to send a package, just reply 'Hi' or tap 'Send an Order'!"
+        )
+        await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
+
+
 async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
     """
     State-aware background task that monitors order search progress.
