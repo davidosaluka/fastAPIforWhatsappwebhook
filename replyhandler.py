@@ -6,6 +6,7 @@ import requests
 import models
 import httpx
 import os
+import re
 from groq import AsyncGroq
 
 
@@ -656,9 +657,47 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         
 
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
-    """Handles freeform text messages using Groq + Llama 3 with order context."""
+    """Handles freeform text messages using intent detection + Groq + Llama 3."""
+
+    text_lower = text_body.lower().strip()
+
+    # --- Query / Status Intent Check: Keep queries for Groq AI ---
+    query_keywords = ["where", "status", "track", "when", "cancel", "how", "what", "why", "price", "cost", "rate", "contact", "support", "problem", "issue", "delay"]
+    is_query_or_question = any(re.search(r'\b' + re.escape(kw) + r'\b', text_lower) for kw in query_keywords) or "?" in text_lower
+
+    if not is_query_or_question:
+        # --- Intent detection: user explicitly wants to place an order ---
+        order_phrases = [
+            "send an order", "place an order", "send order", "place order",
+            "i want to send", "book a rider", "book rider", "send a package",
+            "send package", "need a rider", "need rider", "new order", "create order",
+            "send parcel", "dispatch parcel", "deliver package"
+        ]
+        # Single exact word triggers (only if the message is very short)
+        exact_order_words = ["send", "order", "dispatch", "deliver", "package", "parcel"]
+
+        is_order_intent = any(phrase in text_lower for phrase in order_phrases) or (text_lower in exact_order_words)
+
+        if is_order_intent:
+            result = await db.execute(
+                select(models.User)
+                .where(models.User.display_phone_number == sender_wa_number)
+            )
+            is_registered = result.scalars().first()
+            if is_registered:
+                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+            else:
+                await send_registration_template(sender_wa_number, auth, graph_url)
+            return
+
+        # --- Intent detection: greetings → send default template ---
+        greeting_pattern = r'\b(hello|hi|hey|good morning|good afternoon|good evening|start|menu|help)\b'
+        if re.search(greeting_pattern, text_lower) and len(text_lower.split()) <= 4:
+            await send_default_template(sender_wa_number, username, auth, graph_url)
+            return
+
+    # --- Everything else: let Groq AI handle it with context ---
     try:
-        # Fetch user's active order for context
         order = await get_active_ride(sender_wa_number, db)
 
         if order:
@@ -669,20 +708,20 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 f"Pickup: {order.pickup_location_name or 'Not set'}\n"
                 f"Dropoff: {order.dropoff_location_name or 'Not set'}\n"
                 f"Package: {order.package_description or 'Not specified'}\n"
-                f"Rider: {'Assigned' if order.rider_wa_number else 'Searching...'}"
+                f"Rider: {'Assigned' if order.rider_wa_number else 'Still searching for a rider'}"
             )
         else:
             order_context = "The user has no active delivery order at the moment."
 
         system_prompt = (
-            f"You are a friendly and helpful customer support assistant for InTime, "
-            f"a dispatch and delivery service. "
+            f"You are a friendly customer support assistant for InTime, a dispatch and delivery service in Nigeria. "
             f"You are chatting with {username} via WhatsApp. "
+            f"IMPORTANT: Everything happens inside WhatsApp — there is no website or app to visit. "
+            f"Orders are placed by tapping buttons that appear in this WhatsApp chat. "
+            f"If the user wants to place an order, tell them to tap the 'Send an Order' button that will appear. "
             f"Current context: {order_context}. "
-            f"Keep your replies short (2-3 sentences max), warm, and helpful. "
-            f"Use plain text only — no markdown, no asterisks, no bullet points. "
-            f"If they ask about their order status, use the context above. "
-            f"If unsure, advise them to contact support at intimesender@gmail.com."
+            f"Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points. "
+            f"If unsure about anything, advise contacting support at intimesender@gmail.com."
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
@@ -702,5 +741,5 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     except Exception as e:
         print(f"Groq AI error: {e}")
-        # Fallback to default template if AI fails
         await send_default_template(sender_wa_number, username, auth, graph_url)
+
