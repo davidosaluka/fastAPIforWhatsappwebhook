@@ -64,32 +64,41 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
         
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
-        json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])
+        nfm_reply = message["interactive"]["nfm_reply"]
+        raw_response = nfm_reply.get("response_json", "{}")
+        json_response = json.loads(raw_response) if isinstance(raw_response, str) else (raw_response if isinstance(raw_response, dict) else {})
+        
         template_id = json_response.get("template_id")  
-        raw_token = json_response.get("flow_token")
-        flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" else {}
+        raw_token = nfm_reply.get("flow_token") or json_response.get("flow_token")
+        flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" and isinstance(raw_token, str) else (raw_token if isinstance(raw_token, dict) else {})
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
         
-        name        = json_response.get("name")
-        rider_proposed_amount = json_response.get("proposed_amount") 
+        name        = json_response.get("name") or json_response.get("user_name")
+        rider_proposed_amount = json_response.get("proposed_amount") or json_response.get("rider_proposed_amount")
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
         custRespToRiderOff = json_response.get("custRespToRiderOff")       
         email       = json_response.get("email")         
         status      = json_response.get("status")
-        customer_intital_offered_price = json_response.get("customer_intital_offered_price") or json_response.get("offered_price") or "0"
-        package_description = json_response.get("package_description") or "Package"
+        
+        raw_price = json_response.get("customer_intital_offered_price") or json_response.get("customer_initial_offered_price") or json_response.get("offered_price") or json_response.get("price")
+        raw_desc = json_response.get("package_description") or json_response.get("description")
+        raw_recipient = json_response.get("recipient_phone_number") or json_response.get("recipient_phone") or json_response.get("recipient_phone_number_0")
+        
         sender_wa_number = message["from"] 
         rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
-        recipient_phone_number = json_response.get("recipient_phone_number") or json_response.get("recipient_phone") or json_response.get("recipient_phone_number_0") or sender_wa_number
 
         if not template_id:
-            if customer_intital_offered_price or package_description or recipient_phone_number or json_response.get("pickup_HouseFlat_Number_0"):
+            if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
             elif name or email:
                 template_id = "user_registration"
+
+        customer_intital_offered_price = str(raw_price) if raw_price is not None else "0"
+        package_description = str(raw_desc) if raw_desc is not None else "Package"
+        recipient_phone_number = str(raw_recipient) if raw_recipient is not None else sender_wa_number
 
 
 
@@ -267,18 +276,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 final_price_agreed_by_cust_and_rider=customer_intital_offered_price,
                 package_description=package_description,
                 recipient_phone_number=recipient_phone_number,
-                pickup_location_name=(
-                    f"{json_response.get('pickup_HouseFlat_Number_0')},"
-                    f"{json_response.get('pickup_Street_Name_1')}, "
-                    f"{json_response.get('pickup_City_2')}, "
-                    f"{json_response.get('pickup_State_3')}, "
-                ),
-                dropoff_location_name=(
-                    f"{json_response.get('dropoff_HouseFlat_Number_0')}, "
-                    f"{json_response.get('dropoff_Street_Name_1')}, "
-                    f"{json_response.get('dropoff_City_2')}, "
-                    f"{json_response.get('dropoff_State_3')}, "
-                ),
+                pickup_location_name=", ".join([str(v).strip() for v in [json_response.get('pickup_HouseFlat_Number_0'), json_response.get('pickup_Street_Name_1'), json_response.get('pickup_City_2'), json_response.get('pickup_State_3')] if v and str(v).lower() != "none"]) or "Pickup Location",
+                dropoff_location_name=", ".join([str(v).strip() for v in [json_response.get('dropoff_HouseFlat_Number_0'), json_response.get('dropoff_Street_Name_1'), json_response.get('dropoff_City_2'), json_response.get('dropoff_State_3')] if v and str(v).lower() != "none"]) or "Dropoff Location",
                 )
 
                 db.add(newOrder)
