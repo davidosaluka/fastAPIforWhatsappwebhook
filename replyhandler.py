@@ -303,6 +303,81 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     )
     return result.scalars().first()
 
+async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: AsyncSession):
+    """Updates status in RiderOffer table for rider receipts (delivered, read)."""
+    clean_num = rider_wa_number.lstrip("+")
+    plus_num = f"+{clean_num}"
+    possible_numbers = list(set([rider_wa_number, clean_num, plus_num]))
+
+    await db.execute(
+        update(models.RiderOffer)
+        .where(models.RiderOffer.rider_wa_number.in_(possible_numbers))
+        .where(models.RiderOffer.status != "accepted")
+        .values(status=status_val, updated_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+
+async def get_active_ride_by_number(order_number: str, db: AsyncSession):
+    result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.order_number == order_number)
+    )
+    return result.scalars().first()
+
+
+async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
+    """
+    State-aware background task that monitors order search progress.
+    Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
+    """
+    # Follow-up 1: 3 minutes (180 seconds)
+    await asyncio.sleep(180)
+
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        order = await get_active_ride_by_number(order_number, db)
+        if not order or order.status != "confirmed":
+            return  # Stop immediately if rider accepted, cancelled, or completed!
+
+        offers_res = await db.execute(
+            select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
+        )
+        offers = offers_res.scalars().all()
+        read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+
+        if read_count > 0:
+            msg = f"Good news 👀 {read_count} rider{'s' if read_count > 1 else ''} have viewed your delivery offer. We're waiting for one to accept."
+        else:
+            msg = "Stay locked in 👀 We're still looking for a rider for your package. We'll update you as soon as one accepts."
+        
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+
+    # Follow-up 2: 2 minutes later (300 seconds total) -> Fare Escalation Recommendation
+    await asyncio.sleep(120)
+
+    async with AsyncSessionLocal() as db:
+        order = await get_active_ride_by_number(order_number, db)
+        if not order or order.status != "confirmed":
+            return  # Stop immediately if rider accepted, cancelled, or completed!
+
+        escalation_msg = (
+            "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"
+            "Increasing your fare slightly can help attract a rider quickly."
+        )
+        await send_custom_flow(
+            wa_number=sender_wa_number,
+            flow_token={"order_number": order_number},
+            message=escalation_msg,
+            header="🔔 Need a rider faster?",
+            flow_id="950647507961316",
+            flow_cta="I want to increase my fare",
+            screen_name="CUST_INCREASE_FARE_SCREEN",
+            auth=auth,
+            graph_url=graph_url
+        )
+
+
 async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
     message = f"✅ Your order has been placed!\n\nOrder Number: *{order_details['order_number']}*\n\n🔍 Searching for available riders nearby, please hold on..."
     await send_custom_message(sender_wa_number, message , auth, graph_url)
@@ -313,10 +388,8 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
     )
     riders = riders.scalars().all()
     
-    
     for rider in riders:
         message = (
-            
             f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
             f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
             f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
@@ -325,6 +398,13 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         )
         print("message is: ")
         print(message)
+
+        new_offer = models.RiderOffer(
+            order_number=order_details['order_number'],
+            rider_wa_number=rider.rider_wa_number,
+            status="sent"
+        )
+        db.add(new_offer)
         
         await send_custom_flow(
             wa_number=rider.rider_wa_number,
@@ -339,6 +419,10 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         )
         if order_details.get('image_id'):
             await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
+
+    await db.commit()
+
+    asyncio.create_task(schedule_order_followups(order_details['order_number'], sender_wa_number, auth, graph_url))
     return
 
 
@@ -675,6 +759,17 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
     """Deterministic routing for incoming freeform text messages."""
     text_lower = text_body.lower().strip()
+
+    # --- 0. ACTIVE WORKFLOW STATE CHECK ---
+    active_order = await get_active_ride(sender_wa_number, db)
+    if active_order and active_order.package_image_id is None:
+        msg = (
+            f"📸 *Package Photo Needed*\n\n"
+            f"Your order *{active_order.order_number}* has been initialized.\n"
+            f"Please snap and send a photo of the package to complete your dispatch request and alert nearby riders!"
+        )
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
 
     # --- 1. TRACKING INTENT ---
     tracking_patterns = [

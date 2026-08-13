@@ -75,4 +75,26 @@ class Riders(Base):
     availability_status: Mapped[str] = mapped_column(String(50), nullable=False)
 
 
+class RiderOffer(Base):
+    __tablename__ = "rider_offers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_number: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    rider_wa_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="sent")  # sent, delivered, read, viewed, accepted, declined
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
+class OrderSearchState(Base):
+    __tablename__ = "order_search_states"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    search_round: Mapped[int] = mapped_column(Integer, default=1)
+    last_followup_stage: Mapped[int] = mapped_column(Integer, default=0)
+    fare_escalation_offered: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+
     

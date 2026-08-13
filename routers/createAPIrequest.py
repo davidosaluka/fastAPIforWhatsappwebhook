@@ -42,11 +42,19 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         entry = apirequest.entry[0] if apirequest.entry else {}
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
+
+        statuses = value.get("statuses")
+        if statuses and isinstance(statuses, list):
+            status_item = statuses[0]
+            recipient_id = status_item.get("recipient_id")
+            status_val = status_item.get("status")
+            if recipient_id and status_val:
+                await replyhandler.update_rider_offer_status(recipient_id, status_val, db)
+
         _response = value.get("messages")
     except (IndexError, AttributeError, KeyError):
         _response = None
 
-   # _response = apirequest.entry[0]["changes"][0]["value"]["messages"]
     if not _response:
         return {"status": "ok"}
     message = _response[0]
