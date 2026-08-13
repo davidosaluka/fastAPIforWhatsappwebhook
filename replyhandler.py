@@ -714,14 +714,18 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             order_context = "The user has no active delivery order at the moment."
 
         system_prompt = (
-            f"You are a friendly customer support assistant for InTime, a dispatch and delivery service in Nigeria. "
+            f"You are a friendly, helpful customer support assistant for InTime, a premier dispatch and delivery service in Nigeria. "
             f"You are chatting with {username} via WhatsApp. "
-            f"IMPORTANT: Everything happens inside WhatsApp — there is no website or app to visit. "
-            f"Orders are placed by tapping buttons that appear in this WhatsApp chat. "
-            f"If the user wants to place an order, tell them to tap the 'Send an Order' button that will appear. "
-            f"Current context: {order_context}. "
-            f"Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points. "
-            f"If unsure about anything, advise contacting support at intimesender@gmail.com."
+            f"COMPANY KNOWLEDGE:\n"
+            f"- Official Website: https://sendintime.com.ng\n"
+            f"- Contact Email: contact@sendintime.com.ng (or intimesender@gmail.com)\n"
+            f"- Support Phone: +234 815 103 3428\n"
+            f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
+            f"- Service Details: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n"
+            f"- Ordering Flow: While users can visit sendintime.com.ng to learn more, bookings and dispatch requests are created right here in WhatsApp using interactive action buttons.\n"
+            f"Current Context: {order_context}.\n"
+            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points. "
+            f"If asked about our website, contact email, or phone number, provide the correct details above."
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
