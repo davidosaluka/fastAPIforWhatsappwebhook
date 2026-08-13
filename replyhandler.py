@@ -404,6 +404,27 @@ async def schedule_user_session_timeout(order_number: str, sender_wa_number: str
         await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
 
 
+async def schedule_customer_offer_timeout(order_number: str, customer_wa_number: str, rider_name: str, proposed_amount: str, auth: str, graph_url: str):
+    """
+    Monitors customer inactivity when a rider sends a counter-offer.
+    Sends a friendly reminder after 4 minutes if customer hasn't accepted.
+    """
+    await asyncio.sleep(240)
+
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        order = await get_active_ride_by_number(order_number, db)
+        if not order or order.status != "confirmed":
+            return  # Stop if customer accepted, cancelled, or rider assigned
+
+        reminder_msg = (
+            f"⏰ *Counter Offer Reminder*\n\n"
+            f"Rider *{rider_name}* proposed an offer of *{proposed_amount}* for Order *{order_number}*.\n\n"
+            f"Please accept the offer or adjust your fare to confirm your rider!"
+        )
+        await send_custom_message(customer_wa_number, reminder_msg, auth, graph_url)
+
+
 async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
     """
     State-aware background task that monitors order search progress.
@@ -733,6 +754,8 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
             auth=AUTH,
             graph_url=GRAPH_URL
         )
+
+        asyncio.create_task(schedule_customer_offer_timeout(order_number, customer_wa_number, rider_name, rider_proposed_amount, AUTH, GRAPH_URL))
 
         
 
