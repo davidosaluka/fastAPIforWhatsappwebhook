@@ -85,6 +85,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
         recipient_phone_number = json_response.get("recipient_phone_number")
 
+        if not template_id:
+            if customer_intital_offered_price or package_description or recipient_phone_number or json_response.get("pickup_HouseFlat_Number_0"):
+                template_id = "order_details"
+            elif name or email:
+                template_id = "user_registration"
+
 
 
         if rider_in_pickup_location and rider_in_pickup_location == "At_Pickup": 
