@@ -5,7 +5,8 @@ import json
 import requests
 import models
 import httpx
-
+import os
+from groq import AsyncGroq
 
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
@@ -244,7 +245,7 @@ async def request_pickup_location (sender_wa_number, auth, graph_url):
   "interactive": {
     "type": "location_request_message",
     "body": {
-      "text": "📍 Please share your *pick-up location* so we can get things moving!"
+      "text": "📍 Please share your *PICKUP LOCATION* so we can get things moving!"
     },
     "action": {
       "name": "send_location"
@@ -307,6 +308,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
     riders = await db.execute(
         select(models.Riders)
         .where(models.Riders.availabilty_status == "available")
+        .where(models.Riders.rider_wa_number != sender_wa_number)  # exclude sender if they're also a rider
     )
     riders = riders.scalars().all()
     
@@ -456,7 +458,7 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted")
+           .values(status="rider_accepted", rider_wa_number=sender_wa_number, final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider)
         )
         await db.commit()
 
@@ -653,3 +655,52 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
         
 
+async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
+    """Handles freeform text messages using Groq + Llama 3 with order context."""
+    try:
+        # Fetch user's active order for context
+        order = await get_active_ride(sender_wa_number, db)
+
+        if order:
+            order_context = (
+                f"The user has an active delivery order.\n"
+                f"Order Number: {order.order_number}\n"
+                f"Status: {order.status}\n"
+                f"Pickup: {order.pickup_location_name or 'Not set'}\n"
+                f"Dropoff: {order.dropoff_location_name or 'Not set'}\n"
+                f"Package: {order.package_description or 'Not specified'}\n"
+                f"Rider: {'Assigned' if order.rider_wa_number else 'Searching...'}"
+            )
+        else:
+            order_context = "The user has no active delivery order at the moment."
+
+        system_prompt = (
+            f"You are a friendly and helpful customer support assistant for InTime, "
+            f"a dispatch and delivery service. "
+            f"You are chatting with {username} via WhatsApp. "
+            f"Current context: {order_context}. "
+            f"Keep your replies short (2-3 sentences max), warm, and helpful. "
+            f"Use plain text only — no markdown, no asterisks, no bullet points. "
+            f"If they ask about their order status, use the context above. "
+            f"If unsure, advise them to contact support at intimesender@gmail.com."
+        )
+
+        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+
+        chat_completion = await groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text_body}
+            ],
+            model="llama-3.1-8b-instant",
+            max_tokens=200,
+            timeout=5.0
+        )
+
+        ai_reply = chat_completion.choices[0].message.content.strip()
+        await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
+
+    except Exception as e:
+        print(f"Groq AI error: {e}")
+        # Fallback to default template if AI fails
+        await send_default_template(sender_wa_number, username, auth, graph_url)

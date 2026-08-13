@@ -178,10 +178,23 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             else:
                 await replyhandler.send_custom_message(sender_wa_number=sender_wa_number, message="Dispatch request is expired and has already been completed by another rider", auth=AUTH, graph_url=GRAPH_URL)
         if rider_proposed_amount:
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order_number)
+                .values(final_price_agreed_by_cust_and_rider=rider_proposed_amount)
+            )
+            await db.commit()
             await replyhandler.message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db)
 
         if customer_fare_increase_amount:
             
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order_number)
+                .values(final_price_agreed_by_cust_and_rider=customer_fare_increase_amount)
+            )
+            await db.commit()
+
             result = await db.execute(
             select(models.Orders)
             .where(models.Orders.order_number == order_number)
@@ -249,6 +262,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 status="confirmed",
                 sender_wa_number= sender_wa_number,
                 customer_intital_offered_price=customer_intital_offered_price,
+                final_price_agreed_by_cust_and_rider=customer_intital_offered_price,
                 package_description=package_description,
                 recipient_phone_number=recipient_phone_number,
                 pickup_location_name=(
@@ -283,10 +297,11 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
     elif message["type"] == "text":
         sender_wa_number = message["from"]
+        text_body = message.get("text", {}).get("body", "")
         contacts = value.get("contacts", [{}])
         profile = contacts[0].get("profile", {}) if contacts else {}
         username = profile.get("name", "User")
-        await replyhandler.send_default_template(sender_wa_number, username, AUTH, GRAPH_URL)
+        await replyhandler.handle_text_message(sender_wa_number, text_body, username, db, AUTH, GRAPH_URL)
 
     elif message["type"] == "image":
         sender_wa_number = message["from"]
