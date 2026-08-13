@@ -159,6 +159,27 @@ async def send_custom_flow(wa_number, flow_token, message,header, flow_id, flow_
     return
 
 
+async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors user registration inactivity.
+    Sends a friendly reminder after 5 minutes if user hasn't completed registration.
+    """
+    await asyncio.sleep(300)
+
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            return  # Stop if user already registered!
+
+        reminder_msg = (
+            "⏰ *Registration Reminder*\n\n"
+            "We noticed you haven't completed your registration yet.\n\n"
+            "Please tap the registration button above to review our policy and complete your sign-up so you can start sending packages!"
+        )
+        await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+
+
 async def send_registration_template(sender_wa_number, auth, graph_url):
     
     req_body = {
@@ -190,6 +211,8 @@ async def send_registration_template(sender_wa_number, auth, graph_url):
         response = await client.post(graph_url, json=req_body, headers=headers)
         print(response.status_code, response.text)
         #print(response.text[0]["messages"][0]["id"])
+
+    asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
     return
 
 
