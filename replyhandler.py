@@ -677,38 +677,39 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     text_lower = text_body.lower().strip()
 
-    # --- Query / Status Intent Check: Keep queries for Groq AI ---
+    # --- Step 1: Order Intent Check (PRIORITY) ---
+    order_phrases = [
+        "send an order", "place an order", "send order", "place order",
+        "i want to send", "book a rider", "book rider", "send a package",
+        "send package", "need a rider", "need rider", "new order", "create order",
+        "send parcel", "dispatch parcel", "deliver package", "how do i send",
+        "how to send", "how do i book", "how to book", "how can i send",
+        "how do i place", "want to send a package"
+    ]
+    exact_order_words = ["send", "order", "dispatch", "deliver", "package", "parcel"]
+
+    is_order_intent = any(phrase in text_lower for phrase in order_phrases) or (text_lower in exact_order_words)
+
+    if is_order_intent:
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    # --- Step 2: Query / Status Intent Check for Groq AI ---
     query_keywords = ["where", "status", "track", "when", "cancel", "how", "what", "why", "price", "cost", "rate", "contact", "support", "problem", "issue", "delay"]
     is_query_or_question = any(re.search(r'\b' + re.escape(kw) + r'\b', text_lower) for kw in query_keywords) or "?" in text_lower
 
     if not is_query_or_question:
-        # --- Intent detection: user explicitly wants to place an order ---
-        order_phrases = [
-            "send an order", "place an order", "send order", "place order",
-            "i want to send", "book a rider", "book rider", "send a package",
-            "send package", "need a rider", "need rider", "new order", "create order",
-            "send parcel", "dispatch parcel", "deliver package"
-        ]
-        # Single exact word triggers (only if the message is very short)
-        exact_order_words = ["send", "order", "dispatch", "deliver", "package", "parcel"]
-
-        is_order_intent = any(phrase in text_lower for phrase in order_phrases) or (text_lower in exact_order_words)
-
-        if is_order_intent:
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-            else:
-                await send_registration_template(sender_wa_number, auth, graph_url)
-            return
-
-        # --- Intent detection: greetings → send default template ---
+        # --- Greetings → send default template ---
         greeting_pattern = r'\b(hello|hi|hey|good morning|good afternoon|good evening|start|menu|help)\b'
         if re.search(greeting_pattern, text_lower) and len(text_lower.split()) <= 4:
             await send_default_template(sender_wa_number, username, auth, graph_url)
             return
 
-    # --- Everything else: let Groq AI handle it with context ---
+    # --- Step 3: Open-ended questions -> Groq AI ---
     try:
         order = await get_active_ride(sender_wa_number, db)
 
@@ -734,10 +735,13 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Support Phone: +234 815 103 3428\n"
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
             f"- Service Details: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n"
-            f"- Ordering Flow: While users can visit sendintime.com.ng to learn more, bookings and dispatch requests are created right here in WhatsApp using interactive action buttons.\n"
+            f"CRITICAL ORDERING RULES:\n"
+            f"1. NEVER ask the user to type addresses, package descriptions, or prices in plain text chat.\n"
+            f"2. NEVER attempt to create or modify orders directly in text messages.\n"
+            f"3. All orders MUST be placed using the interactive WhatsApp buttons ('Send an Order' / 'Order Details').\n"
+            f"4. If the user asks how to send a package or place an order, tell them to tap the 'Send an Order' or 'Order Details' button that appears in this chat.\n"
             f"Current Context: {order_context}.\n"
-            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points. "
-            f"If asked about our website, contact email, or phone number, provide the correct details above."
+            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown, asterisks, or bullet points."
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
