@@ -90,7 +90,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
 
-        if not template_id:
+        if not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]:
             if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
             elif name or email:
@@ -239,7 +239,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
         match template_id:
-            case "user_registration":
+            case "user_registration" | "w":
                 try:
                     contacts = value.get("contacts", [{}])
                     wa_id = contacts[0].get("wa_id", sender_wa_number) if contacts else sender_wa_number
@@ -259,7 +259,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
-            case "order_details":
+            case "order_details" | "other_details":
 
                 await db.execute(
                 update(models.Orders)
