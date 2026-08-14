@@ -32,6 +32,7 @@ class apiRequest(Base):
     method: Mapped[str] = mapped_column(String(10), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     response: Mapped[str] = mapped_column(Text, nullable=False)
+    wamid: Mapped[str] = mapped_column(Text, nullable=True, unique=True, index=True)
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     date_posted: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 

@@ -18,6 +18,8 @@ import os
 from dotenv import load_dotenv
 import replyhandler
 
+from sqlalchemy.exc import IntegrityError
+
 load_dotenv()
 router = APIRouter()
 VERIFY_TOKEN =  os.getenv("VERIFY_TOKEN")
@@ -26,18 +28,6 @@ GRAPH_URL = os.getenv("GRAPH_URL")
 
 @router.post("", status_code=status.HTTP_200_OK)
 async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSession, Depends(get_db)]):
-    
-    newAPIRequest = models.apiRequest(
-        method="POST",
-        content= apirequest.model_dump_json(), #json.dumps(apirequest.entry),
-        response="OK",
-        status_code=200,
-    )
-
-    db.add(newAPIRequest)
-    await db.commit()
-    await db.refresh(newAPIRequest)
-    
     try:
         entry = apirequest.entry[0] if apirequest.entry else {}
         changes = entry.get("changes", [{}])[0]
@@ -57,7 +47,26 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
     if not _response:
         return {"status": "ok"}
+
     message = _response[0]
+    wamid = message.get("id")
+
+    newAPIRequest = models.apiRequest(
+        method="POST",
+        content=apirequest.model_dump_json(),
+        response="OK",
+        status_code=200,
+        wamid=wamid,
+    )
+
+    db.add(newAPIRequest)
+    try:
+        await db.commit()
+        await db.refresh(newAPIRequest)
+    except IntegrityError:
+        # duplicate wamid — already processed this message before
+        await db.rollback()
+        return {"status": "duplicate, ignored"}
 
     if message["type"] == "button":
         sender_wa_number = message["from"]
