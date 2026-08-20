@@ -11,12 +11,26 @@ from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
 from routers import createAPIrequest
 
+from sqlalchemy import text
+
 #Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     #startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            if engine.dialect.name == "postgresql":
+                await conn.execute(text('ALTER TABLE "apiRequests" ADD COLUMN IF NOT EXISTS wamid TEXT;'))
+                await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_apiRequests_wamid ON "apiRequests" (wamid);'))
+            elif engine.dialect.name == "sqlite":
+                try:
+                    await conn.execute(text('ALTER TABLE "apiRequests" ADD COLUMN wamid TEXT;'))
+                    await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_apiRequests_wamid ON "apiRequests" (wamid);'))
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Migration check warning: {e}")
     yield
     #shutdown
     await engine.dispose()
