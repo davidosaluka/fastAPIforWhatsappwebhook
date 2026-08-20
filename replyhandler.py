@@ -879,11 +879,48 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
     return result.scalars().first() is not None
 
 
-async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
-    """Deterministic routing for incoming freeform text messages."""
-    text_lower = text_body.lower().strip()
+async def classify_message_intent(message_text: str) -> str:
+    """Classifies user intent semantically using Groq JSON mode."""
+    system_prompt = (
+        'You are an intent classification engine for a delivery platform. '
+        'Analyze the user\'s message and classify it into exactly ONE of the following intents: '
+        '\'CREATE_ORDER\', \'CANCEL_ORDER\', \'TRACK_ORDER\', \'MODIFY_ORDER\', \'SUPPORT\', or \'GENERAL_CHAT\'. '
+        'Do not explain. Do not generate conversational text. '
+        'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
+    )
+    allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
+    models_to_try = ["llama-3.1-8b-instant", "groq/compound-mini"]
+    
+    try:
+        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        for model_name in models_to_try:
+            try:
+                response = await groq_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message_text}
+                    ],
+                    model=model_name,
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=50,
+                    timeout=3.0
+                )
+                raw_content = response.choices[0].message.content.strip()
+                parsed = json.loads(raw_content)
+                intent = parsed.get("intent", "").upper().strip()
+                if intent in allowed_intents:
+                    return intent
+            except Exception as inner_e:
+                continue
+    except Exception as e:
+        print(f"Intent classification error: {e}")
+    return "GENERAL_CHAT"
 
-    # --- 0. ACTIVE WORKFLOW STATE CHECK ---
+
+async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
+    """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
+    # --- 1. ACTIVE WORKFLOW STATE CHECK ---
     active_order = await get_active_ride(sender_wa_number, db)
     if active_order and active_order.package_image_id is None:
         msg = (
@@ -894,13 +931,36 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
-    # --- 1. TRACKING INTENT ---
-    tracking_patterns = [
-        "track my order", "track order", "order status", "where is my order",
-        "where is my package", "where's my order", "status of my order",
-        "check my order", "check order status", "track package"
-    ]
-    if any(p in text_lower for p in tracking_patterns) or text_lower == "track":
+    # --- 2. SEMANTIC INTENT CLASSIFICATION ---
+    intent = await classify_message_intent(text_body)
+
+    # --- 3. APPLICATION ROUTING ---
+    if intent == "CREATE_ORDER":
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    elif intent == "CANCEL_ORDER":
+        order = await get_active_ride(sender_wa_number, db)
+        if order and order.status in ["confirmed", "awaiting_pickup"]:
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order.order_number)
+                .values(status="cancelled")
+            )
+            await db.commit()
+            msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
+        elif order:
+            msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."
+        else:
+            msg = "You currently have no active order to cancel."
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    elif intent == "TRACK_ORDER":
         order = await get_active_ride(sender_wa_number, db)
         if order:
             rider_info = f"Rider Phone: *{order.rider_wa_number}*" if order.rider_wa_number else "Searching for available riders..."
@@ -918,89 +978,24 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
-    # --- 2. CANCEL ORDER INTENT ---
-    cancellation_patterns = [
-        "cancel my order", "cancel order", "cancel delivery", "cancel ride"
-    ]
-    if any(p in text_lower for p in cancellation_patterns) or text_lower == "cancel":
-        order = await get_active_ride(sender_wa_number, db)
-        if order and order.status in ["confirmed", "awaiting_pickup"]:
-            await db.execute(
-                update(models.Orders)
-                .where(models.Orders.order_number == order.order_number)
-                .values(status="cancelled")
-            )
-            await db.commit()
-            msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
-        elif order:
-            msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."
-        else:
-            msg = "You currently have no active order to cancel."
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    # --- 3. CREATE ORDER INTENT (HIGH PRIORITY) ---
-    order_phrases = [
-        "send an order", "place an order", "send order", "place order",
-        "i want to send", "book a rider", "book rider", "send a package",
-        "send package", "need a rider", "need rider", "new order", "create order",
-        "send parcel", "dispatch parcel", "deliver package", "how do i send",
-        "how to send", "how do i book", "how to book", "how can i send",
-        "how do i place", "want to send a package", "i need to send",
-        "i want to deliver", "i need to deliver", "i want to dispatch",
-        "i need a dispatch", "how do i make a delivery", "how can i make a delivery",
-        "make a delivery", "make delivery", "create an order", "deliver a package",
-        "deliver something", "send something", "dispatch a package", "dispatch something",
-        "get a rider", "want a rider"
-    ]
-    exact_order_words = ["send", "order", "dispatch", "deliver", "package", "parcel"]
-
-    is_order_intent = any(phrase in text_lower for phrase in order_phrases) or (text_lower in exact_order_words)
-
-    if is_order_intent:
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-        else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
-        return
-
-    # --- 4. PLAIN-TEXT ADDRESS / ORDER DATA IN CHAT ---
-    address_patterns = [
-        r'\bfrom\s+.+\sto\s+.+',
-        r'\bpickup\s*:\s*.+\s*dropoff\s*:\s*.+',
-        r'\bdeliver\s+to\s+.+',
-        r'\btake\s+.+\sto\s+.+'
-    ]
-    is_plain_text_address = any(re.search(pat, text_lower) for pat in address_patterns)
-
-    if is_plain_text_address:
-        registered = await is_user_registered(sender_wa_number, db)
-        await send_custom_message(
-            sender_wa_number,
-            "To process your delivery securely and accurately, please use the Order Details button below to enter your pickup and dropoff details.",
-            auth,
-            graph_url
+    elif intent == "MODIFY_ORDER":
+        msg = (
+            "To modify your delivery details or update order information, "
+            "please tap the Order Details button below or create a new dispatch request."
         )
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        registered = await is_user_registered(sender_wa_number, db)
         if registered:
             await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
         else:
             await send_registration_template(sender_wa_number, auth, graph_url)
         return
 
-    # --- 5. GREETINGS ---
-    greeting_pattern = r'^\s*(hello|hi|hey|good morning|good afternoon|good evening|start|menu|help)\s*$'
-    if re.search(greeting_pattern, text_lower):
-        await send_default_template(sender_wa_number, username, auth, graph_url)
-        return
-
-    # --- 6. GENERAL ASSISTANCE (Groq AI with Strict System Prompt Boundaries) ---
+    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent) ---
     try:
         order = await get_active_ride(sender_wa_number, db)
         if order:
-            order_context = (
-                f"Active order: {order.order_number} (Status: {order.status})."
-            )
+            order_context = f"Active order: {order.order_number} (Status: {order.status})."
         else:
             order_context = "No active delivery order."
 
