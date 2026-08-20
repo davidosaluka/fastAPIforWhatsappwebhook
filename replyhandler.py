@@ -889,7 +889,7 @@ async def classify_message_intent(message_text: str) -> str:
         'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
     )
     allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
-    models_to_try = ["llama-3.1-8b-instant", "groq/compound-mini"]
+    models_to_try = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
     
     try:
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
@@ -1019,19 +1019,31 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        models_to_try = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
 
-        chat_completion = await groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text_body}
-            ],
-            model="llama-3.1-8b-instant",
-            max_tokens=200,
-            timeout=5.0
-        )
+        ai_reply = None
+        for model_name in models_to_try:
+            try:
+                chat_completion = await groq_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text_body}
+                    ],
+                    model=model_name,
+                    max_tokens=200,
+                    timeout=5.0
+                )
+                ai_reply = chat_completion.choices[0].message.content.strip()
+                if ai_reply:
+                    break
+            except Exception as inner_e:
+                print(f"Groq conversational model {model_name} warning: {inner_e}")
+                continue
 
-        ai_reply = chat_completion.choices[0].message.content.strip()
-        await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
+        if ai_reply:
+            await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
+        else:
+            await send_default_template(sender_wa_number, username, auth, graph_url)
 
     except Exception as e:
         print(f"Groq AI error: {e}")
