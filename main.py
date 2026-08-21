@@ -31,6 +31,14 @@ async def lifespan(_app: FastAPI):
                     await conn.execute(text('ALTER TABLE riders ADD COLUMN IF NOT EXISTS availability_status VARCHAR(50);'))
                 except Exception:
                     pass
+                try:
+                    await conn.execute(text('ALTER TABLE orders RENAME COLUMN customer_intital_offered_price TO customer_initial_offered_price;'))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_initial_offered_price VARCHAR(50);'))
+                except Exception:
+                    pass
             elif engine.dialect.name == "sqlite":
                 try:
                     await conn.execute(text('ALTER TABLE "apiRequests" ADD COLUMN wamid TEXT;'))
@@ -39,6 +47,10 @@ async def lifespan(_app: FastAPI):
                     pass
                 try:
                     await conn.execute(text('ALTER TABLE riders ADD COLUMN availability_status VARCHAR(50);'))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text('ALTER TABLE orders ADD COLUMN customer_initial_offered_price VARCHAR(50);'))
                 except Exception:
                     pass
         except Exception as e:
