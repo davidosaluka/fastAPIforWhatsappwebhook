@@ -163,22 +163,32 @@ async def send_custom_flow(wa_number, flow_token, message,header, flow_id, flow_
 async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph_url: str):
     """
     Monitors user registration inactivity.
-    Sends a friendly reminder after 5 minutes if user hasn't completed registration.
+    Sends a friendly reminder after 5 minutes if user hasn't completed registration or placed an order.
     """
-    await asyncio.sleep(300)
+    try:
+        await asyncio.sleep(300)
 
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            return  # Stop if user already registered!
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                return  # Stop if user already registered!
 
-        reminder_msg = (
-            "⏰ *Registration Reminder*\n\n"
-            "We noticed you haven't completed your registration yet.\n\n"
-            "Please tap the registration button above to review our policy and complete your sign-up so you can start sending packages!"
-        )
-        await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+            possible_numbers = get_phone_variants(sender_wa_number)
+            has_order = await db.execute(
+                select(models.Orders).where(models.Orders.sender_wa_number.in_(possible_numbers))
+            )
+            if has_order.scalars().first() is not None:
+                return
+
+            reminder_msg = (
+                "⏰ *Registration Reminder*\n\n"
+                "We noticed you haven't completed your registration yet.\n\n"
+                "Please type 'Send an Order' in this chat to complete your sign-up so you can start sending packages!"
+            )
+            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_registration_reminder background task error: {e}")
 
 
 async def send_registration_template(sender_wa_number, auth, graph_url):
@@ -335,17 +345,24 @@ def normalize_phone_number(phone: str) -> str:
 
 def get_phone_variants(phone: str) -> list[str]:
     """
-    Generates all equivalent representations of a phone number (e.g. 081..., 23481..., +23481..., 81...).
+    Generates all equivalent representations of a phone number (e.g. 081..., 23481..., +23481..., 81..., +1...).
+    Handles raw digits and country prefix variations across international and local formats.
     """
     if not phone:
         return []
+    raw_str = str(phone)
+    clean_digits = re.sub(r'[^\d]', '', raw_str)
+    variants = set([phone, raw_str, clean_digits])
+    if clean_digits:
+        variants.add(f"+{clean_digits}")
+
     canonical = normalize_phone_number(phone)
     if len(canonical) == 13 and canonical.startswith("234"):
         local_fmt = "0" + canonical[3:]
         plus_fmt = "+" + canonical
         raw_fmt = canonical[3:]
-        return list(set([phone, canonical, local_fmt, plus_fmt, raw_fmt]))
-    return [phone]
+        variants.update([canonical, local_fmt, plus_fmt, raw_fmt])
+    return [v for v in variants if v]
 
 
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
@@ -387,45 +404,48 @@ async def schedule_user_session_timeout(order_number: str, sender_wa_number: str
     Monitors user input inactivity during order initialization (e.g. pending package image upload).
     Sends a friendly reminder after 5 minutes, and auto-expires the session after 15 minutes.
     """
-    # 1. First reminder after 5 minutes (300 seconds)
-    await asyncio.sleep(300)
+    try:
+        # 1. First reminder after 5 minutes (300 seconds)
+        await asyncio.sleep(300)
 
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        order = await get_active_ride_by_number(order_number, db)
-        # If user already uploaded image or order state changed, exit immediately
-        if not order or order.status != "confirmed" or order.package_image_id is not None:
-            return
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            # If user already uploaded image or order state changed, exit immediately
+            if not order or order.status != "confirmed" or order.package_image_id is not None:
+                return
 
-        reminder_msg = (
-            f"⏰ *Pending Order Reminder*\n\n"
-            f"We're still waiting for a photo of your package to complete Order *{order_number}* and alert nearby riders.\n\n"
-            f"Please snap and upload the photo whenever you're ready!"
-        )
-        await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+            reminder_msg = (
+                f"⏰ *Pending Order Reminder*\n\n"
+                f"We're still waiting for a photo of your package to complete Order *{order_number}* and alert nearby riders.\n\n"
+                f"Please snap and upload the photo whenever you're ready!"
+            )
+            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
 
-    # 2. Session timeout / expiry after another 10 minutes (600 seconds -> 15 minutes total)
-    await asyncio.sleep(600)
+        # 2. Session timeout / expiry after another 10 minutes (600 seconds -> 15 minutes total)
+        await asyncio.sleep(600)
 
-    async with AsyncSessionLocal() as db:
-        order = await get_active_ride_by_number(order_number, db)
-        if not order or order.status != "confirmed" or order.package_image_id is not None:
-            return
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed" or order.package_image_id is not None:
+                return
 
-        # Mark order as expired in DB
-        await db.execute(
-            update(models.Orders)
-            .where(models.Orders.order_number == order_number)
-            .values(status="expired")
-        )
-        await db.commit()
+            # Mark order as expired in DB
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order_number)
+                .values(status="expired")
+            )
+            await db.commit()
 
-        timeout_msg = (
-            f"⌛ *Session Expired*\n\n"
-            f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
-            f"Whenever you're ready to send a package, just reply 'Hi' or type 'Send an Order'!"
-        )
-        await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
+            timeout_msg = (
+                f"⌛ *Session Expired*\n\n"
+                f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
+                f"Whenever you're ready to send a package, just reply 'Hi' or type 'Send an Order'!"
+            )
+            await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_user_session_timeout background task error: {e}")
 
 
 async def schedule_customer_offer_timeout(order_number: str, customer_wa_number: str, rider_name: str, proposed_amount: str, auth: str, graph_url: str):
@@ -433,20 +453,23 @@ async def schedule_customer_offer_timeout(order_number: str, customer_wa_number:
     Monitors customer inactivity when a rider sends a counter-offer.
     Sends a friendly reminder after 4 minutes if customer hasn't accepted.
     """
-    await asyncio.sleep(240)
+    try:
+        await asyncio.sleep(240)
 
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        order = await get_active_ride_by_number(order_number, db)
-        if not order or order.status != "confirmed":
-            return  # Stop if customer accepted, cancelled, or rider assigned
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return  # Stop if customer accepted, cancelled, or rider assigned
 
-        reminder_msg = (
-            f"⏰ *Counter Offer Reminder*\n\n"
-            f"Rider *{rider_name}* proposed an offer of *{proposed_amount}* for Order *{order_number}*.\n\n"
-            f"Please accept the offer or adjust your fare to confirm your rider!"
-        )
-        await send_custom_message(customer_wa_number, reminder_msg, auth, graph_url)
+            reminder_msg = (
+                f"⏰ *Counter Offer Reminder*\n\n"
+                f"Rider *{rider_name}* proposed an offer of *{proposed_amount}* for Order *{order_number}*.\n\n"
+                f"Please accept the offer or adjust your fare to confirm your rider!"
+            )
+            await send_custom_message(customer_wa_number, reminder_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_customer_offer_timeout background task error: {e}")
 
 
 async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
@@ -454,94 +477,125 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
     State-aware background task that monitors order search progress.
     Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
     """
-    # Follow-up 1: 3 minutes (180 seconds)
-    await asyncio.sleep(180)
+    try:
+        # Follow-up 1: 3 minutes (180 seconds)
+        await asyncio.sleep(180)
 
-    from database import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        order = await get_active_ride_by_number(order_number, db)
-        if not order or order.status != "confirmed":
-            return  # Stop immediately if rider accepted, cancelled, or completed!
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return  # Stop immediately if rider accepted, cancelled, or completed!
 
-        offers_res = await db.execute(
-            select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
-        )
-        offers = offers_res.scalars().all()
-        read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+            offers_res = await db.execute(
+                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
+            )
+            offers = offers_res.scalars().all()
+            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
 
-        if read_count > 0:
-            msg = f"Good news 👀 {read_count} rider{'s' if read_count > 1 else ''} have viewed your delivery offer. We're waiting for one to accept."
+            if read_count > 0:
+                msg = f"Good news 👀 {read_count} rider{'s' if read_count > 1 else ''} have viewed your delivery offer. We're waiting for one to accept."
+            else:
+                msg = "Stay locked in 👀 We're still looking for a rider for your package. We'll update you as soon as one accepts."
+            
+            await send_custom_message(sender_wa_number, msg, auth, graph_url)
+
+        # Follow-up 2: 2 minutes later (300 seconds total) -> Fare Escalation Recommendation
+        await asyncio.sleep(120)
+
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return  # Stop immediately if rider accepted, cancelled, or completed!
+
+            escalation_msg = (
+                "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"
+                "Increasing your fare slightly can help attract a rider quickly."
+            )
+            await send_custom_flow(
+                wa_number=sender_wa_number,
+                flow_token={"order_number": order_number},
+                message=escalation_msg,
+                header="🔔 Need a rider faster?",
+                flow_id="950647507961316",
+                flow_cta="I want to increase my fare",
+                screen_name="CUST_INCREASE_FARE_SCREEN",
+                auth=auth,
+                graph_url=graph_url
+            )
+    except Exception as e:
+        print(f"schedule_order_followups background task error: {e}")
+
+
+async def mark_rider_available_if_rider(sender_wa_number: str, db: AsyncSession):
+    """
+    Automatically marks a rider as 'available' whenever they send a message to InTime.
+    This registers the rider for daily dispatch within Meta's free 24-hour customer service window.
+    """
+    if not sender_wa_number:
+        return
+    possible_numbers = get_phone_variants(sender_wa_number)
+    rider_result = await db.execute(
+        select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
+    )
+    rider = rider_result.scalars().first()
+    if rider:
+        if rider.availability_status != "available":
+            rider.availability_status = "available"
+            await db.commit()
+            print(f"🟢 [RIDER CHECK-IN] Marked rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) as AVAILABLE for 24h window.")
         else:
-            msg = "Stay locked in 👀 We're still looking for a rider for your package. We'll update you as soon as one accepts."
-        
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-
-    # Follow-up 2: 2 minutes later (300 seconds total) -> Fare Escalation Recommendation
-    await asyncio.sleep(120)
-
-    async with AsyncSessionLocal() as db:
-        order = await get_active_ride_by_number(order_number, db)
-        if not order or order.status != "confirmed":
-            return  # Stop immediately if rider accepted, cancelled, or completed!
-
-        escalation_msg = (
-            "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"
-            "Increasing your fare slightly can help attract a rider quickly."
-        )
-        await send_custom_flow(
-            wa_number=sender_wa_number,
-            flow_token={"order_number": order_number},
-            message=escalation_msg,
-            header="🔔 Need a rider faster?",
-            flow_id="950647507961316",
-            flow_cta="I want to increase my fare",
-            screen_name="CUST_INCREASE_FARE_SCREEN",
-            auth=auth,
-            graph_url=graph_url
-        )
+            print(f"ℹ️ [RIDER CHECK-IN] Rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) is already ACTIVE.")
 
 
 async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
     message = f"✅ Your order has been placed!\n\nOrder Number: *{order_details['order_number']}*\n\n🔍 Searching for available riders nearby, please hold on..."
     await send_custom_message(sender_wa_number, message , auth, graph_url)
+    
+    sender_variants = get_phone_variants(sender_wa_number)
     riders = await db.execute(
         select(models.Riders)
         .where(models.Riders.availability_status == "available")
-        .where(models.Riders.rider_wa_number != sender_wa_number)  # exclude sender if they're also a rider
+        .where(models.Riders.rider_wa_number.not_in(sender_variants))
     )
     riders = riders.scalars().all()
     
-    for rider in riders:
-        message = (
-            f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
-            f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
-            f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
-            f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
-            f"ORDER NUMBER: {order_details['order_number']}\n\n"
-        )
-        print("message is: ")
-        print(message)
+    print(f"🔍 [DISPATCH SEARCH] Order {order_details['order_number']} placed by customer ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
+    if not riders:
+        print(f"⚠️ [DISPATCH SEARCH] No active 'available' riders found in 24h window for order {order_details['order_number']}.")
 
-        new_offer = models.RiderOffer(
-            order_number=order_details['order_number'],
-            rider_wa_number=rider.rider_wa_number,
-            status="sent"
-        )
-        db.add(new_offer)
-        
-        await send_custom_flow(
-            wa_number=rider.rider_wa_number,
-            flow_token={"order_number": order_details['order_number']},
-            message=message,
-            header=f"DISPATCH REQUEST!\n",
-            flow_id="1513067607105184",
-            flow_cta="Accept or Negotiate",
-            screen_name="RECOMMEND",
-            auth=auth,
-            graph_url=graph_url
-        )
-        if order_details.get('image_id'):
-            await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
+    for rider in riders:
+        try:
+            message = (
+                f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+                f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+                f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+                f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+                f"ORDER NUMBER: {order_details['order_number']}\n\n"
+            )
+
+            new_offer = models.RiderOffer(
+                order_number=order_details['order_number'],
+                rider_wa_number=rider.rider_wa_number,
+                status="sent"
+            )
+            db.add(new_offer)
+            
+            await send_custom_flow(
+                wa_number=rider.rider_wa_number,
+                flow_token={"order_number": order_details['order_number']},
+                message=message,
+                header=f"DISPATCH REQUEST!\n",
+                flow_id="1513067607105184",
+                flow_cta="Accept or Negotiate",
+                screen_name="RECOMMEND",
+                auth=auth,
+                graph_url=graph_url
+            )
+            if order_details.get('image_id'):
+                await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
+        except Exception as e:
+            print(f"Error dispatching offer to rider {rider.rider_wa_number}: {e}")
 
     await db.commit()
 
@@ -866,7 +920,7 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         
 
 async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Checks if a user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants."""
+    """Checks if a user is registered by matching display_phone_number, wa_id, phone_number_id, or active orders across formatted variants."""
     possible_numbers = get_phone_variants(sender_wa_number)
 
     result = await db.execute(
@@ -876,7 +930,13 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
             (models.User.phone_number_id.in_(possible_numbers))
         )
     )
-    return result.scalars().first() is not None
+    if result.scalars().first() is not None:
+        return True
+
+    order_result = await db.execute(
+        select(models.Orders).where(models.Orders.sender_wa_number.in_(possible_numbers))
+    )
+    return order_result.scalars().first() is not None
 
 
 async def classify_message_intent(message_text: str) -> str:
