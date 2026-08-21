@@ -23,10 +23,22 @@ async def lifespan(_app: FastAPI):
             if engine.dialect.name == "postgresql":
                 await conn.execute(text('ALTER TABLE "apiRequests" ADD COLUMN IF NOT EXISTS wamid TEXT;'))
                 await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_apiRequests_wamid ON "apiRequests" (wamid);'))
+                try:
+                    await conn.execute(text('ALTER TABLE riders RENAME COLUMN availabilty_status TO availability_status;'))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text('ALTER TABLE riders ADD COLUMN IF NOT EXISTS availability_status VARCHAR(50);'))
+                except Exception:
+                    pass
             elif engine.dialect.name == "sqlite":
                 try:
                     await conn.execute(text('ALTER TABLE "apiRequests" ADD COLUMN wamid TEXT;'))
                     await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_apiRequests_wamid ON "apiRequests" (wamid);'))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text('ALTER TABLE riders ADD COLUMN availability_status VARCHAR(50);'))
                 except Exception:
                     pass
         except Exception as e:
