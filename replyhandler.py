@@ -423,7 +423,7 @@ async def schedule_user_session_timeout(order_number: str, sender_wa_number: str
         timeout_msg = (
             f"⌛ *Session Expired*\n\n"
             f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
-            f"Whenever you're ready to send a package, just reply 'Hi' or tap 'Send an Order'!"
+            f"Whenever you're ready to send a package, just reply 'Hi' or type 'Send an Order'!"
         )
         await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
 
@@ -980,8 +980,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     elif intent == "MODIFY_ORDER":
         msg = (
-            "To modify your delivery details or update order information, "
-            "please tap the Order Details button below or create a new dispatch request."
+            "To modify your delivery details or create a new order, "
+            "please type 'Send an Order' in this chat to bring up your options."
         )
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         registered = await is_user_registered(sender_wa_number, db)
@@ -1013,8 +1013,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"1. You DO NOT create, modify, cancel, or confirm delivery orders.\n"
             f"2. You DO NOT collect pickup addresses, dropoff addresses, prices, or package details in text chat.\n"
             f"3. You DO NOT invent order numbers, order statuses, rider details, or transaction confirmations.\n"
-            f"4. All delivery bookings MUST be created using the interactive WhatsApp buttons ('Send an Order' / 'Order Details').\n"
-            f"5. If the user asks how to send a package, book a rider, or place an order, tell them to tap the 'Send an Order' or 'Order Details' button in WhatsApp.\n"
+            f"4. Never tell the user to tap a button because text chat messages do not have buttons.\n"
+            f"5. If the user asks how to send a package, book a rider, get a quote, or place an order, instruct them to type 'Send an Order' in this chat so the bot can display the booking options for them.\n"
             f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, and plain text only — no markdown formatting, no asterisks, no bullet points."
         )
 
