@@ -17,8 +17,8 @@ def generate_order_number():
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    display_phone_number:  Mapped[str] = mapped_column(String(14), unique=True, nullable=False)
-    phone_number_id: Mapped[str] = mapped_column(String(60), unique=True, nullable=False)
+    display_phone_number:  Mapped[str] = mapped_column(String(50), nullable=False)
+    phone_number_id: Mapped[str] = mapped_column(String(60), nullable=False)
     wa_id : Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name : Mapped[str] = mapped_column(String, unique=False, nullable=False)
     

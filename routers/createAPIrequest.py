@@ -375,11 +375,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 async def createUser(name, wa_id, display_phone_number, phone_number_id, db: AsyncSession):
+    clean_name = name or "Customer"
+    clean_wa_id = re.sub(r'[^\d]', '', str(wa_id)) if wa_id else str(wa_id)
+    clean_display = re.sub(r'[^\d]', '', str(display_phone_number)) if display_phone_number else clean_wa_id
+    clean_phone_id = str(phone_number_id) if phone_number_id else clean_wa_id
 
     possible_numbers = list(set(
-        replyhandler.get_phone_variants(wa_id) +
-        replyhandler.get_phone_variants(display_phone_number) +
-        replyhandler.get_phone_variants(phone_number_id)
+        replyhandler.get_phone_variants(clean_wa_id) +
+        replyhandler.get_phone_variants(clean_display) +
+        replyhandler.get_phone_variants(clean_phone_id)
     ))
 
     result = await db.execute(
@@ -391,17 +395,24 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
     )
     existing_user = result.scalars().first()
     if existing_user:
-        return
+        print(f"ℹ️ [USER EXISTS] User '{existing_user.name}' ({clean_wa_id}) is already registered.")
+        return existing_user
+
     new_user = models.User(
-        name=name,
-        wa_id=wa_id,
-        display_phone_number=display_phone_number,
-        phone_number_id=phone_number_id
+        name=clean_name,
+        wa_id=clean_wa_id,
+        display_phone_number=clean_display,
+        phone_number_id=clean_phone_id
     )
 
     db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
+    try:
+        await db.commit()
+        await db.refresh(new_user)
+        print(f"🟢 [USER SAVED] Registered new user '{clean_name}' ({clean_wa_id}) in DB.")
+    except Exception as e:
+        await db.rollback()
+        print(f"ℹ️ [USER CREATE HANDLED] User constraint/duplicate for ({clean_wa_id}): {e}")
 
     return ({"status": status.HTTP_201_CREATED, "message": "User Created Successfully"})
 
