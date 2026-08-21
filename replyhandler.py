@@ -367,14 +367,19 @@ def get_phone_variants(phone: str) -> list[str]:
 
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     possible_numbers = get_phone_variants(sender_wa_number)
+    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "picked_up", "awaiting_dropoff"]
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.sender_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(["confirmed"]))
-        .where(models.Orders.sla_expires_by > datetime.now(UTC))
+        .where(models.Orders.status.in_(active_statuses))
         .order_by(models.Orders.created_at.desc())
     )
-    return result.scalars().first()
+    order = result.scalars().first()
+    if order:
+        if order.status == "confirmed" and order.sla_expires_by and order.sla_expires_by <= datetime.now(UTC):
+            return None
+        return order
+    return None
 
 async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: AsyncSession):
     """Updates status in RiderOffer table for rider receipts (delivered, read)."""
