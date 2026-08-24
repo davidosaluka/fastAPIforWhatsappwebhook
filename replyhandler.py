@@ -71,44 +71,45 @@ async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
     return
 
 
-async def send_custom_message(sender_wa_number, message , auth, graph_url):
-
+async def send_custom_message(sender_wa_number, message, auth, graph_url):
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "text",
-            "text": {
-                "body": message
-            }
-            }
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "text",
+        "text": {
+            "body": message
+        }
+    }
     headers = {
-    "Authorization": f"Bearer {auth}",
-    "Content-Type": "application/json"
-
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
     }
       
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body, headers=headers)
-        print("custom message sent")
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
+        print("custom message sent", response.status_code, response.text)
     return
 
-async def send_image(sender_wa_number, auth, graph_url, image_id):
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "image",
-            "image": {
-                "id": image_id
-            }
-            }
-    headers = {
-    "Authorization": f"Bearer {auth}",
-    "Content-Type": "application/json"
+async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
+    """Sends delivery notifications specifically to package recipients, ensuring phone format normalization."""
+    await send_custom_message(sender_wa_number=sender_wa_number, message=message, auth=auth, graph_url=graph_url)
 
+async def send_image(sender_wa_number, auth, graph_url, image_id):
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "image",
+        "image": {
+            "id": image_id
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
     }
       
     async with httpx.AsyncClient() as client:
@@ -117,13 +118,12 @@ async def send_image(sender_wa_number, auth, graph_url, image_id):
     return
 
 
-
-
-async def send_custom_flow(wa_number, flow_token, message,header, flow_id, flow_cta, screen_name, auth, graph_url):
-    req_body={
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": wa_number,
+async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url):
+    target_number = normalize_phone_number(wa_number) or wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
             "type": "interactive",
             "interactive": {
                 "type": "flow",
@@ -565,19 +565,34 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
     )
     riders = riders.scalars().all()
     
-    print(f"🔍 [DISPATCH SEARCH] Order {order_details['order_number']} placed by customer ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
+    print(f"[DISPATCH SEARCH] Order {order_details['order_number']} placed by customer ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
     if not riders:
-        print(f"⚠️ [DISPATCH SEARCH] No active 'available' riders found in 24h window for order {order_details['order_number']}.")
+        print(f"[DISPATCH SEARCH] No active 'available' riders found in 24h window for order {order_details['order_number']}.")
+
+    is_priority = bool(order_details.get('is_priority') or (order_details.get('is_drug') and order_details.get('is_urgent')))
 
     for rider in riders:
         try:
-            message = (
-                f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
-                f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
-                f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
-                f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
-                f"ORDER NUMBER: {order_details['order_number']}\n\n"
-            )
+            if is_priority:
+                header = f"🚨 URGENT MEDICATION DISPATCH! 🚨\n"
+                message = (
+                    f"💊 *PRIORITY DELIVERY - URGENT MEDICATION* 💊\n\n"
+                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
+                    f"⚡ *PRIORITY*: Medical supply needed ASAP! Please accept immediately if available."
+                )
+            else:
+                header = f"DISPATCH REQUEST!\n"
+                message = (
+                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
+                )
 
             new_offer = models.RiderOffer(
                 order_number=order_details['order_number'],
@@ -590,7 +605,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
                 wa_number=rider.rider_wa_number,
                 flow_token={"order_number": order_details['order_number']},
                 message=message,
-                header=f"DISPATCH REQUEST!\n",
+                header=header,
                 flow_id="1513067607105184",
                 flow_cta="Accept or Negotiate",
                 screen_name="RECOMMEND",
@@ -695,6 +710,14 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
             .where(models.Orders.order_number == order_number)
         )
         customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
+        
+        sender_user_res = await db.execute(
+            select(models.User.name).where(
+                models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+            )
+        )
+        sender_name = sender_user_res.scalars().first() or "Someone"
+
         rider_message = f"🎉 Ride accepted! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
         customer_message = (
             f"🎉 Great news! Your ride has been accepted.\n\n"
@@ -703,13 +726,13 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
             f"📞 Phone: *{rider_phone}*"
             )
         recipient_message = (
-            f"👋 Hello! A package is on its way to you.\n\n"
+            f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
             f"📍 Pickup: {order.pickup_location_name}\n\n"
             f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
             f"🔖 Order No: {order.order_number}\n\n"
-            f"🧑‍✈️ Rider: {rider_details.first_name} {rider_details.last_name}\n"
-            f"📞 Rider's Phone: {rider_details.rider_wa_number}"
+            f"🧑‍✈️ Rider: {rider_name}\n"
+            f"📞 Rider's Phone: {rider_phone}"
         )
         recipient_wa_number = order.recipient_phone_number
         
@@ -839,7 +862,10 @@ async def schedule_rider_process_reminders(order_number: str, rider_wa_number: s
                     "drop_off_location": order.dropoff_location_name,
                     "offered_price": order.customer_initial_offered_price or order.final_price_agreed_by_cust_and_rider or "1000",
                     "order_number": order.order_number,
-                    "image_id": order.package_image_id
+                    "image_id": order.package_image_id,
+                    "is_priority": order.is_priority,
+                    "is_drug": order.is_drug,
+                    "is_urgent": order.is_urgent
                 }
                 await get_rider(
                     sender_wa_number=order.sender_wa_number,
@@ -850,57 +876,7 @@ async def schedule_rider_process_reminders(order_number: str, rider_wa_number: s
                 )
                 return
 
-        # -------------------------------------------------------------
-        # PHASE 2: DROPOFF / DELIVERY REMINDERS (Up to 2 Reminders max)
-        # -------------------------------------------------------------
-        # Wait 600s (10 mins from pickup = 5 mins after initial dropoff prompt) to start dropoff reminders
-        await asyncio.sleep(600)
 
-        dropoff_reminder_count = 0
-        while dropoff_reminder_count < max_reminders_after_initial:
-            async with AsyncSessionLocal() as db:
-                order = await get_active_ride_by_number(order_number, db)
-
-                # Stop if order completed, cancelled, or delivered
-                if not order or order.status in ["cancelled", "completed", "expired"]:
-                    return
-                if order.delivery_progression_status == "package_delivered":
-                    return
-
-                # Send dropoff reminder
-                reminder_msg = (
-                    f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})*\n\n"
-                    f"Hi! Order *{order_number}* is currently in transit.\n\n"
-                    f"Have you dropped off the package to the recipient yet? "
-                    f"Click the button below when you have dropped off the package successfully."
-                )
-
-                await send_custom_flow(
-                    wa_number=rider_wa_number,
-                    flow_token={"order_number": order_number},
-                    message=reminder_msg,
-                    header="Have you delivered the package yet?\n\n",
-                    flow_id="1549615230214062",
-                    flow_cta="Have you Delivered the Package?",
-                    screen_name="flow_to_ask_if_rider_has_dropped_off_package",
-                    auth=auth,
-                    graph_url=graph_url
-                )
-
-            dropoff_reminder_count += 1
-            await asyncio.sleep(300)
-
-        # Final check for dropoff phase
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if order and order.delivery_progression_status == "package_picked_up":
-                # Inform customer with rider phone details
-                cust_notice = (
-                    f"📦 *Delivery Status Check*\n\n"
-                    f"Order *{order_number}* is currently in transit.\n"
-                    f"If you need an update, you can call your rider directly at *{rider_wa_number}*."
-                )
-                await send_custom_message(order.sender_wa_number, cust_notice, auth, graph_url)
 
     except Exception as e:
         print(f"schedule_rider_process_reminders background task error: {e}")
@@ -1037,6 +1013,13 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
     if order_status == "confirmed":
         customer_wa_number = sender_wa_number
 
+        sender_user_res = await db.execute(
+            select(models.User.name).where(
+                models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+            )
+        )
+        sender_name = sender_user_res.scalars().first() or "Someone"
+
         rider_message = f"🎉 Ride confirmed! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
         customer_message = (
             f"🎉 Your ride is confirmed!\n\n"
@@ -1046,7 +1029,7 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
             )
 
         recipient_message = (
-            f"👋 Hello! A package is on its way to you.\n\n"
+            f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
             f"📍 Pickup: {order.pickup_location_name}\n\n"
             f"🏁 Dropoff: {order.dropoff_location_name}\n\n"

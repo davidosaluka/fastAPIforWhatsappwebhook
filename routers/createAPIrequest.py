@@ -107,6 +107,16 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         raw_desc = json_response.get("package_description") or json_response.get("description")
         raw_recipient = json_response.get("recipient_phone_number") or json_response.get("recipient_phone") or json_response.get("recipient_phone_number_0")
         
+        raw_is_drug = json_response.get("is_drug") or json_response.get("Is_Drug_med") or json_response.get("is_medication") or json_response.get("isDrug")
+        raw_is_urgent = json_response.get("is_urgent") or json_response.get("Is_Urgent_asap") or json_response.get("is_asap") or json_response.get("isUrgent")
+
+        is_drug = str(raw_is_drug).lower() in ["true", "1", "yes"] if raw_is_drug is not None else False
+        is_urgent = str(raw_is_urgent).lower() in ["true", "1", "yes"] if raw_is_urgent is not None else False
+        is_priority = bool(is_urgent or (is_drug and is_urgent))
+        if is_priority:
+            is_drug = True
+            is_urgent = True
+
         sender_wa_number = message["from"] 
         rider_selected_option_for_current_ride = json_response.get("screen_0_Pick_an_Option_0")
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
@@ -168,9 +178,13 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )    
             order_details = order_details.scalar_one_or_none()
             if order_details:
-                message_for_sender_and_recipient_and_rider = (
+                message_for_sender_and_recipient = (
                     f"Package has been delivered successfully!\n"
                     "Thank you for choosing inTime!\n"
+                )
+                message_for_rider = (
+                    f"🎉 Delivery completed successfully for Order *{order_number}*!\n"
+                    "Thank you for your service! 🏍️"
                 )
                 await db.execute(
                 update(models.Orders)
@@ -181,20 +195,20 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                 await replyhandler.send_custom_message(
                     sender_wa_number=order_details.sender_wa_number, 
-                    message=message_for_sender_and_recipient_and_rider,
+                    message=message_for_sender_and_recipient,
                     auth=AUTH, 
                     graph_url=GRAPH_URL
                 )
 
                 await replyhandler.send_custom_message(
                     sender_wa_number=order_details.rider_wa_number, 
-                    message=message_for_sender_and_recipient_and_rider,
+                    message=message_for_rider,
                     auth=AUTH, 
                     graph_url=GRAPH_URL
                 )
                 await replyhandler.send_custom_message(
                     sender_wa_number=order_details.recipient_phone_number, 
-                    message=message_for_sender_and_recipient_and_rider,
+                    message=message_for_sender_and_recipient,
                     auth=AUTH, 
                     graph_url=GRAPH_URL
                 )
@@ -243,7 +257,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "drop_off_location": result.dropoff_location_name,
                     "offered_price": customer_fare_increase_amount,
                     "order_number": result.order_number,
-                    "image_id": result.package_image_id
+                    "image_id": result.package_image_id,
+                    "is_priority": result.is_priority,
+                    "is_drug": result.is_drug,
+                    "is_urgent": result.is_urgent
                 }
                 await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
         if custRespToRiderOff:
@@ -307,6 +324,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 recipient_phone_number=recipient_phone_number,
                 pickup_location_name=", ".join([str(v).strip() for v in [json_response.get('pickup_HouseFlat_Number_0'), json_response.get('pickup_Street_Name_1'), json_response.get('pickup_City_2'), json_response.get('pickup_State_3')] if v and str(v).lower() != "none"]) or "Pickup Location",
                 dropoff_location_name=", ".join([str(v).strip() for v in [json_response.get('dropoff_HouseFlat_Number_0'), json_response.get('dropoff_Street_Name_1'), json_response.get('dropoff_City_2'), json_response.get('dropoff_State_3')] if v and str(v).lower() != "none"]) or "Dropoff Location",
+                is_drug=is_drug,
+                is_urgent=is_urgent,
+                is_priority=is_priority
                 )
 
                 db.add(newOrder)
@@ -357,7 +377,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "drop_off_location": ride.dropoff_location_name,
                     "offered_price": ride.customer_initial_offered_price,
                     "order_number": ride.order_number,
-                    "image_id": ride.package_image_id
+                    "image_id": ride.package_image_id,
+                    "is_priority": ride.is_priority,
+                    "is_drug": ride.is_drug,
+                    "is_urgent": ride.is_urgent
                 }
                 await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
             else:
@@ -441,9 +464,36 @@ def validateWhatsAPPGetRequest(
 
 
 async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_phone, order_num, auth, graph_url, delay=300):
-    await asyncio.sleep(delay)
+    # --- STEP 1: 10-MINUTE PROXIMITY NOTIFICATION ---
+    await asyncio.sleep(delay)  # Initial delay after package pickup
 
     from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        order = await replyhandler.get_active_ride_by_number(order_num, db)
+        if not order or order.status in ["cancelled", "completed", "expired"]:
+            return
+        if order.delivery_progression_status == "package_delivered":
+            return
+        
+        sender_res = await db.execute(
+            select(models.User.name).where(
+                models.User.wa_id.in_(replyhandler.get_phone_variants(sender_wa))
+            )
+        )
+        sender_name = sender_res.scalars().first() or "Sender"
+
+    # Proximity notification to Rider, Customer (Sender), and Recipient
+    rider_eta_msg = f"📍 *ETA Check*: Are you about 10 minutes away from the drop-off location for Order *{order_num}*?"
+    customer_eta_msg = f"🛵 *Delivery Update*: Your rider is approximately 10 minutes away from the drop-off location for Order *{order_num}*!"
+    recipient_eta_msg = f"📦 *Package Update*: Your package from *{sender_name}* (Order *{order_num}*) is getting close! Your rider is approximately 10 minutes away from your location."
+
+    await replyhandler.send_custom_message(sender_wa_number=rider_wa, message=rider_eta_msg, auth=auth, graph_url=graph_url)
+    await replyhandler.send_custom_message(sender_wa_number=sender_wa, message=customer_eta_msg, auth=auth, graph_url=graph_url)
+    await replyhandler.send_custom_message(sender_wa_number=recipient_phone, message=recipient_eta_msg, auth=auth, graph_url=graph_url)
+
+    # --- STEP 2: VERIFICATION CODE & DROPOFF FLOW (5 mins after 10-min proximity alert) ---
+    await asyncio.sleep(300)
+
     async with AsyncSessionLocal() as db:
         order = await replyhandler.get_active_ride_by_number(order_num, db)
         if not order or order.status in ["cancelled", "completed", "expired"]:
@@ -465,9 +515,9 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         "Confirm this code from the recipient before delivering the package"
     )
     message_for_recipient = (
-        "Just Notifying you that Rider has gotten to the pickup location and would be coming to you soon.\n\n" 
+        f"Just Notifying you that Rider has gotten close to your location with your package from *{sender_name}*.\n\n" 
         f"The Code is: {five_digit_code}. \n\n"
-        "The Rider would request this code of you before delivering you package"
+        "The Rider would request this code of you before delivering your package"
     )
     await replyhandler.send_custom_message(
         sender_wa_number=sender_wa, 

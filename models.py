@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import random
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Float, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 import string
@@ -60,6 +60,9 @@ class Orders(Base):
     dropoff_location_name: Mapped[str] = mapped_column(String, nullable=True)
     package_image_id: Mapped[str] = mapped_column(String, nullable=True)
     delivery_progression_status: Mapped[str] = mapped_column(String, nullable=True)
+    is_drug: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    is_urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    is_priority: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 

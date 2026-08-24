@@ -55,8 +55,11 @@ async def lifespan(_app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_initial_offered_price VARCHAR(50);'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_drug BOOLEAN DEFAULT FALSE;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_urgent BOOLEAN DEFAULT FALSE;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_priority BOOLEAN DEFAULT FALSE;'))
         except Exception as e:
-            print(f"Migration note (orders add col): {e}")
+            print(f"Migration note (orders add cols): {e}")
 
     elif engine.dialect.name == "sqlite":
         try:
@@ -73,6 +76,9 @@ async def lifespan(_app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN customer_initial_offered_price VARCHAR(50);'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_drug BOOLEAN DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_urgent BOOLEAN DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;'))
         except Exception:
             pass
 
