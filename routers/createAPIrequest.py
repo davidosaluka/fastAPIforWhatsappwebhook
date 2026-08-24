@@ -96,7 +96,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
         
-        name        = json_response.get("name") or json_response.get("user_name") or json_response.get("screen_0_Name_0") or json_response.get("full_name") or "Customer"
+        name        = json_response.get("name") or json_response.get("user_name") or json_response.get("screen_0_Name_0") or json_response.get("full_name")
         rider_proposed_amount = json_response.get("proposed_amount") or json_response.get("rider_proposed_amount")
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
         custRespToRiderOff = json_response.get("custRespToRiderOff")       
@@ -112,7 +112,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
 
-        if not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]:
+        is_rider_action = bool(
+            rider_in_pickup_location or
+            rider_in_dropoff_location or
+            rider_selected_option_for_current_ride or
+            rider_proposed_amount or
+            custRespToRiderOff
+        )
+
+        if not is_rider_action and (not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]):
             if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
             elif name or email:
@@ -434,6 +442,15 @@ def validateWhatsAPPGetRequest(
 
 async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_phone, order_num, auth, graph_url, delay=300):
     await asyncio.sleep(delay)
+
+    from database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        order = await replyhandler.get_active_ride_by_number(order_num, db)
+        if not order or order.status in ["cancelled", "completed", "expired"]:
+            return
+        if order.delivery_progression_status == "package_delivered":
+            return
+
     five_digit_code = ''.join(random.choices(string.digits, k=5))
     message_for_sender = (
         f"The Code is: {five_digit_code}.\n"
