@@ -67,6 +67,33 @@ async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
         print(response.status_code, response.text)
     return
 
+#rider daily checkin template
+async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": rider_wa_number,
+            "type": "template",
+            "template": {
+                "name": "checkin_template",
+                "language": { "code": "en" }      
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+    print(req_body)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+    return
+
+#end rider daily checkin
+
 
 async def send_custom_message(sender_wa_number, message , auth, graph_url):
 

@@ -73,7 +73,7 @@ class Riders(Base):
     rider_phonenumber_2: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     kyc_status: Mapped[str] = mapped_column(String(50), nullable=False)
-    availabilty_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    availabilty_status: Mapped[str] = mapped_column(String(50), nullable=False, server_default='offline')
 
 
     

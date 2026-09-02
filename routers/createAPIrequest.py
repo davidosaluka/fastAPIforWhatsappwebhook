@@ -85,6 +85,18 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         elif message["button"]["payload"] == "Contact Support":
             custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
+
+        elif message["button"]["payload"] == "I'm Available":
+            rider_phoneno = message["from"]
+            await db.execute(
+                update(models.Riders)
+                .where(models.Riders.rider_wa_number == rider_phoneno)
+                .values(availabilty_status="available")
+            )
+            await db.commit()
+            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
+            await replyhandler.send_custom_message(rider_phoneno, custom_message, AUTH, GRAPH_URL)
+
         
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         json_response = json.loads(message["interactive"]["nfm_reply"]["response_json"])

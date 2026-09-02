@@ -10,6 +10,8 @@ import json
 from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
 from routers import createAPIrequest
+from scheduler import start_scheduler
+
 
 #Base.metadata.create_all(bind=engine)
 @asynccontextmanager
@@ -17,8 +19,11 @@ async def lifespan(_app: FastAPI):
     #startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    scheduler = start_scheduler() 
     yield
+
     #shutdown
+    scheduler.shutdown()
     await engine.dispose()
 
 app = FastAPI(lifespan=lifespan)
