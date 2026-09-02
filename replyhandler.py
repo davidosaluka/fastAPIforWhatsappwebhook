@@ -76,7 +76,7 @@ async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
             "to": rider_wa_number,
             "type": "template",
             "template": {
-                "name": "checkin_template",
+                "name": "rider_checkin",
                 "language": { "code": "en" }      
             }
             }

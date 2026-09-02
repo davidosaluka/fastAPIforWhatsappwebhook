@@ -43,7 +43,7 @@ def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     scheduler.add_job(
         send_daily_rider_templates,
-        trigger=CronTrigger(hour=18, minute=50),
+        trigger=CronTrigger(hour=9, minute=0),
         id="daily_rider_template",
         replace_existing=True,
     )
