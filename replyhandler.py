@@ -347,7 +347,10 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     return result.scalar_one_or_none()
 
 async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
-    message = f"Your order number is:\n{order_details['order_number']}.\n\nI am now searching for available Riders for you, please hold"
+    message = (
+            f"📦 Your order number: *{order_details['order_number']}*\n\n"
+            "🔎 We're now searching for an available rider for you — hang tight!"
+        )
     await send_custom_message(sender_wa_number, message , auth, graph_url)
     riders = await db.execute(
         select(models.Riders)
@@ -466,26 +469,40 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         )
     rider_details = rider_details.scalar_one_or_none()
 
+
     if order_status == "confirmed":
         customer_wa_number = await db.execute(
             select(models.Orders.sender_wa_number)
             .where(models.Orders.order_number == order_number)
         )
         customer_wa_number = customer_wa_number.scalar_one_or_none()
-        rider_message = f"You can communicate with the customer on this number: {customer_wa_number}. Please proceed to the pickup location"
-        customer_message = (
-            f"Ride has been accepted. Rider is proceeding to your pickup location and would be in contact with you shortly\n\n"
-            f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
-            f"Rider's phone number: {rider_details.rider_wa_number}"
+
+        sender_details = await db.execute(
+                select(models.User)
+                .where(models.User.display_phone_number == customer_wa_number)
             )
+        sender_details = sender_details.scalar_one_or_none()
+        
+        rider_message = (
+            f"✅ Ride accepted!\n\n"
+            f"📞 You can reach the customer on: {customer_wa_number}\n\n"
+            "🛵 Please proceed to the pickup location."
+        )
+
+        customer_message = (
+            "✅ Your ride has been accepted! The rider is heading to your pickup location and will be in touch shortly.\n\n"
+            f"👤 Rider: {rider_details.first_name} {rider_details.last_name}\n"
+            f"📞 Rider's number: {rider_details.rider_wa_number}"
+        )
+
         recipient_message = (
-            f"Hello, A dispatch request is on its way to you!"
-            f"ORDER DESCRIPTION 📦: {order.package_description}\n\n"
-            f"PICKUP LOCATION📍: {order.pickup_location_name}\n\n"
-            f"DROPOFF LOCATION📍: {order.dropoff_location_name}\n\n"
-            f"ORDER NUMBER: {order.order_number}\n\n"
-            f"RIDER'S NAME: {rider_details.first_name} {rider_details.last_name}\n\n"
-            f"RIDER'S PHONE NUMBER: {rider_details.rider_wa_number}"
+            f"👋 Hi! {sender_details.name} is sending you a package via inTime!\n\n"
+            f"📦 Order description: {order.package_description}\n\n"
+            f"📍 Pickup location: {order.pickup_location_name}\n\n"
+            f"📍 Dropoff location: {order.dropoff_location_name}\n\n"
+            f"🔢 Order number: {order.order_number}\n\n"
+            f"👤 Rider: {rider_details.first_name} {rider_details.last_name}\n"
+            f"📞 Rider's number: {rider_details.rider_wa_number}"
         )
         recipient_wa_number = order.recipient_phone_number
         
@@ -525,7 +542,7 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
 
 
     else:
-        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
+        rider_message = "😔 Sorry, you responded a bit late — this order's already been picked up by another rider."
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
 
 
@@ -577,10 +594,9 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
             )
         
         asking_customer_to_increase_price_msg = (
-            f"If you do not agree to any of the prices above," 
-            f"you can increase your fare price by clicking of the button below"
-            "and other riders would be searched for"
-        )
+                "Not happy with any of the offers above? 💬\n\n"
+                "Tap the button below to increase your fare and we'll search for other riders for you 🔎"
+            )
         
         
         
@@ -613,7 +629,7 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
         
 
     else:
-        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
+        rider_message = "😔 Sorry, you responded a bit late — this order's already been picked up by another rider."
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
 
 
@@ -637,22 +653,32 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
     if order_status == "confirmed":
         customer_wa_number = sender_wa_number
-
-        rider_message = f"You can communicate with the customer on this number: {customer_wa_number}. Please proceed to the pickup location"
-        customer_message = (
-            f"Ride has been accepted. Rider is proceeding to your pickup location and would be in contact with you shortly\n\n"
-            f"Rider's Name: {rider_details.first_name} {rider_details.last_name}\n\n"
-            f"Rider's phone number: {rider_details.rider_wa_number}"
+        sender_details = await db.execute(
+                select(models.User)
+                .where(models.User.display_phone_number == customer_wa_number)
             )
+        sender_details = sender_details.scalar_one_or_none()
+
+        rider_message = (
+            f"✅ Ride accepted!\n\n"
+            f"📞 You can reach the customer on: {customer_wa_number}\n\n"
+            "🛵 Please proceed to the pickup location."
+        )
+
+        customer_message = (
+            "✅ Your ride has been accepted! The rider is heading to your pickup location and will be in touch shortly.\n\n"
+            f"👤 Rider: {rider_details.first_name} {rider_details.last_name}\n"
+            f"📞 Rider's number: {rider_details.rider_wa_number}"
+        )
 
         recipient_message = (
-            f"Hello, A dispatch request is on its way to you!"
-            f"ORDER DESCRIPTION 📦: {order.package_description}\n\n"
-            f"PICKUP LOCATION📍: {order.pickup_location_name}\n\n"
-            f"DROPOFF LOCATION📍: {order.dropoff_location_name}\n\n"
-            f"ORDER NUMBER: {order.order_number}\n\n"
-            f"RIDER'S NAME: {rider_details.first_name} {rider_details.last_name}\n\n"
-            f"RIDER'S PHONE NUMBER: {rider_details.rider_wa_number}"
+            f"👋 Hi! {sender_details.name} is sending you a package via inTime!\n\n"
+            f"📦 Order description: {order.package_description}\n\n"
+            f"📍 Pickup location: {order.pickup_location_name}\n\n"
+            f"📍 Dropoff location: {order.dropoff_location_name}\n\n"
+            f"🔢 Order number: {order.order_number}\n\n"
+            f"👤 Rider: {rider_details.first_name} {rider_details.last_name}\n"
+            f"📞 Rider's number: {rider_details.rider_wa_number}"
         )
         recipient_wa_number = order.recipient_phone_number
         #sending a message to the rider
@@ -691,8 +717,8 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
 
     else:
-        rider_message = f"Sorry! this order has already been picked up by another rider"
-        cust_message = f"Sorry! this order has already been picked up by another rider and the details has been sent to you"
+        rider_message = "😔 Sorry, you responded a bit late — this order's already been picked up by another rider."
+        cust_message = f"✅ This order has already been picked up by a rider, and their details have been sent to you!"
         await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)   
         await send_custom_message(sender_wa_number=customer_wa_number, message=cust_message, auth=auth, graph_url=graph_url)   
 

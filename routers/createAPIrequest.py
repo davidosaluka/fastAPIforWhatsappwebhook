@@ -96,7 +96,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             else:
                 await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
         elif message["button"]["payload"] == "Contact Support":
-            custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
+            custom_message = "Need a hand? 🙋 Reach our support team at intimesender@gmail.com and we'll sort you out.\n\nSend any message here to restart this flow 🔄"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
         elif message["button"]["payload"] == "I'm Available":
@@ -107,7 +107,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 .values(availabilty_status="available")
             )
             await db.commit()
-            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
+            custom_message = "You're checked in! ✅ New dispatch requests will start routing your way shortly 📦🛵💨"
             await replyhandler.send_custom_message(rider_phoneno, custom_message, AUTH, GRAPH_URL)
 
         
@@ -141,10 +141,16 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )    
             order_details = order_details.scalar_one_or_none()
 
+            sender_details = await db.execute(
+                select(models.User)
+                .where(models.User.display_phone_number == order_details.sender_wa_number)
+            )
+            sender_details = sender_details.scalar_one_or_none()
+
             #notify sender on arrival of rider at pickup location
             await replyhandler.send_custom_message(
                 sender_wa_number=order_details.sender_wa_number, 
-                message="Rider has gotten to your location. You can call the rider or expect a call from then any moment from now" , 
+                message = "Your rider has arrived! 📍 Feel free to give them a call, or expect one from them any moment now 📞",
                 auth=AUTH, 
                 graph_url=GRAPH_URL
             )
@@ -158,21 +164,21 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await db.commit()
             five_digit_code = ''.join(random.choices(string.digits, k=5))
             message_for_sender = (
-                f"The Code is: {five_digit_code}.\n"
-                "You don't have to do anything with this code.\n"
-                "The Same code has been sent to the recipient of the package and the rider as well.\n"
-                "We are only sending you this code as a backup in the event that the recipient didnt recieve the code for whatever reason.\n"
-                "Feel free to share this code with the recipient as the dispatch rider would demand it before delivering the package.\n"
-                "DO NOT SHARE THIS CODE WITH THE RIDER ONLY SHARE WITH THE RECIPIENT"
+                f"🔐 Your delivery code: *{five_digit_code}*\n\n"
+                "You don't need to do anything with this — it's just a backup copy.\n\n"
+                "This same code has already been sent to the recipient and the rider. "
+                "We're sharing it with you too, just in case the recipient doesn't receive theirs for any reason.\n\n"
+                "Feel free to pass it along to the recipient — the rider will ask for it before handing over the package.\n\n"
+                "⚠️ *DO NOT share this code with the rider* — only the recipient should provide it."
             )
             message_for_rider= (
-                f"The Code is: {five_digit_code}. \n"
-                "Confirm this code from the recipient before delivering the package"
+                f"🔐 Delivery code: *{five_digit_code}*\n\n"
+                "✅ Confirm this code with the recipient *before* handing over the package."
             )
             message_for_recipient = (
-                "Just Notifying you that Rider has gotten to the pickup location and would be coming to you soon.\n\n" 
-                f"The Code is: {five_digit_code}. \n\n"
-                "The Rider would request this code of you before delivering you package"
+                f"📦 Your package from {sender_details.name} is on its way! The rider just picked it up and is heading to you now.\n\n"
+                f"🔐 Delivery code: *{five_digit_code}*\n\n"
+                "The rider will ask you for this code before handing over the package — keep it handy!"
             )
             await replyhandler.send_custom_message(
                 sender_wa_number=order_details.sender_wa_number, 
@@ -198,7 +204,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 wa_number=order_details.rider_wa_number,
                 flow_token={"order_number": order_details.order_number},
                 message="Click the button below when you have dropped off the package successfully",
-                header=f"Have you delivered the package yet?\n\n",
+                header=f"Have you delivered the package? 📬\n\n",
                 flow_id="1549615230214062",
                 flow_cta="Have you Delivered the Package?",
                 screen_name="flow_to_ask_if_rider_has_dropped_off_package",
@@ -213,9 +219,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )    
             order_details = order_details.scalar_one_or_none()
             message_for_sender_and_recipient_and_rider = (
-                f"Package has been delivered successfully!\n"
-                "Thank you for choosing inTime!\n"
-               
+                "📦✅ Package delivered successfully!\n\n"
+                "Thank you for choosing inTime 🙌"
             )
             await db.execute(
             update(models.Orders)
@@ -259,7 +264,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 else:
                     await replyhandler.handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)
             else:
-                await replyhandler.send_custom_message(sender_wa_number=sender_wa_number, message="Dispatch request is expired and has already been completed by another rider", auth=AUTH, graph_url=GRAPH_URL)
+                await replyhandler.send_custom_message(sender_wa_number=sender_wa_number, message = "⏰ This dispatch request has expired — it's already been picked up by another rider. ", auth=AUTH, graph_url=GRAPH_URL)
         if rider_proposed_amount:
             await db.execute(
                 update(models.Orders)
@@ -306,7 +311,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     db=db
                     )
             elif custRespToRiderOff == "rejectingRiderOffer":
-                message = "Offer was declined by customer"
+                message = "❌ The customer declined your offer."
                 await replyhandler.send_custom_message(sender_wa_number=rider_wa_number, message=message, auth=AUTH, graph_url=GRAPH_URL)
 
 
@@ -362,7 +367,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 db.add(newOrder)
                 await db.commit()
                 await db.refresh(newOrder)
-                await replyhandler.send_custom_message(sender_wa_number, "Please take and upload an image of the package you are sending", AUTH, GRAPH_URL)
+                await replyhandler.send_custom_message(sender_wa_number, "📸 Please take and upload a photo of the package you're sending.", AUTH, GRAPH_URL)
 
 
             case _:
