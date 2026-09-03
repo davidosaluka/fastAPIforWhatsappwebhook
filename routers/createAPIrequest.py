@@ -69,6 +69,16 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         await db.rollback()
         return {"status": "duplicate, ignored"}
 
+    if wamid:
+        try:
+            await replyhandler.show_typing_indicator(
+                message_id=wamid,
+                auth=AUTH,
+                graph_url=GRAPH_URL
+            )
+        except Exception as e:
+            logger.warning(f"Failed to show typing indicator for {wamid}: {e}")
+
     sender_wa_number = message.get("from")
     if sender_wa_number:
         await replyhandler.mark_rider_available_if_rider(sender_wa_number, db)
