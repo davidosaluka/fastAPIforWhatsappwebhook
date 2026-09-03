@@ -1133,7 +1133,7 @@ async def classify_message_intent(message_text: str) -> str:
         'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
     )
     allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
-    models_to_try = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
+    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "llama3-70b-8192"]
     
     try:
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
@@ -1179,11 +1179,11 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     rider_order = await get_active_rider_order(sender_wa_number, db)
     if rider_order:
         lower_text = text_body.strip().lower()
-        if lower_text in ["no", "not yet", "no yet", "nope", "n"]:
+        if any(neg in lower_text for neg in ["no", "not", "nope"]):
             rider_msg = f"Got it 👍 Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
             return
-        elif lower_text in ["yes", "yeah", "yep", "almost", "close", "y", "arrived"]:
+        elif any(pos in lower_text for pos in ["yes", "yeah", "yep", "almost", "close", "arrived"]):
             rider_msg = f"Awesome 🛵! Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
 
@@ -1219,8 +1219,9 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
-    # Fast-path pre-check for generic courtesy acknowledgments
     lower_clean = text_body.strip().lower().strip(".,!?:;")
+
+    # Fast-path pre-check for generic courtesy acknowledgments
     generic_courtesies = {
         "ok", "okay", "thanks", "thank you", "alright", "got it", "noted", "cool", 
         "sure", "nice", "alright thank you", "ok thank you", "ok thanks", "great", 
@@ -1230,20 +1231,18 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     if lower_clean in generic_courtesies:
         intent = "GENERAL_CHAT"
     else:
-        # --- 2. SEMANTIC INTENT CLASSIFICATION ---
+        # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
+        if lower_clean in ["send an order", "send order", "create order", "book order"]:
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+            else:
+                await send_registration_template(sender_wa_number, auth, graph_url)
+            return
+
         intent = await classify_message_intent(text_body)
 
-    # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
-    if lower_clean in ["send an order", "send order", "create order", "book order"]:
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-        else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
-        return
-
-    intent = await classify_message_intent(text_body)
-
+    # --- 3. INTENT HANDLING ---
     if intent == "CANCEL_ORDER":
         order = await get_active_ride(sender_wa_number, db)
         if order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up"]:
@@ -1287,7 +1286,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
-    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent with Memory) ---
+    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent - Femi Avatar) ---
     try:
         order = await get_active_ride(sender_wa_number, db)
         if order:
@@ -1296,7 +1295,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             order_context = "No active delivery order."
 
         system_prompt = (
-            f"You are the warm, energetic, and helpful AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
+            f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
             f"Customer Name: {username}.\n"
             f"Current Context: {order_context}.\n"
             f"COMPANY KNOWLEDGE:\n"
@@ -1306,14 +1305,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
             f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
             f"STRICT BEHAVIOR RULES:\n"
-            f"1. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
-            f"2. NO REPETITIVE GREETINGS: Do NOT repeat 'Hey {username}!' or formal introductions in every single reply if you are already in an ongoing conversation with the user.\n"
-            f"3. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"4. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
-            f"5. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
-            f"6. REFERRAL NAME: Address the customer as {username}.\n"
-            f"7. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
-            f"8. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
+            f"1. AVATAR IDENTITY: Introduce yourself as Femi when starting a new chat or when asked who you are (e.g. 'Hi 👋, I'm Femi from InTime! How can I help you today?').\n"
+            f"2. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
+            f"3. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
+            f"4. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
+            f"5. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
+            f"6. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"7. REFERRAL NAME: Address the customer as {username}.\n"
+            f"8. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"9. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
             f"STYLE: Keep replies concise (2-3 sentences max), highly engaging, friendly, and spiced with icons!"
         )
 
@@ -1324,7 +1324,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         messages_payload.append({"role": "user", "content": text_body})
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-        models_to_try = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "llama3-70b-8192"]
 
         ai_reply = None
         for model_name in models_to_try:
@@ -1349,8 +1349,10 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
-            await send_default_template(sender_wa_number, username, auth, graph_url)
+            fallback_msg = f"Hi 👋, I'm Femi! Welcome to InTime 🛵. How can I help you today? Whenever you're ready to ship a package, just type *Send an Order* right here! 📦✨"
+            await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
 
     except Exception as e:
         print(f"Groq AI error: {e}")
-        await send_default_template(sender_wa_number, username, auth, graph_url)
+        fallback_msg = f"Hi 👋, I'm Femi! Welcome to InTime 🛵. How can I help you today? Whenever you're ready to ship a package, just type *Send an Order* right here! 📦✨"
+        await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
