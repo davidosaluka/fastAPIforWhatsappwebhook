@@ -14,8 +14,18 @@ logger = logging.getLogger(__name__)
 AUTH = os.getenv("AUTHORIZATION")
 GRAPH_URL = os.getenv("GRAPH_URL")
 
+LAST_CHECKIN_DATE = None
+
 async def send_daily_rider_templates():
-    """Sends WhatsApp check-in template to all riders daily at 9:00 AM and sets their status to offline until they check in."""
+    """Sends WhatsApp check-in template to all riders daily at 8:00 AM and sets their status to offline until they check in."""
+    global LAST_CHECKIN_DATE
+    lagos_tz = datetime.now(UTC).date()
+    if LAST_CHECKIN_DATE == lagos_tz:
+        logger.info(f"Daily check-in already sent today ({lagos_tz}). Skipping duplicate execution.")
+        return
+
+    LAST_CHECKIN_DATE = lagos_tz
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(models.Riders))
         riders = result.scalars().all()
@@ -43,7 +53,7 @@ def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     scheduler.add_job(
         send_daily_rider_templates,
-        trigger=CronTrigger(hour=9, minute=0),
+        trigger=CronTrigger(hour=10, minute=0),
         id="daily_rider_template",
         replace_existing=True,
     )

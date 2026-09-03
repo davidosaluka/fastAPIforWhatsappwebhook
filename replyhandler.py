@@ -391,7 +391,7 @@ def get_phone_variants(phone: str) -> list[str]:
 
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     possible_numbers = get_phone_variants(sender_wa_number)
-    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "picked_up", "awaiting_dropoff"]
+    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.sender_wa_number.in_(possible_numbers))
@@ -1233,22 +1233,20 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         # --- 2. SEMANTIC INTENT CLASSIFICATION ---
         intent = await classify_message_intent(text_body)
 
-    # --- 3. APPLICATION ROUTING ---
-    if intent == "CREATE_ORDER":
-        # Guard: If user has an active order in progress, do not trigger welcome menu unless they explicitly typed 'send an order'
-        if active_order and lower_clean != "send an order":
-            intent = "GENERAL_CHAT"
+    # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
+    if lower_clean in ["send an order", "send order", "create order", "book order"]:
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
         else:
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-            else:
-                await send_registration_template(sender_wa_number, auth, graph_url)
-            return
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
 
-    elif intent == "CANCEL_ORDER":
+    intent = await classify_message_intent(text_body)
+
+    if intent == "CANCEL_ORDER":
         order = await get_active_ride(sender_wa_number, db)
-        if order and order.status in ["confirmed", "awaiting_pickup"]:
+        if order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up"]:
             await db.execute(
                 update(models.Orders)
                 .where(models.Orders.order_number == order.order_number)
@@ -1284,14 +1282,9 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     elif intent == "MODIFY_ORDER":
         msg = (
             "To modify your delivery details or create a new order, "
-            "please type 'Send an Order' in this chat to bring up your options."
+            "please type *Send an Order* in this chat whenever you're ready!"
         )
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-        else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
         return
 
     # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent with Memory) ---
