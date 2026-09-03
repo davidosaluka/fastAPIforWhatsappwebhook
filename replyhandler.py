@@ -8,7 +8,38 @@ import models
 import httpx
 import os
 import re
+import random
 from groq import AsyncGroq
+
+
+def get_dynamic_femi_welcome(username: str) -> str:
+    """Generates dynamic, spacious introductory messages for Femi avatar."""
+    name = username if username and username.lower() not in ["user", "customer"] else ""
+    name_str = f" {name}" if name else ""
+
+    templates = [
+        (
+            f"Hi 👋, I'm Femi!\n\n"
+            f"Welcome to *InTime*{name_str}.\n\n"
+            f"How can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨"
+        ),
+        (
+            f"Hey{name_str} 👋! Femi here from *InTime*.\n\n"
+            f"Need to ship a quick package or dispatch across Nigeria?\n\n"
+            f"Whenever you're ready, just type *Send an Order* right here to get rolling! 🛵💨✨"
+        ),
+        (
+            f"Hello{name_str} ✨! I'm Femi, your *InTime* delivery assistant.\n\n"
+            f"Ready to deliver something fast and safe today?\n\n"
+            f"Just type *Send an Order* in this chat and we'll connect you with top-rated riders! 📦🚀"
+        ),
+        (
+            f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
+            f"I'm Femi, your personal dispatch assistant.\n\n"
+            f"How can I assist you today? Type *Send an Order* anytime to create a package request!"
+        )
+    ]
+    return random.choice(templates)
 
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
@@ -1180,11 +1211,17 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     if rider_order:
         lower_text = text_body.strip().lower()
         if any(neg in lower_text for neg in ["no", "not", "nope"]):
-            rider_msg = f"Got it 👍 Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
+            rider_msg = (
+                f"Got it 👍\n\n"
+                f"Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
+            )
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
             return
         elif any(pos in lower_text for pos in ["yes", "yeah", "yep", "almost", "close", "arrived"]):
-            rider_msg = f"Awesome 🛵! Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
+            rider_msg = (
+                f"Awesome 🛵!\n\n"
+                f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
+            )
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
 
             # Notify Customer (Sender) and Recipient upon Rider ETA confirmation
@@ -1196,8 +1233,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 )
                 sender_name = sender_res.scalars().first() or "Sender"
 
-                customer_eta_msg = f"🛵 *Delivery Update*: Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{rider_order.order_number}*!"
-                recipient_eta_msg = f"📦 *Package Update*: Your package from *{sender_name}* (Order *{rider_order.order_number}*) is getting close! Your rider has confirmed they are approximately 10 minutes away."
+                customer_eta_msg = (
+                    f"🛵 *Delivery Update*\n\n"
+                    f"Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{rider_order.order_number}*!"
+                )
+                recipient_eta_msg = (
+                    f"📦 *Package Update*\n\n"
+                    f"Your package from *{sender_name}* (Order *{rider_order.order_number}*) is getting close!\n\n"
+                    f"Your rider has confirmed they are approximately 10 minutes away."
+                )
 
                 if rider_order.sender_wa_number:
                     await send_custom_message(sender_wa_number=rider_order.sender_wa_number, message=customer_eta_msg, auth=auth, graph_url=graph_url)
@@ -1213,7 +1257,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     if active_order and active_order.package_image_id is None:
         msg = (
             f"📸 *Package Photo Needed*\n\n"
-            f"Your order *{active_order.order_number}* has been initialized.\n"
+            f"Your order *{active_order.order_number}* has been initialized.\n\n"
             f"Please snap and send a photo of the package to complete your dispatch request and alert nearby riders!"
         )
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
@@ -1267,10 +1311,10 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             msg = (
                 f"📦 *Order Status Update*\n\n"
                 f"Order Number: *{order.order_number}*\n"
-                f"Status: *{order.status.replace('_', ' ').title()}*\n"
-                f"Pickup: {order.pickup_location_name or 'Not set'}\n"
-                f"Dropoff: {order.dropoff_location_name or 'Not set'}\n"
-                f"Package: {order.package_description or 'Not specified'}\n\n"
+                f"Status: *{order.status.replace('_', ' ').title()}*\n\n"
+                f"📍 Pickup: {order.pickup_location_name or 'Not set'}\n"
+                f"🏁 Dropoff: {order.dropoff_location_name or 'Not set'}\n"
+                f"📝 Package: {order.package_description or 'Not specified'}\n\n"
                 f"🧑‍✈️ {rider_info}"
             )
         else:
@@ -1280,8 +1324,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     elif intent == "MODIFY_ORDER":
         msg = (
-            "To modify your delivery details or create a new order, "
-            "please type *Send an Order* in this chat whenever you're ready!"
+            f"To modify your delivery details or create a new order, "
+            f"please type *Send an Order* in this chat whenever you're ready!"
         )
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
@@ -1305,16 +1349,17 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
             f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
             f"STRICT BEHAVIOR RULES:\n"
-            f"1. AVATAR IDENTITY: Introduce yourself as Femi when starting a new chat or when asked who you are (e.g. 'Hi 👋, I'm Femi from InTime! How can I help you today?').\n"
-            f"2. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
-            f"3. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
-            f"4. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"5. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
-            f"6. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
-            f"7. REFERRAL NAME: Address the customer as {username}.\n"
-            f"8. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
-            f"9. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
-            f"STYLE: Keep replies concise (2-3 sentences max), highly engaging, friendly, and spiced with icons!"
+            f"1. BREATHING SPACE & PARAGRAPHS: Format ALL your responses with double line breaks (\\n\\n) between paragraphs and thoughts to give clean, readable breathing space! Never lump text into one long dense block.\n"
+            f"2. AVATAR IDENTITY & DYNAMISM: Introduce yourself as Femi when starting a new conversation or when greeted (e.g., 'Hi 👋, I'm Femi!\\n\\nWelcome to *InTime*.\\n\\nHow can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨'). Keep your greetings fresh, dynamic, and varied across users.\n"
+            f"3. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
+            f"4. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
+            f"5. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
+            f"6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
+            f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"8. REFERRAL NAME: Address the customer as {username}.\n"
+            f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"10. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
+            f"STYLE: Keep replies short and spacious (2-3 short paragraphs with \\n\\n line breaks), highly engaging, friendly, and spiced with icons!"
         )
 
         user_history = get_user_chat_memory(sender_wa_number)
@@ -1349,10 +1394,10 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
-            fallback_msg = f"Hi 👋, I'm Femi! Welcome to InTime 🛵. How can I help you today? Whenever you're ready to ship a package, just type *Send an Order* right here! 📦✨"
+            fallback_msg = get_dynamic_femi_welcome(username)
             await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
 
     except Exception as e:
         print(f"Groq AI error: {e}")
-        fallback_msg = f"Hi 👋, I'm Femi! Welcome to InTime 🛵. How can I help you today? Whenever you're ready to ship a package, just type *Send an Order* right here! 📦✨"
+        fallback_msg = get_dynamic_femi_welcome(username)
         await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
