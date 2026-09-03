@@ -1295,7 +1295,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         intent = "GENERAL_CHAT"
     else:
         # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
-        if lower_clean in ["send an order", "send order", "create order", "book order"]:
+        order_triggers = [
+            "send an order", "send order", "create order", "book order",
+            "send a package", "ship a package", "book a delivery", "dispatch a package",
+            "send package", "ship package", "book delivery", "dispatch package",
+            "need to send an order", "like to send an order", "want to send an order",
+            "need to send order", "like to send order", "want to send order",
+            "i want to send", "i need to send", "i would like to send", "i will like to send"
+        ]
+        if any(trigger in lower_clean for trigger in order_triggers):
             registered = await is_user_registered(sender_wa_number, db)
             if registered:
                 await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
@@ -1306,7 +1314,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         intent = await classify_message_intent(text_body)
 
     # --- 3. INTENT HANDLING ---
-    if intent == "CANCEL_ORDER":
+    if intent == "CREATE_ORDER":
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    elif intent == "CANCEL_ORDER":
         order = await get_active_ride(sender_wa_number, db)
         if order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up"]:
             await db.execute(
