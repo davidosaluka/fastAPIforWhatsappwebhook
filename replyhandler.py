@@ -1248,10 +1248,11 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
             f"STRICT BEHAVIOR RULES:\n"
             f"1. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"2. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type 'Send an Order' whenever they're ready!\n"
-            f"3. REFERRAL NAME: Always address the customer warmly as {username}.\n"
-            f"4. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type 'Send an Order' in this chat to open the order form.\n"
-            f"5. TRANSACTION BOUNDARIES: All bookings happen when the user types 'Send an Order'.\n"
+            f"2. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
+            f"3. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"4. REFERRAL NAME: Always address the customer warmly as {username}.\n"
+            f"5. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"6. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
             f"STYLE: Keep replies concise (2-3 sentences max), highly engaging, friendly, and spiced with icons!"
         )
 
@@ -1278,6 +1279,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 continue
 
         if ai_reply:
+            # Convert standard markdown double asterisks (**) to WhatsApp single asterisks (*)
+            ai_reply = ai_reply.replace("**", "*")
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
             await send_default_template(sender_wa_number, username, auth, graph_url)
