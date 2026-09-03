@@ -407,9 +407,7 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
 
 async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: AsyncSession):
     """Updates status in RiderOffer table for rider receipts (delivered, read)."""
-    clean_num = rider_wa_number.lstrip("+")
-    plus_num = f"+{clean_num}"
-    possible_numbers = list(set([rider_wa_number, clean_num, plus_num]))
+    possible_numbers = get_phone_variants(rider_wa_number)
 
     await db.execute(
         update(models.RiderOffer)
@@ -507,8 +505,8 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
     Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
     """
     try:
-        # Follow-up 1: 3 minutes (180 seconds)
-        await asyncio.sleep(180)
+        # Follow-up 1: 60 seconds (1 minute)
+        await asyncio.sleep(60)
 
         from database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
@@ -520,12 +518,17 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
                 select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
             )
             offers = offers_res.scalars().all()
+            total_notified = len(offers)
             read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+            delivered_count = sum(1 for o in offers if o.status in ["delivered", "read", "viewed"])
 
             if read_count > 0:
-                msg = f"Good news 👀 {read_count} rider{'s' if read_count > 1 else ''} have viewed your delivery offer. We're waiting for one to accept."
+                msg = f"Good news 👀 *{read_count}* rider{'s' if read_count > 1 else ''} have viewed your delivery offer! We're waiting for one to accept."
+            elif delivered_count > 0 or total_notified > 0:
+                count = delivered_count if delivered_count > 0 else total_notified
+                msg = f"Good news 👀 We've dispatched your order to *{count}* nearby rider{'s' if count > 1 else ''}. We're waiting for them to view and accept!"
             else:
-                msg = "Stay locked in 👀 We're still looking for a rider for your package. We'll update you as soon as one accepts."
+                msg = "Stay locked in 👀 We're searching for available riders nearby for your package. We'll update you as soon as one accepts."
             
             await send_custom_message(sender_wa_number, msg, auth, graph_url)
 
@@ -1228,7 +1231,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await send_registration_template(sender_wa_number, auth, graph_url)
         return
 
-    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent) ---
+    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent with Memory) ---
     try:
         order = await get_active_ride(sender_wa_number, db)
         if order:
@@ -1247,14 +1250,22 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
             f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
             f"STRICT BEHAVIOR RULES:\n"
-            f"1. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"2. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
-            f"3. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
-            f"4. REFERRAL NAME: Always address the customer warmly as {username}.\n"
-            f"5. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
-            f"6. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
+            f"1. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
+            f"2. NO REPETITIVE GREETINGS: Do NOT repeat 'Hey {username}!' or formal introductions in every single reply if you are already in an ongoing conversation with the user.\n"
+            f"3. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
+            f"4. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
+            f"5. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *bold text*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"6. REFERRAL NAME: Address the customer as {username}.\n"
+            f"7. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"8. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
             f"STYLE: Keep replies concise (2-3 sentences max), highly engaging, friendly, and spiced with icons!"
         )
+
+        user_history = get_user_chat_memory(sender_wa_number)
+        messages_payload = [{"role": "system", "content": system_prompt}]
+        for turn in user_history:
+            messages_payload.append(turn)
+        messages_payload.append({"role": "user", "content": text_body})
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
         models_to_try = ["groq/compound-mini", "groq/compound", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
@@ -1263,10 +1274,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         for model_name in models_to_try:
             try:
                 chat_completion = await groq_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": text_body}
-                    ],
+                    messages=messages_payload,
                     model=model_name,
                     max_tokens=200,
                     timeout=5.0
@@ -1281,6 +1289,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         if ai_reply:
             # Convert standard markdown double asterisks (**) to WhatsApp single asterisks (*)
             ai_reply = ai_reply.replace("**", "*")
+            add_user_chat_memory(sender_wa_number, "user", text_body)
+            add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
             await send_default_template(sender_wa_number, username, auth, graph_url)
@@ -1288,4 +1298,3 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     except Exception as e:
         print(f"Groq AI error: {e}")
         await send_default_template(sender_wa_number, username, auth, graph_url)
-
