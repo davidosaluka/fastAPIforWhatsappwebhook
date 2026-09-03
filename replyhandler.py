@@ -1219,17 +1219,32 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
-    # --- 2. SEMANTIC INTENT CLASSIFICATION ---
-    intent = await classify_message_intent(text_body)
+    # Fast-path pre-check for generic courtesy acknowledgments
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+    generic_courtesies = {
+        "ok", "okay", "thanks", "thank you", "alright", "got it", "noted", "cool", 
+        "sure", "nice", "alright thank you", "ok thank you", "ok thanks", "great", 
+        "fine", "good", "perfect", "kk", "k", "no problem", "np", "thx"
+    }
+    
+    if lower_clean in generic_courtesies:
+        intent = "GENERAL_CHAT"
+    else:
+        # --- 2. SEMANTIC INTENT CLASSIFICATION ---
+        intent = await classify_message_intent(text_body)
 
     # --- 3. APPLICATION ROUTING ---
     if intent == "CREATE_ORDER":
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        # Guard: If user has an active order in progress, do not trigger welcome menu unless they explicitly typed 'send an order'
+        if active_order and lower_clean != "send an order":
+            intent = "GENERAL_CHAT"
         else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
-        return
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+            else:
+                await send_registration_template(sender_wa_number, auth, graph_url)
+            return
 
     elif intent == "CANCEL_ORDER":
         order = await get_active_ride(sender_wa_number, db)
