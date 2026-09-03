@@ -12,6 +12,11 @@ from schemas import apiPostRequestResponse, apiRequestCreate
 from routers import createAPIrequest
 from scheduler import start_scheduler
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 #Base.metadata.create_all(bind=engine)
 @asynccontextmanager

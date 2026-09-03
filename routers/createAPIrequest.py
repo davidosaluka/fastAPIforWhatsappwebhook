@@ -19,6 +19,10 @@ from dotenv import load_dotenv
 import replyhandler
 from sqlalchemy.exc import IntegrityError
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 router = APIRouter()
 VERIFY_TOKEN =  os.getenv("VERIFY_TOKEN")
@@ -70,6 +74,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         return {"status": "ok"}
     message = _response[0]'''
 
+    try:
+        await replyhandler.show_typing_indicator(
+        message_id=wamid,
+        auth=AUTH,
+        graph_url=GRAPH_URL
+    )
+    except Exception as e:
+        logger.warning(f"Failed to show typing indicator for {wamid}: {e}")
+
     if message["type"] == "button":
         sender_wa_number = message["from"]
         if message["button"]["payload"] == "Send an Order":
@@ -105,7 +118,6 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" else {}
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
-        
         name        = json_response.get("name")
         rider_proposed_amount = json_response.get("proposed_amount") 
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
@@ -144,8 +156,6 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             .values(delivery_progression_status="package_picked_up")
             )
             await db.commit()
-
-            await asyncio.sleep(300)
             five_digit_code = ''.join(random.choices(string.digits, k=5))
             message_for_sender = (
                 f"The Code is: {five_digit_code}.\n"

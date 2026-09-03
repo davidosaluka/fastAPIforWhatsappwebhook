@@ -7,6 +7,24 @@ import models
 import httpx
 
 
+async def show_typing_indicator(message_id: str, auth: str, graph_url):
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {
+            "type": "text"
+        }
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
     
