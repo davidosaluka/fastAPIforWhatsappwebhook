@@ -1122,10 +1122,14 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
 async def classify_message_intent(message_text: str) -> str:
     """Classifies user intent semantically using Groq JSON mode."""
     system_prompt = (
-        'You are an intent classification engine for a delivery platform. '
-        'Analyze the user\'s message and classify it into exactly ONE of the following intents: '
-        '\'CREATE_ORDER\', \'CANCEL_ORDER\', \'TRACK_ORDER\', \'MODIFY_ORDER\', \'SUPPORT\', or \'GENERAL_CHAT\'. '
-        'Do not explain. Do not generate conversational text. '
+        'You are an intent classification engine for InTime delivery platform.\n'
+        'Classify the user\'s message into exactly ONE of the following intents:\n'
+        '- \'CREATE_ORDER\': ONLY if user explicitly requests to send a package, book a delivery, or place a new order (e.g. "send an order", "book a ride").\n'
+        '- \'CANCEL_ORDER\': ONLY if user wants to cancel an active order.\n'
+        '- \'TRACK_ORDER\': ONLY if user asks for status, ETA, or tracking of an order.\n'
+        '- \'MODIFY_ORDER\': ONLY if user asks to change order details or fare.\n'
+        '- \'SUPPORT\': ONLY if user asks for support email, human agent, or help desk.\n'
+        '- \'GENERAL_CHAT\': All thank-yous, acknowledgments ("alright thank you", "thanks", "okay", "cool"), small talk, general questions, or small chatter.\n\n'
         'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
     )
     allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
@@ -1158,8 +1162,52 @@ async def classify_message_intent(message_text: str) -> str:
     return "GENERAL_CHAT"
 
 
+async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
+    """Finds active transit order assigned to the rider."""
+    possible_numbers = get_phone_variants(rider_wa_number)
+    result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.rider_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up"]))
+    )
+    return result.scalars().first()
+
+
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
     """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
+    # --- 0. ACTIVE RIDER IN-TRANSIT CHECK ---
+    rider_order = await get_active_rider_order(sender_wa_number, db)
+    if rider_order:
+        lower_text = text_body.strip().lower()
+        if lower_text in ["no", "not yet", "no yet", "nope", "n"]:
+            rider_msg = f"Got it 👍 Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
+            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
+            return
+        elif lower_text in ["yes", "yeah", "yep", "almost", "close", "y", "arrived"]:
+            rider_msg = f"Awesome 🛵! Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
+            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
+
+            # Notify Customer (Sender) and Recipient upon Rider ETA confirmation
+            try:
+                sender_res = await db.execute(
+                    select(models.User.name).where(
+                        models.User.wa_id.in_(get_phone_variants(rider_order.sender_wa_number))
+                    )
+                )
+                sender_name = sender_res.scalars().first() or "Sender"
+
+                customer_eta_msg = f"🛵 *Delivery Update*: Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{rider_order.order_number}*!"
+                recipient_eta_msg = f"📦 *Package Update*: Your package from *{sender_name}* (Order *{rider_order.order_number}*) is getting close! Your rider has confirmed they are approximately 10 minutes away."
+
+                if rider_order.sender_wa_number:
+                    await send_custom_message(sender_wa_number=rider_order.sender_wa_number, message=customer_eta_msg, auth=auth, graph_url=graph_url)
+                if rider_order.recipient_phone_number:
+                    await send_details_to_recipients(sender_wa_number=rider_order.recipient_phone_number, message=recipient_eta_msg, auth=auth, graph_url=graph_url)
+            except Exception as notify_err:
+                print(f"Error sending ETA confirmation notifications to customer/recipient: {notify_err}")
+
+            return
+
     # --- 1. ACTIVE WORKFLOW STATE CHECK ---
     active_order = await get_active_ride(sender_wa_number, db)
     if active_order and active_order.package_image_id is None:

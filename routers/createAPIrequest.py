@@ -494,14 +494,9 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         )
         sender_name = sender_res.scalars().first() or "Sender"
 
-    # Proximity notification to Rider, Customer (Sender), and Recipient
+    # Step 1: Send ETA Check prompt strictly to the Rider first
     rider_eta_msg = f"📍 *ETA Check*: Are you about 10 minutes away from the drop-off location for Order *{order_num}*?"
-    customer_eta_msg = f"🛵 *Delivery Update*: Your rider is approximately 10 minutes away from the drop-off location for Order *{order_num}*!"
-    recipient_eta_msg = f"📦 *Package Update*: Your package from *{sender_name}* (Order *{order_num}*) is getting close! Your rider is approximately 10 minutes away from your location."
-
     await replyhandler.send_custom_message(sender_wa_number=rider_wa, message=rider_eta_msg, auth=auth, graph_url=graph_url)
-    await replyhandler.send_custom_message(sender_wa_number=sender_wa, message=customer_eta_msg, auth=auth, graph_url=graph_url)
-    await replyhandler.send_custom_message(sender_wa_number=recipient_phone, message=recipient_eta_msg, auth=auth, graph_url=graph_url)
 
     # --- STEP 2: VERIFICATION CODE & DROPOFF FLOW (5 mins after 10-min proximity alert) ---
     await asyncio.sleep(300)
