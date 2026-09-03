@@ -10,6 +10,7 @@ import json
 from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
 from routers import createAPIrequest
+from scheduler import start_scheduler
 
 from sqlalchemy import text
 
@@ -82,8 +83,10 @@ async def lifespan(_app: FastAPI):
         except Exception:
             pass
 
+    scheduler = start_scheduler()
     yield
     # Shutdown
+    scheduler.shutdown()
     await engine.dispose()
 
 app = FastAPI(lifespan=lifespan)

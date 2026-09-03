@@ -71,6 +71,30 @@ async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
     return
 
 
+async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
+    """Dispatches daily 9:00 AM WhatsApp check-in template to riders."""
+    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "template",
+        "template": {
+            "name": "rider_checkin",
+            "language": { "code": "en" }      
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Rider check-in template dispatched:", response.status_code, response.text)
+    return
+
+
 async def send_custom_message(sender_wa_number, message, auth, graph_url):
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     req_body = {
@@ -1213,7 +1237,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             order_context = "No active delivery order."
 
         system_prompt = (
-            f"You are the friendly, professional customer support assistant for InTime, a premier dispatch and delivery service in Nigeria.\n"
+            f"You are the warm, energetic, and helpful AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
             f"Customer Name: {username}.\n"
             f"Current Context: {order_context}.\n"
             f"COMPANY KNOWLEDGE:\n"
@@ -1223,11 +1247,12 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
             f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
             f"STRICT BEHAVIOR RULES:\n"
-            f"1. STEER BACK TO BUSINESS: For small talk, casual chat, jokes, or questions about stickers/memes, respond politely and briefly (1 sentence), but ALWAYS call the customer back to business by offering InTime's delivery services and reminding them to type 'Send an Order' whenever they're ready.\n"
-            f"2. NO INVENTED NAMES: Refer to the customer as {username}. Do not invent names.\n"
-            f"3. NO BUTTON REFERENCES: Never tell the user to tap a button because text chat messages do not have buttons. Always instruct them to type 'Send an Order' in this chat to start booking.\n"
-            f"4. TRANSACTION BOUNDARIES: You DO NOT create, modify, cancel, or collect addresses/prices in chat. All bookings happen when the user types 'Send an Order'.\n"
-            f"INSTRUCTIONS: Keep replies short (2-3 sentences max), warm, professional, and plain text only — no markdown formatting, no asterisks, no bullet points."
+            f"1. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
+            f"2. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type 'Send an Order' whenever they're ready!\n"
+            f"3. REFERRAL NAME: Always address the customer warmly as {username}.\n"
+            f"4. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type 'Send an Order' in this chat to open the order form.\n"
+            f"5. TRANSACTION BOUNDARIES: All bookings happen when the user types 'Send an Order'.\n"
+            f"STYLE: Keep replies concise (2-3 sentences max), highly engaging, friendly, and spiced with icons!"
         )
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
