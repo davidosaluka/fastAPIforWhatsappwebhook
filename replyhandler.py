@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 import requests
@@ -40,6 +40,62 @@ def get_dynamic_femi_welcome(username: str) -> str:
         )
     ]
     return random.choice(templates)
+
+
+async def send_rider_accepted_with_options(
+    customer_wa_number: str,
+    rider_name: str,
+    rider_phone: str,
+    order_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends the rider-accepted confirmation to the customer with Find Another Rider and Cancel Order quick-reply buttons."""
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    body_text = (
+        f"🎉 *Great news!* Your rider has been confirmed for Order *{order_number}*.\n\n"
+        f"🧑‍✈️ Rider: *{rider_name}*\n"
+        f"📞 Phone: *{rider_phone}*\n\n"
+        f"Your rider is heading to the pickup location now. Tap below if you need to make a change."
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"FIND_ANOTHER_RIDER:{order_number}",
+                            "title": "🔄 Find Another Rider"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"CANCEL_ORDER:{order_number}",
+                            "title": "❌ Cancel Order"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("rider accepted options sent:", response.status_code, response.text)
+    return
 
 
 async def show_typing_indicator(message_id: str, auth: str, graph_url):
@@ -630,10 +686,25 @@ async def mark_rider_available_if_rider(sender_wa_number: str, db: AsyncSession)
             print(f"ℹ️ [RIDER CHECK-IN] Rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) is already ACTIVE.")
 
 
-async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSession):
-    message = f"✅ Your order has been placed!\n\nOrder Number: *{order_details['order_number']}*\n\n🔍 Searching for available riders nearby, please hold on..."
-    await send_custom_message(sender_wa_number, message , auth, graph_url)
-    
+async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncSession, reset_offers: bool = False):
+    """
+    Dispatches the order to all available riders.
+    When reset_offers=True (used during re-routing), previous RiderOffer records for this order
+    are deleted first so the view count restarts from zero for the new round.
+    """
+    search_msg = f"🔍 Searching for available riders nearby, please hold on..."
+    await send_custom_message(sender_wa_number, search_msg, auth, graph_url)
+
+    # --- Reset rider offer records when re-routing to avoid inflated view counts ---
+    if reset_offers:
+        await db.execute(
+            delete(models.RiderOffer).where(
+                models.RiderOffer.order_number == order_details['order_number']
+            )
+        )
+        await db.commit()
+        print(f"[REROUTE] Cleared previous RiderOffer records for order {order_details['order_number']}")
+
     sender_variants = get_phone_variants(sender_wa_number)
     riders = await db.execute(
         select(models.Riders)
@@ -641,10 +712,10 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         .where(models.Riders.rider_wa_number.not_in(sender_variants))
     )
     riders = riders.scalars().all()
-    
-    print(f"[DISPATCH SEARCH] Order {order_details['order_number']} placed by customer ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
+
+    print(f"[DISPATCH SEARCH] Order {order_details['order_number']} dispatched by ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
     if not riders:
-        print(f"[DISPATCH SEARCH] No active 'available' riders found in 24h window for order {order_details['order_number']}.")
+        print(f"[DISPATCH SEARCH] No active 'available' riders found for order {order_details['order_number']}.")
 
     is_priority = bool(order_details.get('is_priority') or (order_details.get('is_drug') and order_details.get('is_urgent')))
 
@@ -652,7 +723,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
         try:
             if is_priority:
                 header = f"🚨 URGENT MEDICATION DISPATCH! 🚨\n"
-                message = (
+                dispatch_msg = (
                     f"💊 *PRIORITY DELIVERY - URGENT MEDICATION* 💊\n\n"
                     f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
                     f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
@@ -663,7 +734,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
                 )
             else:
                 header = f"DISPATCH REQUEST!\n"
-                message = (
+                dispatch_msg = (
                     f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
                     f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
                     f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
@@ -677,11 +748,11 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db:AsyncSe
                 status="sent"
             )
             db.add(new_offer)
-            
+
             await send_custom_flow(
                 wa_number=rider.rider_wa_number,
                 flow_token={"order_number": order_details['order_number']},
-                message=message,
+                message=dispatch_msg,
                 header=header,
                 flow_id="1513067607105184",
                 flow_cta="Accept or Negotiate",
@@ -796,12 +867,6 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         sender_name = sender_user_res.scalars().first() or "Someone"
 
         rider_message = f"🎉 Ride accepted! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
-        customer_message = (
-            f"🎉 Great news! Your ride has been accepted.\n\n"
-            f"Your rider is on the way to the pickup location and will contact you shortly.\n\n"
-            f"🧑‍✈️ Rider's Name: *{rider_name}*\n"
-            f"📞 Phone: *{rider_phone}*"
-            )
         recipient_message = (
             f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
@@ -812,16 +877,8 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
             f"📞 Rider's Phone: {rider_phone}"
         )
         recipient_wa_number = order.recipient_phone_number
-        
-        #sending a message to the rider
-        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)         
-        
-        #sending a message to the customer
-        await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=AUTH, graph_url=GRAPH_URL) 
-        
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
-        
 
+        # Save accepted state first so the order_number is valid when buttons are sent
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
@@ -829,149 +886,27 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         )
         await db.commit()
 
-        asyncio.create_task(schedule_rider_process_reminders(
-            order_number=order.order_number,
-            rider_wa_number=rider_details.rider_wa_number,
+        # Notify rider
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
+
+        # Notify customer with action buttons
+        await send_rider_accepted_with_options(
+            customer_wa_number=customer_wa_number,
+            rider_name=rider_name,
+            rider_phone=rider_phone,
+            order_number=order_number,
             auth=AUTH,
             graph_url=GRAPH_URL
-        ))
+        )
+
+        # Notify recipient
+        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
 
     else:
         rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
 
 
-async def schedule_rider_process_reminders(order_number: str, rider_wa_number: str, auth: str, graph_url: str):
-    """
-    Monitors an active order after rider acceptance.
-    Sends up to 2 reminders after the initial prompt.
-    If the rider fails to respond after 2 reminders during pickup:
-      1. Unassigns the rider and closes the order on their side.
-      2. Informs the customer/vendor that the order is being re-routed.
-      3. Re-populates dispatch requests to available riders via get_rider.
-    """
-    try:
-        # -------------------------------------------------------------
-        # PHASE 1: PICKUP PROMPT & REMINDERS (Initial + 2 Reminders max)
-        # -------------------------------------------------------------
-        # Initial wait before sending first pickup prompt (5 minutes / 300 seconds)
-        await asyncio.sleep(300)
-
-        pickup_reminder_count = 0
-        max_reminders_after_initial = 2  # Exactly 2 reminders after initial prompt
-
-        while pickup_reminder_count <= max_reminders_after_initial:
-            from database import AsyncSessionLocal
-            async with AsyncSessionLocal() as db:
-                order = await get_active_ride_by_number(order_number, db)
-                
-                # Exit if order cancelled, completed, or expired
-                if not order or order.status in ["cancelled", "completed", "expired"]:
-                    return
-                
-                # If rider marked package picked up or delivered, advance to Phase 2
-                if order.delivery_progression_status in ["package_picked_up", "package_delivered"]:
-                    break
-
-                # Send initial prompt (count=0) or follow-up reminder (count 1 or 2)
-                if pickup_reminder_count == 0:
-                    header = "Have you picked up the package?"
-                    message = "📦 Tap the button below once you've picked up the package."
-                else:
-                    header = "⏰ Pickup Reminder"
-                    message = (
-                        f"⏰ *Pickup Reminder ({pickup_reminder_count}/{max_reminders_after_initial})*\n\n"
-                        f"Hi! You have an ongoing pickup for Order *{order_number}*.\n\n"
-                        f"Please tap the button below once you've picked up the package from the sender."
-                    )
-
-                await send_custom_flow(
-                    wa_number=rider_wa_number,
-                    flow_token={"order_number": order_number},
-                    message=message,
-                    header=header,
-                    flow_id="1521319786323152",
-                    flow_cta="Picked Up Package?",
-                    screen_name="flow_to_ask_if_rider_has_picked_up_package",
-                    auth=auth,
-                    graph_url=graph_url
-                )
-
-            pickup_reminder_count += 1
-            await asyncio.sleep(300)  # Wait 5 minutes before next check/reminder
-
-        # -------------------------------------------------------------
-        # CHECK IF RIDER FAILED TO RESPOND TO PICKUP REMINDERS
-        # -------------------------------------------------------------
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if order and order.status == "rider_accepted" and order.delivery_progression_status not in ["package_picked_up", "package_delivered"]:
-                print(f"[RIDER TIMEOUT] Rider ({rider_wa_number}) did not respond to pickup reminders for order {order_number}. Re-routing order...")
-
-                # 1. Unassign rider and reset order back to 'confirmed'
-                await db.execute(
-                    update(models.Orders)
-                    .where(models.Orders.order_number == order_number)
-                    .values(status="confirmed", rider_wa_number=None)
-                )
-                await db.commit()
-
-                # 2. Inform unresponsive rider
-                unassign_msg = (
-                    f"⏰ *Order Re-assigned*\n\n"
-                    f"Due to inactivity, Order *{order_number}* has been unassigned from you and returned to dispatch search."
-                )
-                await send_custom_message(rider_wa_number, unassign_msg, auth, graph_url)
-
-                # 3. Inform vendor / customer
-                reroute_msg = (
-                    f"🔄 *Re-routing Order*\n\n"
-                    f"Your assigned rider was unresponsive for Order *{order_number}*.\n\n"
-                    f"We are re-routing your delivery to other nearby riders right now!"
-                )
-                await send_custom_message(order.sender_wa_number, reroute_msg, auth, graph_url)
-
-                # 4. Re-populate negotiation/offers to riders
-                order_details = {
-                    "package_description": order.package_description,
-                    "pick_up_location": order.pickup_location_name,
-                    "drop_off_location": order.dropoff_location_name,
-                    "offered_price": order.customer_initial_offered_price or order.final_price_agreed_by_cust_and_rider or "1000",
-                    "order_number": order.order_number,
-                    "image_id": order.package_image_id,
-                    "is_priority": order.is_priority,
-                    "is_drug": order.is_drug,
-                    "is_urgent": order.is_urgent
-                }
-                await get_rider(
-                    sender_wa_number=order.sender_wa_number,
-                    auth=auth,
-                    graph_url=graph_url,
-                    order_details=order_details,
-                    db=db
-                )
-                return
-
-
-
-    except Exception as e:
-        print(f"schedule_rider_process_reminders background task error: {e}")
-
-
-async def _delayed_send_pickup_flow(wa_number, order_number, auth, graph_url, delay=300):
-    await asyncio.sleep(delay)
-    await send_custom_flow(
-        wa_number=wa_number,
-        flow_token={"order_number": order_number},
-        message="📦 Tap the button below once you've picked up the package.",
-        header="Have you picked up the package?",
-        flow_id="1521319786323152",
-        flow_cta="Picked Up Package?",
-        screen_name="flow_to_ask_if_rider_has_picked_up_package",
-        auth=auth,
-        graph_url=graph_url
-    )
 
 
 async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
@@ -1098,13 +1033,6 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         sender_name = sender_user_res.scalars().first() or "Someone"
 
         rider_message = f"🎉 Ride confirmed! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
-        customer_message = (
-            f"🎉 Your ride is confirmed!\n\n"
-            f"Your rider is heading to the pickup location and will be in touch shortly.\n\n"
-            f"🧑‍✈️ Rider's Name: *{rider_name}*\n"
-            f"📞 Phone: *{rider_phone}*"
-            )
-
         recipient_message = (
             f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
@@ -1115,29 +1043,30 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
             f"📞 Rider's Phone: {rider_phone}"
         )
         recipient_wa_number = order.recipient_phone_number
-        #sending a message to the rider
-        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)         
-        
-        #sending a message to the customer
-        await send_custom_message(sender_wa_number=customer_wa_number, message=customer_message, auth=auth, graph_url=graph_url) 
 
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
-        
         final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
         await db.execute(
            update(models.Orders)
            .where(models.Orders.order_number == order_number)
            .values(status="rider_accepted", final_price_agreed_by_cust_and_rider=final_price, rider_wa_number=rider_wa_number)
-           
         )
         await db.commit()
 
-        asyncio.create_task(schedule_rider_process_reminders(
-            order_number=order.order_number,
-            rider_wa_number=rider_wa_number,
+        # Notify rider
+        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
+
+        # Notify customer with action buttons
+        await send_rider_accepted_with_options(
+            customer_wa_number=customer_wa_number,
+            rider_name=rider_name,
+            rider_phone=rider_phone,
+            order_number=order_number,
             auth=auth,
             graph_url=graph_url
-        ))
+        )
+
+        # Notify recipient
+        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
 
 
 

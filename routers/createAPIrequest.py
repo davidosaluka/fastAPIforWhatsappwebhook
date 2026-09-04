@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 import replyhandler
 
 from sqlalchemy.exc import IntegrityError
+import logging
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 router = APIRouter()
@@ -107,6 +110,112 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
             await replyhandler.send_custom_message(rider_phoneno, custom_message, AUTH, GRAPH_URL)
         
+    if message["type"] == "interactive" and message["interactive"]["type"] == "button_reply":
+        button_id = message["interactive"]["button_reply"].get("id", "")
+        sender_wa_number = message["from"]
+
+        if button_id.startswith("FIND_ANOTHER_RIDER:"):
+            order_number = button_id.split(":", 1)[1]
+
+            # Fetch the order to get rider wa number and current details
+            order_res = await db.execute(
+                select(models.Orders).where(models.Orders.order_number == order_number)
+            )
+            order = order_res.scalars().first()
+
+            if order and order.status == "rider_accepted":
+                prev_rider_wa = order.rider_wa_number
+
+                # Unassign current rider, reset order status to confirmed
+                await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(status="confirmed", rider_wa_number=None)
+                )
+                await db.commit()
+
+                # Notify previous rider they have been unassigned
+                if prev_rider_wa:
+                    unassign_msg = (
+                        f"⏰ *Order Re-assigned*\n\n"
+                        f"The customer has chosen to find a different rider for Order *{order_number}*.\n\n"
+                        f"This order has been returned to dispatch search."
+                    )
+                    await replyhandler.send_custom_message(prev_rider_wa, unassign_msg, AUTH, GRAPH_URL)
+
+                # Notify customer re-routing has started
+                reroute_msg = (
+                    f"🔄 *Finding Another Rider*\n\n"
+                    f"We are searching for a new rider for Order *{order_number}* right now!\n\n"
+                    f"We'll notify you as soon as a new rider accepts."
+                )
+                await replyhandler.send_custom_message(sender_wa_number, reroute_msg, AUTH, GRAPH_URL)
+
+                # Re-dispatch to riders, resetting view count
+                order_details = {
+                    "package_description": order.package_description,
+                    "pick_up_location": order.pickup_location_name,
+                    "drop_off_location": order.dropoff_location_name,
+                    "offered_price": order.final_price_agreed_by_cust_and_rider or order.customer_initial_offered_price or "1000",
+                    "order_number": order.order_number,
+                    "image_id": order.package_image_id,
+                    "is_priority": order.is_priority,
+                    "is_drug": order.is_drug,
+                    "is_urgent": order.is_urgent
+                }
+                await replyhandler.get_rider(
+                    sender_wa_number=sender_wa_number,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL,
+                    order_details=order_details,
+                    db=db,
+                    reset_offers=True
+                )
+            else:
+                await replyhandler.send_custom_message(
+                    sender_wa_number, "This order is no longer in a state that can be re-routed.", AUTH, GRAPH_URL
+                )
+
+        elif button_id.startswith("CANCEL_ORDER:"):
+            order_number = button_id.split(":", 1)[1]
+
+            order_res = await db.execute(
+                select(models.Orders).where(models.Orders.order_number == order_number)
+            )
+            order = order_res.scalars().first()
+
+            if order and order.status in ["confirmed", "rider_accepted"]:
+                prev_rider_wa = order.rider_wa_number
+
+                # Cancel the order
+                await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(status="cancelled")
+                )
+                await db.commit()
+
+                # Notify the rider (if one was assigned)
+                if prev_rider_wa:
+                    rider_cancel_msg = (
+                        f"❌ *Order Cancelled*\n\n"
+                        f"The customer has cancelled Order *{order_number}*.\n\n"
+                        f"Thank you for your time — new requests will come your way shortly! 🛵"
+                    )
+                    await replyhandler.send_custom_message(prev_rider_wa, rider_cancel_msg, AUTH, GRAPH_URL)
+
+                # Confirm cancellation to customer and ask for reason
+                cancel_confirm_msg = (
+                    f"❌ *Order Cancelled*\n\n"
+                    f"Your order *{order_number}* has been successfully cancelled.\n\n"
+                    f"We're sorry to see you go! 🙏 If you'd like to share why you cancelled, just type your reason below — your feedback helps us improve."
+                )
+                await replyhandler.send_custom_message(sender_wa_number, cancel_confirm_msg, AUTH, GRAPH_URL)
+            else:
+                await replyhandler.send_custom_message(
+                    sender_wa_number, "This order cannot be cancelled at its current stage.", AUTH, GRAPH_URL
+                )
+
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         nfm_reply = message["interactive"]["nfm_reply"]
         raw_response = nfm_reply.get("response_json", "{}")
