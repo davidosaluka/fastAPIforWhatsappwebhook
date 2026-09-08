@@ -11,6 +11,28 @@ import re
 import random
 from groq import AsyncGroq
 
+# ---------------------------------------------------------------------------
+# In-memory chat history store for Groq multi-turn conversations.
+# Maps sender_wa_number -> list of {"role": ..., "content": ...} dicts.
+# Capped at MAX_HISTORY turns per user to avoid token bloat.
+# ---------------------------------------------------------------------------
+_chat_memory: dict[str, list[dict]] = {}
+MAX_HISTORY = 10  # number of message turns (user + assistant) to keep
+
+
+def get_user_chat_memory(sender_wa_number: str) -> list[dict]:
+    """Return the stored conversation history for a given WhatsApp number."""
+    return list(_chat_memory.get(sender_wa_number, []))
+
+
+def add_user_chat_memory(sender_wa_number: str, role: str, content: str) -> None:
+    """Append a new turn to the user's conversation history, trimming if over MAX_HISTORY."""
+    history = _chat_memory.setdefault(sender_wa_number, [])
+    history.append({"role": role, "content": content})
+    # Keep only the most recent MAX_HISTORY messages
+    if len(history) > MAX_HISTORY:
+        _chat_memory[sender_wa_number] = history[-MAX_HISTORY:]
+
 
 def get_dynamic_femi_welcome(username: str) -> str:
     """Generates dynamic, spacious introductory messages for Femi avatar."""

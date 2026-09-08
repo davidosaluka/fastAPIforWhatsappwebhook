@@ -2,6 +2,7 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select, update
+from datetime import datetime, UTC
 import logging
 import os
 from database import AsyncSessionLocal
@@ -53,7 +54,7 @@ def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     scheduler.add_job(
         send_daily_rider_templates,
-        trigger=CronTrigger(hour=10, minute=0),
+        trigger=CronTrigger(hour=8, minute=0),
         id="daily_rider_template",
         replace_existing=True,
     )
