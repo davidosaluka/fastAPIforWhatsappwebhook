@@ -21,6 +21,7 @@ class User(Base):
     phone_number_id: Mapped[str] = mapped_column(String(60), nullable=False)
     wa_id : Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name : Mapped[str] = mapped_column(String, unique=False, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     #api_requests: Mapped[list[apiRequest]] = relationship(back_populates="author") 
 

@@ -454,6 +454,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
             case "order_details" | "other_details":
+                is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
+                if not is_existing_user:
+                    print(f"⚠️ [UNREGISTERED ORDER TRY] Unregistered or deleted user {sender_wa_number} attempted to send order details. Sending registration template.")
+                    await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
+                    return
+
                 await db.execute(
                 update(models.Orders)
                 .where(models.Orders.sender_wa_number.in_(replyhandler.get_phone_variants(sender_wa_number)))
@@ -461,14 +467,6 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 .values(status="cancelled")
                 )
                 await db.commit()
-
-                await createUser(
-                    name=name or "Customer",
-                    wa_id=sender_wa_number,
-                    display_phone_number=sender_wa_number,
-                    phone_number_id=sender_wa_number,
-                    db=db
-                )
 
                 newOrder = models.Orders(
                 status="confirmed",
@@ -575,13 +573,18 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
 
     result = await db.execute(
         select(models.User).where(
-            (models.User.phone_number_id.in_(possible_numbers)) |
-            (models.User.wa_id.in_(possible_numbers)) |
-            (models.User.display_phone_number.in_(possible_numbers))
+            ((models.User.phone_number_id.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.display_phone_number.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
         )
     )
     existing_user = result.scalars().first()
     if existing_user:
+        if clean_name and clean_name != "Customer" and existing_user.name != clean_name:
+            existing_user.name = clean_name
+            await db.commit()
+            await db.refresh(existing_user)
         print(f"ℹ️ [USER EXISTS] User '{existing_user.name}' ({clean_wa_id}) is already registered.")
         return existing_user
 
@@ -589,7 +592,8 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         name=clean_name,
         wa_id=clean_wa_id,
         display_phone_number=clean_display,
-        phone_number_id=clean_phone_id
+        phone_number_id=clean_phone_id,
+        is_deleted=False
     )
 
     db.add(new_user)

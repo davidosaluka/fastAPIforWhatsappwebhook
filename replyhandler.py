@@ -1153,43 +1153,55 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         
 
 async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Checks if a user is registered by matching display_phone_number, wa_id, phone_number_id, or active orders across formatted variants."""
+    """Checks if an active user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants."""
     possible_numbers = get_phone_variants(sender_wa_number)
 
     result = await db.execute(
+        select(models.User).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        )
+    )
+    return result.scalars().first() is not None
+
+
+async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
+    """Soft deletes and anonymizes a user's account record while clearing their chat memory."""
+    possible_numbers = get_phone_variants(sender_wa_number)
+
+    # 1. Fetch user records and soft delete / anonymize PII
+    user_res = await db.execute(
         select(models.User).where(
             (models.User.display_phone_number.in_(possible_numbers)) |
             (models.User.wa_id.in_(possible_numbers)) |
             (models.User.phone_number_id.in_(possible_numbers))
         )
     )
-    if result.scalars().first() is not None:
-        return True
+    users = user_res.scalars().all()
 
-    order_result = await db.execute(
-        select(models.Orders).where(models.Orders.sender_wa_number.in_(possible_numbers))
-    )
-    return order_result.scalars().first() is not None
-
-
-async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Permanently deletes a user's account record from the database and clears their chat memory."""
-    possible_numbers = get_phone_variants(sender_wa_number)
-
-    await db.execute(
-        delete(models.User).where(
-            (models.User.display_phone_number.in_(possible_numbers)) |
-            (models.User.wa_id.in_(possible_numbers)) |
-            (models.User.phone_number_id.in_(possible_numbers))
+    for u in users:
+        await db.execute(
+            update(models.User)
+            .where(models.User.id == u.id)
+            .values(
+                is_deleted=True,
+                name="Anonymized User",
+                wa_id=f"DELETED_{u.id}_{u.wa_id}",
+                display_phone_number=f"DELETED_{u.id}_{u.display_phone_number}",
+                phone_number_id=f"DELETED_{u.id}_{u.phone_number_id}"
+            )
         )
-    )
+
     await db.commit()
 
+    # Clear chat history memory
     _chat_memory.pop(sender_wa_number, None)
     for variant in possible_numbers:
         _chat_memory.pop(variant, None)
 
-    print(f"🗑️ [USER DELETED] Account associated with {sender_wa_number} has been deleted.")
+    print(f"🗑️ [USER SOFT-DELETED] Account associated with {sender_wa_number} has been anonymized and marked as deleted.")
     return True
 
 
