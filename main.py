@@ -67,6 +67,14 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             print(f"Migration note (orders add cols): {e}")
 
+        # users.is_deleted (soft-delete flag)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;'))
+                print("🟢 [MIGRATION] users.is_deleted column ensured.")
+        except Exception as e:
+            print(f"Migration note (users is_deleted): {e}")
+
     elif engine.dialect.name == "sqlite":
         try:
             async with engine.begin() as conn:
@@ -85,6 +93,11 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN is_drug BOOLEAN DEFAULT 0;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN is_urgent BOOLEAN DEFAULT 0;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE users ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0;'))
         except Exception:
             pass
 
