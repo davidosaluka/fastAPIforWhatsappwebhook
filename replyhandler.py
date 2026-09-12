@@ -252,7 +252,7 @@ async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
 
 
 async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
-    """Dispatches daily 9:00 AM WhatsApp check-in template to riders."""
+    """Dispatches daily 8:00 AM WhatsApp check-in template to riders."""
     target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
     req_body = {
         "messaging_product": "whatsapp",
