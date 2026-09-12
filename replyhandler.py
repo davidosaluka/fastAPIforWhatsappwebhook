@@ -120,6 +120,58 @@ async def send_rider_accepted_with_options(
     return
 
 
+async def send_delete_account_confirmation(
+    customer_wa_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends account deletion confirmation prompt with interactive Yes/No buttons."""
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    body_text = (
+        "⚠️ *Account Deletion Request*\n\n"
+        "Are you sure you want to delete your account?\n\n"
+        "This action will permanently remove your user profile from InTime."
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "CONFIRM_DELETE_ACCOUNT",
+                            "title": "🗑️ Yes, Delete"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "CANCEL_DELETE_ACCOUNT",
+                            "title": "❌ Cancel"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Delete account confirmation prompt sent:", response.status_code, response.text)
+    return
+
+
 async def show_typing_indicator(message_id: str, auth: str, graph_url):
     headers = {
         "Authorization": f"Bearer {auth}",
@@ -1120,6 +1172,27 @@ async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
     return order_result.scalars().first() is not None
 
 
+async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
+    """Permanently deletes a user's account record from the database and clears their chat memory."""
+    possible_numbers = get_phone_variants(sender_wa_number)
+
+    await db.execute(
+        delete(models.User).where(
+            (models.User.display_phone_number.in_(possible_numbers)) |
+            (models.User.wa_id.in_(possible_numbers)) |
+            (models.User.phone_number_id.in_(possible_numbers))
+        )
+    )
+    await db.commit()
+
+    _chat_memory.pop(sender_wa_number, None)
+    for variant in possible_numbers:
+        _chat_memory.pop(variant, None)
+
+    print(f"🗑️ [USER DELETED] Account associated with {sender_wa_number} has been deleted.")
+    return True
+
+
 async def classify_message_intent(message_text: str) -> str:
     """Classifies user intent semantically using Groq JSON mode."""
     system_prompt = (
@@ -1127,13 +1200,14 @@ async def classify_message_intent(message_text: str) -> str:
         'Classify the user\'s message into exactly ONE of the following intents:\n'
         '- \'CREATE_ORDER\': ONLY if user explicitly requests to send a package, book a delivery, or place a new order (e.g. "send an order", "book a ride").\n'
         '- \'CANCEL_ORDER\': ONLY if user wants to cancel an active order.\n'
+        '- \'DELETE_ACCOUNT\': ONLY if user explicitly asks to delete their account, delete their data, remove their information, or unregister (e.g. "delete my account", "delete my data", "remove my account", "unregister me").\n'
         '- \'TRACK_ORDER\': ONLY if user asks for status, ETA, or tracking of an order.\n'
         '- \'MODIFY_ORDER\': ONLY if user asks to change order details or fare.\n'
         '- \'SUPPORT\': ONLY if user asks for support email, human agent, or help desk.\n'
         '- \'GENERAL_CHAT\': All thank-yous, acknowledgments ("alright thank you", "thanks", "okay", "cool"), small talk, general questions, or small chatter.\n\n'
         'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
     )
-    allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
+    allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "DELETE_ACCOUNT", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
     models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "llama3-70b-8192"]
     
     try:
@@ -1262,6 +1336,20 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 await send_registration_template(sender_wa_number, auth, graph_url)
             return
 
+        delete_triggers = [
+            "delete my account", "delete account", "delete my data", "delete data",
+            "remove my account", "remove account", "delete info", "remove my data",
+            "unregister", "unregister me", "delete profile"
+        ]
+        if any(trigger in lower_clean for trigger in delete_triggers):
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await send_delete_account_confirmation(sender_wa_number, auth, graph_url)
+            else:
+                msg = "You currently do not have a registered account with InTime."
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+            return
+
         intent = await classify_message_intent(text_body)
 
     # --- 3. INTENT HANDLING ---
@@ -1271,6 +1359,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
         else:
             await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    elif intent == "DELETE_ACCOUNT":
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await send_delete_account_confirmation(sender_wa_number, auth, graph_url)
+        else:
+            msg = "You currently do not have a registered account with InTime."
+            await send_custom_message(sender_wa_number, msg, auth, graph_url)
         return
 
     elif intent == "CANCEL_ORDER":

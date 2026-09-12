@@ -98,6 +98,14 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
+        elif message["button"]["payload"] in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
+            is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
+            if is_existing_user:
+                await replyhandler.send_delete_account_confirmation(sender_wa_number, AUTH, GRAPH_URL)
+            else:
+                custom_message = "You currently do not have a registered account with InTime."
+                await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
+
         elif message["button"]["payload"] == "I'm Available":
             rider_phoneno = message["from"]
             possible_numbers = replyhandler.get_phone_variants(rider_phoneno)
@@ -215,6 +223,22 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await replyhandler.send_custom_message(
                     sender_wa_number, "This order cannot be cancelled at its current stage.", AUTH, GRAPH_URL
                 )
+
+        elif button_id == "CONFIRM_DELETE_ACCOUNT":
+            await replyhandler.delete_user_data(sender_wa_number, db)
+            confirm_msg = (
+                "🗑️ *Account Deleted*\n\n"
+                "Your account and profile data have been permanently deleted from InTime.\n\n"
+                "If you ever wish to use our services again, simply type *Send an Order* to re-register!"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, confirm_msg, AUTH, GRAPH_URL)
+
+        elif button_id == "CANCEL_DELETE_ACCOUNT":
+            cancel_msg = (
+                "✅ *Action Cancelled*\n\n"
+                "Your account deletion request has been cancelled. Your account remains active and secure!"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, cancel_msg, AUTH, GRAPH_URL)
 
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         nfm_reply = message["interactive"]["nfm_reply"]

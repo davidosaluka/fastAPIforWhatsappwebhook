@@ -46,6 +46,7 @@ The system is built on a modern, fully asynchronous Python stack:
 7. **Automated Background Timers**: State-aware background monitoring (`asyncio.create_task`) for order follow-ups, image upload reminders, session timeouts, and arrival checks.
 8. **"Femi" AI Assistant**: Multi-turn conversational chatbot powered by Groq LLM that handles general chatter, answers logistics questions, and guides customers to place orders.
 9. **Daily Rider Availability Reset**: Automated cron job at 8:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
+10. **Account & Data Deletion**: Registered users can delete their user profile & data via template button ("Delete my Account") or natural text intent ("delete my account"). Features an interactive confirmation prompt ("Are you sure...") to prevent accidental deletions.
 
 ---
 
@@ -65,12 +66,24 @@ sequenceDiagram
     WhatsApp->>FastAPI: POST /webhook (JSON payload)
     FastAPI->>DB: Log apiRequest & check wamid deduplication
     
-    alt Freeform Text Message
+    alt Freeform Text Message or Intent
         FastAPI->>Groq: Intent Classification (JSON Mode)
-        Groq-->>FastAPI: Intent: "CREATE_ORDER" / "GENERAL_CHAT"
+        Groq-->>FastAPI: Intent: "CREATE_ORDER" / "DELETE_ACCOUNT" / "GENERAL_CHAT"
     end
 
-    alt Registration Needed
+    alt Delete Account Triggered (Button or Intent)
+        FastAPI->>WhatsApp: Send Interactive Deletion Confirmation ("Are you sure...")
+        alt User Clicks "Yes, Delete"
+            Customer->>WhatsApp: Button Reply: CONFIRM_DELETE_ACCOUNT
+            WhatsApp->>FastAPI: POST /webhook
+            FastAPI->>DB: DELETE FROM users WHERE phone IN (...)
+            FastAPI->>FastAPI: Clear user chat memory (_chat_memory)
+            FastAPI->>WhatsApp: Send Deletion Confirmation Message
+        else User Clicks "Cancel"
+            Customer->>WhatsApp: Button Reply: CANCEL_DELETE_ACCOUNT
+            FastAPI->>WhatsApp: Send Cancellation Notification
+        end
+    else Registration Needed
         FastAPI->>WhatsApp: Send Registration Template/Flow
         Customer->>WhatsApp: Submits Name & Details
     else Already Registered
@@ -201,11 +214,26 @@ Webhook payload audit log used for deduplication.
 ## 🚦 Core Workflow & State Machine
 
 ```
-[User Message] ──► [Registered?] ──NO──► Send Registration Flow ──► User Registered
-                         │
-                        YES
-                         ▼
-               Send Order Details Flow ──► User Fills Form
+┌───────────────┐
+│ User Message  │
+└───────┬───────┘
+        │
+        ├──► Taps "Delete my Account" or types "delete account"
+        │    │
+        │    ▼
+        │    Prompt Confirmation ("Are you sure...")
+        │    │
+        │    ├──► Taps "Yes, Delete" ──► Delete Profile & Chat Memory ──► Account Deleted 🗑️
+        │    └──► Taps "Cancel" ───────► Action Cancelled ✅
+        │
+        └──► Taps "Send an Order" or places order
+             │
+             ▼
+        [Registered?] ──NO──► Send Registration Flow ──► User Registered
+             │
+            YES
+             ▼
+   Send Order Details Flow ──► User Fills Form
                          │
                          ▼
                 Order Status = "confirmed"
@@ -250,8 +278,8 @@ The system uses **Groq API** (`AsyncGroq`) with fallback across multiple models 
 
 1. **Intent Classification Engine (`classify_message_intent`)**:
    - Evaluates incoming freeform text using LLM JSON Mode.
-   - Categorizes intent into: `CREATE_ORDER`, `CANCEL_ORDER`, `TRACK_ORDER`, `MODIFY_ORDER`, `SUPPORT`, or `GENERAL_CHAT`.
-   - Directly routes transactional requests to the corresponding WhatsApp flow handlers.
+   - Categorizes intent into: `CREATE_ORDER`, `CANCEL_ORDER`, `DELETE_ACCOUNT`, `TRACK_ORDER`, `MODIFY_ORDER`, `SUPPORT`, or `GENERAL_CHAT`.
+   - Directly routes transactional and account management requests to the corresponding WhatsApp handlers.
 
 2. **Femi AI Assistant (`handle_text_message`)**:
    - Persona: *"Femi, the friendly, energetic AI assistant for InTime 🛵💨"*.
