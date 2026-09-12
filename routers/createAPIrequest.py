@@ -286,9 +286,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         )
 
         if not is_rider_action and (not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]):
+            # Order fields always take priority — prevents combined registration+order forms being re-classified as user_registration
             if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
-            elif name or email:
+            elif (name or email) and not raw_price and not raw_desc and not raw_recipient:
                 template_id = "user_registration"
 
         customer_initial_offered_price = str(raw_price) if raw_price is not None else "0"
@@ -451,7 +452,18 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                             db=db
                         )
 
-                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
+                # Guard: don't re-send the order form if the user already has a pending/active order.
+                # This prevents a double "welcome to InTime" when a combined form is re-classified as user_registration.
+                active_check = await db.execute(
+                    select(models.Orders)
+                    .where(models.Orders.sender_wa_number.in_(replyhandler.get_phone_variants(sender_wa_number)))
+                    .where(models.Orders.status.in_(["confirmed", "rider_accepted"]))
+                )
+                has_active_order = active_check.scalars().first() is not None
+                if not has_active_order:
+                    await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
+                else:
+                    print(f"ℹ️ [SKIP WELCOME] User {sender_wa_number} already has an active order — skipping re-send of order form.")
         
             case "order_details" | "other_details":
                 is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
