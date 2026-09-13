@@ -746,21 +746,34 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
 
     five_digit_code = ''.join(random.choices(string.digits, k=5))
     message_for_sender = (
-        f"The Code is: {five_digit_code}.\n"
-        "You don't have to do anything with this code.\n"
-        "The Same code has been sent to the recipient of the package and the rider as well.\n"
-        "We are only sending you this code as a backup in the event that the recipient didnt recieve the code for whatever reason.\n"
-        "Feel free to share this code with the recipient as the dispatch rider would demand it before delivering the package.\n"
-        "DO NOT SHARE THIS CODE WITH THE RIDER ONLY SHARE WITH THE RECIPIENT"
+        f"🔐 *Delivery Verification Code (Backup)* 📦✨\n\n"
+        f"Your rider is approaching the drop-off location for Order *{order_num}*!\n\n"
+        f"🔑 Verification Code: 👉 *{five_digit_code}* 👈\n\n"
+        f"ℹ️ *Good to Know:*\n\n"
+        f"• You don't need to take any action right now. 👍\n\n"
+        f"• We have sent this same code directly to your recipient so they can confirm delivery with the rider. 📱\n\n"
+        f"• We're sharing it with you as a helpful backup just in case they need it! 🔄\n\n"
+        f"⚠️ *Important Security Note:*\n"
+        f"Please share this code *ONLY* with your recipient, *NEVER* directly with the rider! 🛡️"
     )
     message_for_rider = (
-        f"The Code is: {five_digit_code}. \n"
-        "Confirm this code from the recipient before delivering the package"
+        f"🔐 *Drop-off Verification Code* 🛵💨\n\n"
+        f"Order: *{order_num}*\n\n"
+        f"🔑 Verification Code: 👉 *{five_digit_code}* 👈\n\n"
+        f"📋 *Delivery Steps:*\n\n"
+        f"1️⃣ Ask the recipient for their 5-digit code upon arrival. 🤝\n\n"
+        f"2️⃣ Confirm it matches: *{five_digit_code}* ✅\n\n"
+        f"3️⃣ Tap the button below to confirm drop-off! 📦🚀"
     )
     message_for_recipient = (
-        f"Just Notifying you that Rider has gotten close to your location with your package from *{sender_name}*.\n\n" 
-        f"The Code is: {five_digit_code}. \n\n"
-        "The Rider would request this code of you before delivering your package"
+        f"🛵💨 *Your Package Is Arriving Soon!* 📦✨\n\n"
+        f"Great news! Your dispatch rider is now close to your location with your package from *{sender_name}*!\n\n"
+        f"🔐 *Your Delivery Verification Code:*\n\n"
+        f"👉  *{five_digit_code}*  👈\n\n"
+        f"📋 *Instructions:*\n\n"
+        f"• Please share this *5-digit code* with the rider when they arrive. 🤝\n\n"
+        f"• The rider needs this code to safely complete your delivery. ✅\n\n"
+        f"Thank you for choosing *InTime*! 🌟🚀"
     )
     await replyhandler.send_custom_message(
         sender_wa_number=sender_wa, 

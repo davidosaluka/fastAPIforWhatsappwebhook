@@ -1663,9 +1663,12 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
         if any(kw in lower_text for kw in code_keywords):
             await send_custom_message(sender_wa_number, (
-                f"🔐 *Verification Code*\n\n"
-                f"For Order *{rider_order.order_number}*, please ask the **recipient** to give you their 5-digit verification code when you arrive at the drop-off location.\n\n"
-                f"The recipient received their code when the order was created. You'll need it to confirm successful delivery."
+                f"🔐 *Delivery Verification Code Help* 🛵💨\n\n"
+                f"Order: *{rider_order.order_number}*\n\n"
+                f"📋 *What to do:*\n\n"
+                f"• Ask the **recipient** for their *5-digit verification code* upon arrival. 🤝📦\n\n"
+                f"• The recipient received their unique code directly via WhatsApp. 📱✨\n\n"
+                f"• Once you receive and confirm the code, tap the drop-off button to finish delivery! ✅💪"
             ), auth, graph_url)
             return
 
