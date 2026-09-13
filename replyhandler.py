@@ -655,6 +655,174 @@ async def schedule_user_session_timeout(order_number: str, sender_wa_number: str
         print(f"schedule_user_session_timeout background task error: {e}")
 
 
+async def schedule_rider_process_reminders(order_number: str, rider_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors an active order after rider acceptance.
+    Phase 1 — Pickup: sends "Have you picked up the package?" after 5 min, then up to 2 reminders every 5 min.
+    If rider doesn't respond after all reminders: unassigns rider, re-routes order to other riders.
+    Phase 2 — Dropoff: after pickup confirmed, sends dropoff reminders.
+    """
+    try:
+        # ---------------------------------------------------------------
+        # PHASE 1: PICKUP PROMPT & REMINDERS (Initial + 2 follow-ups max)
+        # ---------------------------------------------------------------
+        await asyncio.sleep(300)  # 5 minutes after acceptance before first prompt
+
+        pickup_reminder_count = 0
+        max_reminders_after_initial = 2
+
+        while pickup_reminder_count <= max_reminders_after_initial:
+            from database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                order = await get_active_ride_by_number(order_number, db)
+
+                # Exit if order cancelled, completed, or expired
+                if not order or order.status in ["cancelled", "completed", "expired"]:
+                    return
+
+                # If rider already marked package picked up, advance to Phase 2
+                if order.delivery_progression_status in ["package_picked_up", "package_delivered"]:
+                    break
+
+                # Send initial prompt or reminder
+                if pickup_reminder_count == 0:
+                    header = "Have you picked up the package?"
+                    message = "📦 Tap the button below once you've picked up the package."
+                else:
+                    header = "⏰ Pickup Reminder"
+                    message = (
+                        f"⏰ *Pickup Reminder ({pickup_reminder_count}/{max_reminders_after_initial})*\n\n"
+                        f"Hi! You have an ongoing pickup for Order *{order_number}*.\n\n"
+                        f"Please tap the button below once you've picked up the package from the sender."
+                    )
+
+                await send_custom_flow(
+                    wa_number=rider_wa_number,
+                    flow_token={"order_number": order_number},
+                    message=message,
+                    header=header,
+                    flow_id="1521319786323152",
+                    flow_cta="Picked Up Package?",
+                    screen_name="flow_to_ask_if_rider_has_picked_up_package",
+                    auth=auth,
+                    graph_url=graph_url
+                )
+
+            pickup_reminder_count += 1
+            await asyncio.sleep(300)  # 5 minutes between each reminder
+
+        # ---------------------------------------------------------------
+        # CHECK IF RIDER FAILED TO RESPOND TO ALL PICKUP REMINDERS
+        # ---------------------------------------------------------------
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if order and order.status == "rider_accepted" and order.delivery_progression_status not in ["package_picked_up", "package_delivered"]:
+                print(f"[RIDER TIMEOUT] Rider ({rider_wa_number}) did not respond to pickup reminders for order {order_number}. Re-routing...")
+
+                # 1. Unassign rider, reset order to 'confirmed'
+                await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(status="confirmed", rider_wa_number=None)
+                )
+                await db.commit()
+
+                # 2. Notify unresponsive rider
+                await send_custom_message(rider_wa_number, (
+                    f"⏰ *Order Re-assigned*\n\n"
+                    f"Due to inactivity, Order *{order_number}* has been unassigned from you and returned to dispatch."
+                ), auth, graph_url)
+
+                # 3. Notify customer
+                await send_custom_message(order.sender_wa_number, (
+                    f"🔄 *Re-routing Order*\n\n"
+                    f"Your assigned rider was unresponsive for Order *{order_number}*.\n\n"
+                    f"We are re-routing your delivery to other nearby riders right now!"
+                ), auth, graph_url)
+
+                # 4. Re-broadcast to available riders
+                order_details = {
+                    "package_description": order.package_description,
+                    "pick_up_location": order.pickup_location_name,
+                    "drop_off_location": order.dropoff_location_name,
+                    "offered_price": order.customer_initial_offered_price or order.final_price_agreed_by_cust_and_rider or "1000",
+                    "order_number": order.order_number,
+                    "image_id": order.package_image_id
+                }
+                await get_rider(
+                    sender_wa_number=order.sender_wa_number,
+                    auth=auth,
+                    graph_url=graph_url,
+                    order_details=order_details,
+                    db=db
+                )
+                return
+
+        # ---------------------------------------------------------------
+        # PHASE 2: DROPOFF / DELIVERY REMINDERS (up to 2 reminders)
+        # ---------------------------------------------------------------
+        await asyncio.sleep(600)  # 10 min after pickup before first dropoff reminder
+
+        dropoff_reminder_count = 0
+        while dropoff_reminder_count < max_reminders_after_initial:
+            async with AsyncSessionLocal() as db:
+                order = await get_active_ride_by_number(order_number, db)
+
+                if not order or order.status in ["cancelled", "completed", "expired"]:
+                    return
+                if order.delivery_progression_status == "package_delivered":
+                    return
+
+                await send_custom_flow(
+                    wa_number=rider_wa_number,
+                    flow_token={"order_number": order_number},
+                    message=(
+                        f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})*\n\n"
+                        f"Hi! Order *{order_number}* is currently in transit.\n\n"
+                        f"Have you dropped off the package to the recipient yet? "
+                        f"Click the button below when you have dropped off the package successfully."
+                    ),
+                    header="Have you delivered the package yet?",
+                    flow_id="1549615230214062",
+                    flow_cta="Have you Delivered the Package?",
+                    screen_name="flow_to_ask_if_rider_has_dropped_off_package",
+                    auth=auth,
+                    graph_url=graph_url
+                )
+
+            dropoff_reminder_count += 1
+            await asyncio.sleep(300)
+
+        # Final check: if still in transit after all reminders, nudge the customer
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if order and order.delivery_progression_status == "package_picked_up":
+                await send_custom_message(order.sender_wa_number, (
+                    f"📦 *Delivery Status Check*\n\n"
+                    f"Order *{order_number}* is currently in transit.\n"
+                    f"If you need an update, you can call your rider directly at *{rider_wa_number}*."
+                ), auth, graph_url)
+
+    except Exception as e:
+        print(f"schedule_rider_process_reminders background task error: {e}")
+
+
+async def _delayed_send_pickup_flow(wa_number, order_number, auth, graph_url, delay=300):
+    await asyncio.sleep(delay)
+    await send_custom_flow(
+        wa_number=wa_number,
+        flow_token={"order_number": order_number},
+        message="📦 Tap the button below once you've picked up the package.",
+        header="Have you picked up the package?",
+        flow_id="1521319786323152",
+        flow_cta="Picked Up Package?",
+        screen_name="flow_to_ask_if_rider_has_picked_up_package",
+        auth=auth,
+        graph_url=graph_url
+    )
+
+
 async def schedule_customer_offer_timeout(order_number: str, customer_wa_number: str, rider_name: str, proposed_amount: str, auth: str, graph_url: str):
     """
     Monitors customer inactivity when a rider sends a counter-offer.
@@ -976,6 +1144,14 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         # Notify recipient
         await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
 
+        # Start pickup & delivery reminder loop for the rider
+        asyncio.create_task(schedule_rider_process_reminders(
+            order_number=order_number,
+            rider_wa_number=sender_wa_number,
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        ))
+
     else:
         rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
@@ -1141,6 +1317,14 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
 
         # Notify recipient
         await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
+
+        # Start pickup & delivery reminder loop for the rider
+        asyncio.create_task(schedule_rider_process_reminders(
+            order_number=order_number,
+            rider_wa_number=rider_wa_number,
+            auth=auth,
+            graph_url=graph_url
+        ))
 
 
 
