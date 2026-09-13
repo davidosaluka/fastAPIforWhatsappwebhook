@@ -240,6 +240,45 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )
             await replyhandler.send_custom_message(sender_wa_number, cancel_msg, AUTH, GRAPH_URL)
 
+        elif button_id.startswith("rate_rider:"):
+            parts = button_id.split(":")
+            if len(parts) >= 3:
+                order_number = parts[1]
+                try:
+                    rating_val = int(parts[2])
+                    await replyhandler.save_rider_rating(
+                        order_number=order_number,
+                        rating_val=rating_val,
+                        customer_wa=sender_wa_number,
+                        db=db,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                except ValueError:
+                    pass
+
+    if message["type"] == "interactive" and message["interactive"]["type"] == "list_reply":
+        list_reply = message["interactive"]["list_reply"]
+        list_id = list_reply.get("id", "")
+        sender_wa_number = message["from"]
+
+        if list_id.startswith("rate_rider:"):
+            parts = list_id.split(":")
+            if len(parts) >= 3:
+                order_number = parts[1]
+                try:
+                    rating_val = int(parts[2])
+                    await replyhandler.save_rider_rating(
+                        order_number=order_number,
+                        rating_val=rating_val,
+                        customer_wa=sender_wa_number,
+                        db=db,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                except ValueError:
+                    pass
+
     if message["type"] == "interactive" and message["interactive"]["type"] == "nfm_reply":
         nfm_reply = message["interactive"]["nfm_reply"]
         raw_response = nfm_reply.get("response_json", "{}")
@@ -334,38 +373,66 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )    
             order_details = order_details.scalar_one_or_none()
             if order_details:
-                message_for_sender_and_recipient = (
-                    f"Package has been delivered successfully!\n"
-                    "Thank you for choosing inTime!\n"
+                # Fetch rider name for the rating prompt
+                rider_name_res = await db.execute(
+                    select(models.Riders.first_name, models.Riders.last_name)
+                    .where(models.Riders.rider_wa_number == order_details.rider_wa_number)
                 )
+                rider_name_row = rider_name_res.first()
+                rider_display_name = f"{rider_name_row[0]} {rider_name_row[1]}" if rider_name_row else "your rider"
+
                 message_for_rider = (
-                    f"🎉 Delivery completed successfully for Order *{order_number}*!\n"
-                    "Thank you for your service! 🏍️"
+                    f"📦 *Package has been delivered successfully!*\n\n"
+                    f"Thank you for your service! More orders coming soon. 🛵💨🎉\n\n"
+                    f"Order *{order_number}* is completed. Keep up the fantastic hustle! 💪✨"
                 )
+                message_for_recipient = (
+                    f"✅🎉 *Your Package Has Arrived!*\n\n"
+                    f"Your delivery for Order *{order_number}* has been completed successfully! 📦✨\n\n"
+                    f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
+                )
+                message_for_sender = (
+                    f"🎉🥳 *Delivery Complete!* 📦✨\n\n"
+                    f"Woohoo! Your package for Order *{order_number}* has been delivered safely and successfully! 🎊🛵💨\n\n"
+                    f"Thank you so much for choosing *InTime* — we absolutely loved delivering for you today! 🚀💫\n"
+                    f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
+                )
+
                 await db.execute(
-                update(models.Orders)
-                .where(models.Orders.order_number == order_number)
-                .values(delivery_progression_status="package_delivered")
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(delivery_progression_status="package_delivered")
                 )
                 await db.commit()
 
+                # Notify rider
                 await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.sender_wa_number, 
-                    message=message_for_sender_and_recipient,
-                    auth=AUTH, 
+                    sender_wa_number=order_details.rider_wa_number,
+                    message=message_for_rider,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
+                # Notify sender
+                await replyhandler.send_custom_message(
+                    sender_wa_number=order_details.sender_wa_number,
+                    message=message_for_sender,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
+                # Notify recipient
+                await replyhandler.send_custom_message(
+                    sender_wa_number=order_details.recipient_phone_number,
+                    message=message_for_recipient,
+                    auth=AUTH,
                     graph_url=GRAPH_URL
                 )
 
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.rider_wa_number, 
-                    message=message_for_rider,
-                    auth=AUTH, 
-                    graph_url=GRAPH_URL
-                )
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.recipient_phone_number, 
-                    message=message_for_sender_and_recipient,
-                    auth=AUTH, 
+                # Send rating prompt to customer (list message with 5 → 1 stars)
+                await replyhandler.send_rider_rating_prompt(
+                    customer_wa_number=order_details.sender_wa_number,
+                    rider_name=rider_display_name,
+                    order_number=order_number,
+                    auth=AUTH,
                     graph_url=GRAPH_URL
                 )
 

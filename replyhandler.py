@@ -1,6 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 import requests
@@ -70,14 +70,17 @@ async def send_rider_accepted_with_options(
     rider_phone: str,
     order_number: str,
     auth: str,
-    graph_url: str
+    graph_url: str,
+    rating_display: str = None
 ):
     """Sends the rider-accepted confirmation to the customer with Find Another Rider and Cancel Order quick-reply buttons."""
     target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    rating_line = f"⭐ Rating: *{rating_display}*\n" if rating_display else ""
     body_text = (
         f"🎉 *Great news!* Your rider has been confirmed for Order *{order_number}*.\n\n"
         f"🧑‍✈️ Rider: *{rider_name}*\n"
-        f"📞 Phone: *{rider_phone}*\n\n"
+        f"📞 Phone: *{rider_phone}*\n"
+        f"{rating_line}\n"
         f"Your rider is heading to the pickup location now. Tap below if you need to make a change."
     )
     req_body = {
@@ -596,6 +599,197 @@ async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: A
         .values(status=status_val, updated_at=datetime.now(UTC))
     )
     await db.commit()
+
+
+async def get_rider_rating_stats(rider_wa_number: str, db: AsyncSession) -> tuple[float | None, int]:
+    """Calculate the average star rating and total review count for a rider across all their phone variants."""
+    possible_numbers = get_phone_variants(rider_wa_number)
+    result = await db.execute(
+        select(func.avg(models.RiderRating.rating), func.count(models.RiderRating.id))
+        .where(models.RiderRating.rider_wa_number.in_(possible_numbers))
+    )
+    row = result.first()
+    if row and row[0] is not None:
+        return round(float(row[0]), 1), int(row[1])
+    return None, 0
+
+
+async def send_rider_rating_prompt(
+    customer_wa_number: str,
+    rider_name: str,
+    order_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends an interactive WhatsApp list message allowing the customer to rate the rider from 5 to 1 stars."""
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    safe_rider_name = (rider_name or "your rider")[:20]
+
+    body_text = (
+        f"⭐ *Rate Your Delivery*\n\n"
+        f"How would you rate *{rider_name}* for Order *{order_number}*?\n\n"
+        f"Tap *Rate Rider* below to submit your rating — 5 stars for excellent service! 🌟"
+    )
+
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {
+                "type": "text",
+                "text": "⭐ Rate Your Rider"
+            },
+            "body": {
+                "text": body_text
+            },
+            "footer": {
+                "text": "InTime Service Quality"
+            },
+            "action": {
+                "button": "Rate Rider",
+                "sections": [
+                    {
+                        "title": f"Rate {safe_rider_name}"[:24],
+                        "rows": [
+                            {
+                                "id": f"rate_rider:{order_number}:5",
+                                "title": "⭐⭐⭐⭐⭐ 5 Stars",
+                                "description": "Excellent service!"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:4",
+                                "title": "⭐⭐⭐⭐ 4 Stars",
+                                "description": "Very good service"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:3",
+                                "title": "⭐⭐⭐ 3 Stars",
+                                "description": "Good service"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:2",
+                                "title": "⭐⭐ 2 Stars",
+                                "description": "Fair / Needs improvement"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:1",
+                                "title": "⭐ 1 Star",
+                                "description": "Poor service"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        res = await client.post(graph_url, json=req_body, headers=headers)
+        print("rating prompt sent:", res.status_code, res.text)
+        if res.status_code >= 400:
+            fallback_msg = (
+                f"⭐ *Rate Your Experience with {rider_name}*\n\n"
+                f"How would you rate your delivery for Order *{order_number}*?\n\n"
+                f"Reply with a number:\n"
+                f"5️⃣ - ⭐⭐⭐⭐⭐ (5 Stars - Excellent service!)\n"
+                f"4️⃣ - ⭐⭐⭐⭐ (4 Stars - Very good)\n"
+                f"3️⃣ - ⭐⭐⭐ (3 Stars - Good)\n"
+                f"2️⃣ - ⭐⭐ (2 Stars - Fair)\n"
+                f"1️⃣ - ⭐ (1 Star - Poor)"
+            )
+            await send_custom_message(customer_wa_number, fallback_msg, auth, graph_url)
+
+
+async def save_rider_rating(
+    order_number: str,
+    rating_val: int,
+    customer_wa: str,
+    db: AsyncSession,
+    auth: str,
+    graph_url: str
+):
+    """Saves a rider star rating (1–5) and notifies both customer and rider with updated stats."""
+    rating_val = max(1, min(5, rating_val))
+
+    order_res = await db.execute(
+        select(models.Orders).where(models.Orders.order_number == order_number)
+    )
+    order = order_res.scalars().first()
+    if not order:
+        return
+
+    rider_wa = order.rider_wa_number
+    customer_number = customer_wa or order.sender_wa_number
+
+    # Check if this order was already rated
+    existing_rating = await db.execute(
+        select(models.RiderRating).where(models.RiderRating.order_number == order_number)
+    )
+    if existing_rating.scalars().first():
+        msg = f"🙏 You have already submitted a rating for Order *{order_number}*. Thank you for your feedback!"
+        await send_custom_message(customer_number, msg, auth, graph_url)
+        return
+
+    # Find rider's name
+    rider_name = "your rider"
+    if rider_wa:
+        r_res = await db.execute(
+            select(models.Riders.first_name, models.Riders.last_name)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa)))
+        )
+        r_row = r_res.first()
+        if r_row:
+            rider_name = f"{r_row[0]} {r_row[1]}"
+
+    # Insert into rider_ratings
+    new_rating = models.RiderRating(
+        rider_wa_number=rider_wa or "unknown",
+        order_number=order_number,
+        rating=rating_val
+    )
+    db.add(new_rating)
+    await db.commit()
+
+    # Fetch updated average rating and count
+    avg_rating, total_count = await get_rider_rating_stats(rider_wa, db) if rider_wa else (None, 0)
+    avg_str = f"{avg_rating:.1f} ★" if avg_rating is not None else f"{rating_val}.0 ★"
+    reviews_str = f"{total_count} {'review' if total_count == 1 else 'reviews'}"
+
+    stars_display = "⭐" * rating_val
+    rating_labels = {
+        5: "Excellent service!",
+        4: "Very good service!",
+        3: "Good service!",
+        2: "Fair service.",
+        1: "Poor service."
+    }
+    label = rating_labels.get(rating_val, "")
+
+    # Send energetic thank you to customer
+    customer_msg = (
+        f"🌟 *Thank you for rating {rider_name}!* 🌟\n\n"
+        f"You gave: {stars_display} (*{rating_val}/5 stars* — {label})\n\n"
+        f"Your feedback helps us reward great riders and keep InTime fast, reliable, and delightful! 🛵💨\n\n"
+        f"Ready for your next dispatch? Just type *Send an Order* anytime! 📦🚀"
+    )
+    await send_custom_message(customer_number, customer_msg, auth, graph_url)
+
+    # Notify rider of the rating they received
+    if rider_wa:
+        rider_msg = (
+            f"🎉 *New Customer Rating!* {stars_display}\n\n"
+            f"A customer just rated you *{rating_val}/5 stars* for Order *{order_number}*! 🌟\n\n"
+            f"📊 Your overall average rating is now: *{avg_str}* ({reviews_str})\n\n"
+            f"Keep up the great work! More orders coming soon! 🏍️💨"
+        )
+        await send_custom_message(rider_wa, rider_msg, auth, graph_url)
 
 
 async def get_active_ride_by_number(order_number: str, db: AsyncSession):
@@ -1131,14 +1325,19 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
         # Notify rider
         await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
 
-        # Notify customer with action buttons
+        # Get rider rating stats to display in customer confirmation
+        avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
+        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
+        # Notify customer with action buttons & rider rating
         await send_rider_accepted_with_options(
             customer_wa_number=customer_wa_number,
             rider_name=rider_name,
             rider_phone=rider_phone,
             order_number=order_number,
             auth=AUTH,
-            graph_url=GRAPH_URL
+            graph_url=GRAPH_URL,
+            rating_display=rating_display
         )
 
         # Notify recipient
@@ -1200,11 +1399,15 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
         customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
         rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
 
+        # Fetch actual average rating for rider
+        avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
+        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
         customer_message = (
             f"🧑‍✈️ Rider: *{rider_name}*\n\n"
             f"💰 Offered Price: *{rider_proposed_amount}*\n\n"
             f"🔖 Order No: {order.order_number}\n\n"
-            f"⭐ Rating: 4.5 stars"
+            f"⭐ Rating: *{rating_display}*"
             )
         
         asking_customer_to_increase_price_msg = (
@@ -1305,14 +1508,19 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
         # Notify rider
         await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
 
-        # Notify customer with action buttons
+        # Get rider rating stats to display in customer confirmation
+        avg_rating, total_reviews = await get_rider_rating_stats(rider_wa_number, db)
+        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
+        # Notify customer with action buttons & rider rating
         await send_rider_accepted_with_options(
             customer_wa_number=customer_wa_number,
             rider_name=rider_name,
             rider_phone=rider_phone,
             order_number=order_number,
             auth=auth,
-            graph_url=graph_url
+            graph_url=graph_url,
+            rating_display=rating_display
         )
 
         # Notify recipient
@@ -1532,6 +1740,44 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         return
 
     lower_clean = text_body.strip().lower().strip(".,!?:;")
+
+    # --- 1b. CUSTOMER TEXT-BASED RATING CHECK ---
+    # If customer recently had a delivery completed, catch rating replies (e.g. '5', '5 stars', '⭐⭐⭐⭐⭐')
+    recent_delivered = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(get_phone_variants(sender_wa_number)))
+        .where(models.Orders.delivery_progression_status == "package_delivered")
+        .order_by(models.Orders.created_at.desc())
+    )
+    last_delivered = recent_delivered.scalars().first()
+    if last_delivered:
+        already_rated = await db.execute(
+            select(models.RiderRating)
+            .where(models.RiderRating.order_number == last_delivered.order_number)
+        )
+        if not already_rated.scalars().first():
+            detected_rating = None
+            if "⭐⭐⭐⭐⭐" in text_body or lower_clean in ["5", "5 star", "5 stars", "five star", "five stars", "5/5", "5 out of 5", "five"]:
+                detected_rating = 5
+            elif "⭐⭐⭐⭐" in text_body or lower_clean in ["4", "4 star", "4 stars", "four star", "four stars", "4/5", "4 out of 5", "four"]:
+                detected_rating = 4
+            elif "⭐⭐⭐" in text_body or lower_clean in ["3", "3 star", "3 stars", "three star", "three stars", "3/5", "3 out of 5", "three"]:
+                detected_rating = 3
+            elif "⭐⭐" in text_body or lower_clean in ["2", "2 star", "2 stars", "two star", "two stars", "2/5", "2 out of 5", "two"]:
+                detected_rating = 2
+            elif "⭐" in text_body or lower_clean in ["1", "1 star", "1 stars", "one star", "one stars", "1/5", "1 out of 5", "one"]:
+                detected_rating = 1
+
+            if detected_rating is not None:
+                await save_rider_rating(
+                    order_number=last_delivered.order_number,
+                    rating_val=detected_rating,
+                    customer_wa=sender_wa_number,
+                    db=db,
+                    auth=auth,
+                    graph_url=graph_url
+                )
+                return
 
     # Fast-path pre-check for generic courtesy acknowledgments
     generic_courtesies = {

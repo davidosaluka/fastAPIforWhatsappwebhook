@@ -102,4 +102,12 @@ class OrderSearchState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 
-    
+class RiderRating(Base):
+    """Stores a single star rating (1–5) per completed order, keyed to the rider."""
+    __tablename__ = "rider_ratings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    rider_wa_number: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    order_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)   # 1–5
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

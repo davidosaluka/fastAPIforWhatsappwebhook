@@ -75,6 +75,24 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             print(f"Migration note (users is_deleted): {e}")
 
+        # rider_ratings table
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS rider_ratings (
+                        id SERIAL PRIMARY KEY,
+                        rider_wa_number VARCHAR(50) NOT NULL,
+                        order_number VARCHAR(50) NOT NULL UNIQUE,
+                        rating INTEGER NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_rider_ratings_rider_wa_number ON rider_ratings (rider_wa_number);
+                    CREATE INDEX IF NOT EXISTS ix_rider_ratings_order_number ON rider_ratings (order_number);
+                '''))
+                print("🟢 [MIGRATION] rider_ratings table ensured.")
+        except Exception as e:
+            print(f"Migration note (rider_ratings): {e}")
+
     elif engine.dialect.name == "sqlite":
         try:
             async with engine.begin() as conn:
@@ -98,6 +116,19 @@ async def lifespan(_app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE users ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0;'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS rider_ratings (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        rider_wa_number VARCHAR(50) NOT NULL,
+                        order_number VARCHAR(50) NOT NULL UNIQUE,
+                        rating INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                '''))
         except Exception:
             pass
 
