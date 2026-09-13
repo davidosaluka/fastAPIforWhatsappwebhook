@@ -42,11 +42,13 @@ The system is built on a modern, fully asynchronous Python stack:
 3. **Multi-Rider Broadcast Dispatch**: Broadcasts order requests to all active/available riders within Meta's 24-hour customer service window.
 4. **Dynamic Fare Negotiation**: Senders and riders can negotiate prices back and forth seamlessly via interactive WhatsApp forms.
 5. **Priority & Medical Deliveries**: Specialized urgency routing for medications and urgent packages (`is_drug`, `is_urgent`, `is_priority`).
-6. **5-Digit Verification Code System**: Automated security handshake code dispatched to Sender, Recipient, and Rider prior to package drop-off.
-7. **Automated Background Timers**: State-aware background monitoring (`asyncio.create_task`) for order follow-ups, image upload reminders, session timeouts, and arrival checks.
-8. **"Femi" AI Assistant**: Multi-turn conversational chatbot powered by Groq LLM that handles general chatter, answers logistics questions, and guides customers to place orders.
-9. **Daily Rider Availability Reset**: Automated cron job at 8:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
-10. **Account & Data Deletion**: Registered users can delete their user profile & data via template button ("Delete my Account") or natural text intent ("delete my account"). Features an interactive confirmation prompt ("Are you sure...") to prevent accidental deletions.
+6. **5-Digit Verification Code System**: Formatted, emoji-rich security handshake codes dispatched to Sender (backup copy with security warning), Recipient (with arrival notice), and Rider.
+7. **Rider Reputation & 5-Star Rating System**: Complete customer review loop. After delivery, customers rate riders from 1 to 5 stars via an interactive list menu or text. Individual ratings are stored in `rider_ratings`, averaged over time, and presented dynamically on rider profiles (`⭐ 4.9 ★ (24 reviews)`).
+8. **Active Rider Mid-Transit Interception**: Incoming messages from riders on active deliveries are intercepted mid-ride to provide instant code instructions and ETA confirmations, completely bypassing the conversational AI.
+9. **Automated Background Timers**: State-aware background monitoring (`asyncio.create_task`) for order follow-ups, image upload reminders, session timeouts, pickup arrival prompts, and proximity checks.
+10. **"Femi" AI Assistant**: Multi-turn conversational chatbot powered by Groq LLM that handles general chatter, answers logistics questions, and guides customers to place orders.
+11. **Daily Rider Availability Reset**: Automated cron job at 8:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
+12. **Account & Data Deletion (NDPR Compliant)**: Soft-delete customer profiles (`is_deleted = True`) and purge conversation memory while preserving order audit history. Includes an interactive confirmation prompt ("Are you sure...") to prevent accidental deletions.
 
 ---
 
@@ -76,7 +78,7 @@ sequenceDiagram
         alt User Clicks "Yes, Delete"
             Customer->>WhatsApp: Button Reply: CONFIRM_DELETE_ACCOUNT
             WhatsApp->>FastAPI: POST /webhook
-            FastAPI->>DB: DELETE FROM users WHERE phone IN (...)
+            FastAPI->>DB: UPDATE users SET is_deleted=TRUE WHERE phone IN (...)
             FastAPI->>FastAPI: Clear user chat memory (_chat_memory)
             FastAPI->>WhatsApp: Send Deletion Confirmation Message
         else User Clicks "Cancel"
@@ -101,9 +103,10 @@ sequenceDiagram
         
         alt Rider Accepts
             FastAPI->>DB: Update order status -> 'rider_accepted'
-            FastAPI->>WhatsApp: Notify Customer & Recipient with Rider Details
+            FastAPI->>DB: Query Rider Average Rating Stats
+            FastAPI->>WhatsApp: Notify Customer with Rider Profile & Rating (⭐ 4.9 ★)
         else Rider Negotiates
-            FastAPI->>WhatsApp: Send Counter-Offer Flow to Customer
+            FastAPI->>WhatsApp: Send Counter-Offer Flow to Customer (with Rider Rating)
         end
     end
 ```
@@ -154,6 +157,7 @@ Stores registered customer information.
 | `wa_id` | String (Unique) | WhatsApp ID / Phone number |
 | `display_phone_number` | String | Formatted display phone number |
 | `phone_number_id` | String | Meta WhatsApp Phone Number ID |
+| `is_deleted` | Boolean | Soft-delete flag for NDPR data compliance (Default: `False`) |
 
 ### 2. `Orders` (`orders`)
 Central table storing package delivery transactions.
@@ -198,7 +202,17 @@ Audit log for tracking individual dispatch requests sent to riders.
 | `rider_wa_number` | String | Target rider |
 | `status` | String | Delivery/Read status: `sent`, `delivered`, `read`, `viewed`, `accepted`, `declined` |
 
-### 5. `apiRequest` (`apiRequests`)
+### 5. `RiderRating` (`rider_ratings`)
+Stores per-order star ratings (1–5) submitted by customers, dynamically aggregated to compute each rider's rolling average.
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `id` | Integer (PK) | Auto-increment primary key |
+| `rider_wa_number` | String (Index) | Rated rider's WhatsApp phone number |
+| `order_number` | String (Unique, Index) | Associated order number (ensures 1 review per delivery) |
+| `rating` | Integer | Rating score (1 to 5 stars) |
+| `created_at` | DateTime | Timestamp of rating submission (UTC) |
+
+### 6. `apiRequest` (`apiRequests`)
 Webhook payload audit log used for deduplication.
 | Field | Type | Description |
 | :--- | :--- | :--- |
@@ -223,7 +237,7 @@ Webhook payload audit log used for deduplication.
         │    ▼
         │    Prompt Confirmation ("Are you sure...")
         │    │
-        │    ├──► Taps "Yes, Delete" ──► Delete Profile & Chat Memory ──► Account Deleted 🗑️
+        │    ├──► Taps "Yes, Delete" ──► Update is_deleted=True & Clear Memory ──► Account Deleted 🗑️
         │    └──► Taps "Cancel" ───────► Action Cancelled ✅
         │
         └──► Taps "Send an Order" or places order
@@ -250,6 +264,7 @@ Webhook payload audit log used for deduplication.
                           │                                           │
                           ▼                                           ▼
              Order Status = "rider_accepted"                 Customer Prompted with Counter-Offer
+             (Rating included in profile)                    (Rider Rating included)
                           │                                           │
                           ▼                                 ┌─────────┴─────────┐
              Rider En-Route to Pickup                       ▼                   ▼
@@ -262,12 +277,28 @@ Webhook payload audit log used for deduplication.
                           │
                           ▼
             Send 5-Digit Code to All Parties
+            (Spacious & formatted with emojis)
                           │
                           ▼
               Rider Taps "At Dropoff"
                           │
                           ▼
-             Delivery Completed! 🏁
+             Order Status = "package_delivered"
+                          │
+                          ├──► Energetic Emojis Sent to Rider, Recipient & Customer
+                          │
+                          └──► Interactive Rating List Prompt (5 to 1 Stars)
+                                    │
+                                    ▼
+                              Customer Rates Rider
+                              (via List Click or Text "5 Stars")
+                                    │
+                                    ▼
+                              Saved to rider_ratings & Average Updated
+                                    │
+                                    ├──► Thank Customer Enthusiastically
+                                    │
+                                    └──► Alert Rider with New Rating & Average Score 🏁
 ```
 
 ---
@@ -276,12 +307,20 @@ Webhook payload audit log used for deduplication.
 
 The system uses **Groq API** (`AsyncGroq`) with fallback across multiple models (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `mixtral-8x7b-32768`, `llama3-70b-8192`):
 
-1. **Intent Classification Engine (`classify_message_intent`)**:
+1. **Mid-Delivery Rider Interception Guard**:
+   - Before evaluating AI intents, the system checks if the sender is a rider on an active delivery (`rider_accepted`, `awaiting_pickup`, `package_picked_up`).
+   - If so, all messages are intercepted directly: code queries provide step-by-step instructions, ETA responses trigger customer notifications, and status inquiries provide immediate situational context.
+   - **Completely bypasses Femi AI** so active riders are never distracted by conversational responses.
+
+2. **Text-Based Rating Detection**:
+   - If a customer recently completed an unrated delivery and texts a rating (e.g. `"5"`, `"5 stars"`, `"⭐⭐⭐⭐⭐"`), the system captures and persists the review directly without passing it to the AI.
+
+3. **Intent Classification Engine (`classify_message_intent`)**:
    - Evaluates incoming freeform text using LLM JSON Mode.
    - Categorizes intent into: `CREATE_ORDER`, `CANCEL_ORDER`, `DELETE_ACCOUNT`, `TRACK_ORDER`, `MODIFY_ORDER`, `SUPPORT`, or `GENERAL_CHAT`.
    - Directly routes transactional and account management requests to the corresponding WhatsApp handlers.
 
-2. **Femi AI Assistant (`handle_text_message`)**:
+4. **Femi AI Assistant (`handle_text_message`)**:
    - Persona: *"Femi, the friendly, energetic AI assistant for InTime 🛵💨"*.
    - Features: Multi-turn in-memory chat history (`_chat_memory`, capped at 10 turns per user), dynamic greeting generation, Nigerian logistics knowledge base, and auto-conversion of standard Markdown (`**bold**`) to WhatsApp single-asterisk formatting (`*bold*`).
    - Behavior: Always answers queries politely while encouraging users to type `Send an Order` to initiate transactions.
