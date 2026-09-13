@@ -1450,14 +1450,26 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     rider_order = await get_active_rider_order(sender_wa_number, db)
     if rider_order:
         lower_text = text_body.strip().lower()
-        if any(neg in lower_text for neg in ["no", "not", "nope"]):
+
+        # Rider asking for the verification code
+        code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
+        if any(kw in lower_text for kw in code_keywords):
+            await send_custom_message(sender_wa_number, (
+                f"🔐 *Verification Code*\n\n"
+                f"For Order *{rider_order.order_number}*, please ask the **recipient** to give you their 5-digit verification code when you arrive at the drop-off location.\n\n"
+                f"The recipient received their code when the order was created. You'll need it to confirm successful delivery."
+            ), auth, graph_url)
+            return
+
+        if any(neg in lower_text for neg in ["no", "not", "nope", "haven't", "havent", "not yet"]):
             rider_msg = (
                 f"Got it 👍\n\n"
                 f"Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
             )
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
             return
-        elif any(pos in lower_text for pos in ["yes", "yeah", "yep", "almost", "close", "arrived"]):
+
+        elif any(pos in lower_text for pos in ["yes", "yeah", "yep", "almost", "close", "arrived", "am here", "i'm here"]):
             rider_msg = (
                 f"Awesome 🛵!\n\n"
                 f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
@@ -1490,6 +1502,22 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             except Exception as notify_err:
                 print(f"Error sending ETA confirmation notifications to customer/recipient: {notify_err}")
 
+            return
+
+        else:
+            # Unrecognised text from rider mid-delivery — give contextual reply, don't let Femi AI handle it
+            status_label = {
+                "rider_accepted": "heading to pickup",
+                "awaiting_pickup": "at the pickup location",
+                "package_picked_up": "in transit to the drop-off location"
+            }.get(rider_order.status, "on an active delivery")
+            await send_custom_message(sender_wa_number, (
+                f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
+                f"If you need anything, just type:\n"
+                f"• *'code'* — to get instructions on the delivery verification code\n"
+                f"• *'yes'* — to confirm you're near the drop-off\n"
+                f"• *'no'* — if you're still on your way"
+            ), auth, graph_url)
             return
 
     # --- 1. ACTIVE WORKFLOW STATE CHECK ---
