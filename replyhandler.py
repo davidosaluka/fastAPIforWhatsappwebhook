@@ -1859,6 +1859,12 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             ), auth, graph_url)
             return
 
+        positive_eta_triggers = [
+            "yes", "yeah", "yep", "almost", "close", "arrived", "am here", "i'm here",
+            "10min", "10 min", "10 mins", "10mins", "10 minutes", "10 minute",
+            "ten min", "ten minutes", "almost there", "close by", "nearby"
+        ]
+
         if any(neg in lower_text for neg in ["no", "not", "nope", "haven't", "havent", "not yet"]):
             rider_msg = (
                 f"Got it 👍\n\n"
@@ -1867,7 +1873,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
             return
 
-        elif any(pos in lower_text for pos in ["yes", "yeah", "yep", "almost", "close", "arrived", "am here", "i'm here"]):
+        elif any(pos in lower_text for pos in positive_eta_triggers):
             rider_msg = (
                 f"Awesome 🛵!\n\n"
                 f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
@@ -1904,11 +1910,14 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
         else:
             # Unrecognised text from rider mid-delivery — give contextual reply, don't let Femi AI handle it
-            status_label = {
-                "rider_accepted": "heading to pickup",
-                "awaiting_pickup": "at the pickup location",
-                "package_picked_up": "in transit to the drop-off location"
-            }.get(rider_order.status, "on an active delivery")
+            if rider_order.delivery_progression_status == "package_picked_up":
+                status_label = "in transit to the drop-off location"
+            elif rider_order.delivery_progression_status == "package_delivered" or rider_order.status == "completed":
+                status_label = "completed"
+            elif rider_order.status in ["rider_accepted", "awaiting_pickup"]:
+                status_label = "heading to pickup"
+            else:
+                status_label = "on an active delivery"
             await send_custom_message(sender_wa_number, (
                 f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
                 f"If you need anything, just type:\n"
