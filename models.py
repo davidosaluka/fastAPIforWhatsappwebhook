@@ -61,6 +61,8 @@ class Orders(Base):
     dropoff_location_name: Mapped[str] = mapped_column(String, nullable=True)
     package_image_id: Mapped[str] = mapped_column(String, nullable=True)
     delivery_progression_status: Mapped[str] = mapped_column(String, nullable=True)
+    verification_code: Mapped[str] = mapped_column(String(10), nullable=True)
+    verification_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_drug: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     is_urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     is_priority: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)

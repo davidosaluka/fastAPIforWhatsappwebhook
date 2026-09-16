@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
@@ -295,8 +295,11 @@ async def send_custom_message(sender_wa_number, message, auth, graph_url):
     }
       
     async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print("custom message sent", response.status_code, response.text)
+        try:
+            response = await client.post(graph_url, json=req_body, headers=headers)
+            print("custom message sent", response.status_code, response.text)
+        except Exception as e:
+            print("send_custom_message error:", e)
     return
 
 async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
@@ -579,6 +582,11 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
         select(models.Orders)
         .where(models.Orders.sender_wa_number.in_(possible_numbers))
         .where(models.Orders.status.in_(active_statuses))
+        .where(models.Orders.status != "completed")
+        .where(
+            (models.Orders.delivery_progression_status.is_(None)) |
+            (models.Orders.delivery_progression_status != "package_delivered")
+        )
         .order_by(models.Orders.created_at.desc())
     )
     order = result.scalars().first()
@@ -790,6 +798,136 @@ async def save_rider_rating(
             f"Keep up the great work! More orders coming soon! 🏍️💨"
         )
         await send_custom_message(rider_wa, rider_msg, auth, graph_url)
+
+
+async def verify_delivery_code(
+    order: models.Orders,
+    submitted_code: str,
+    rider_wa_number: str,
+    db: AsyncSession,
+    auth: str,
+    graph_url: str
+) -> bool:
+    """
+    Validates the 5-digit delivery verification code submitted by the rider.
+    Enforces a strict 3-trial limit.
+    On success: marks order as completed/delivered, sends completion notifications, and prompts customer for rating.
+    On failure: increments attempts, warns rider of remaining trials, and alerts sender on lockout (3 failed attempts).
+    """
+    clean_submitted = re.sub(r'[^\d]', '', str(submitted_code or "")).strip()
+    clean_expected = re.sub(r'[^\d]', '', str(order.verification_code or "")).strip()
+
+    # 1. Check if maximum attempts already exhausted
+    if (order.verification_attempts or 0) >= 3:
+        locked_msg = (
+            f"🚫 *Verification Locked*\n\n"
+            f"The maximum limit of 3 verification attempts has already been reached for Order *{order.order_number}*.\n\n"
+            f"For security reasons, code entry is disabled. Please contact InTime support at *+234 815 103 3428* or have the sender confirm the handover."
+        )
+        await send_custom_message(rider_wa_number, locked_msg, auth, graph_url)
+        return False
+
+    # 2. Check for match
+    if clean_expected and clean_submitted == clean_expected:
+        # SUCCESS! Update order status to completed and delivered
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order.order_number)
+            .values(
+                delivery_progression_status="package_delivered",
+                status="completed"
+            )
+        )
+        await db.commit()
+
+        # Fetch rider's display name
+        r_res = await db.execute(
+            select(models.Riders.first_name, models.Riders.last_name)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
+        )
+        r_row = r_res.first()
+        rider_display_name = f"{r_row[0]} {r_row[1]}" if r_row else "your rider"
+
+        rider_success_msg = (
+            f"✅ *Verification Successful!* 🎉\n\n"
+            f"Code *{clean_submitted}* verified successfully! Order *{order.order_number}* is now completed.\n\n"
+            f"Thank you for your fantastic hustle! 🛵💨 More dispatch requests coming your way soon! 💪✨"
+        )
+        recipient_msg = (
+            f"✅🎉 *Your Package Has Arrived!*\n\n"
+            f"Your delivery for Order *{order.order_number}* has been verified with your verification code and completed! 📦✨\n\n"
+            f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
+        )
+        sender_msg = (
+            f"🎉🥳 *Delivery Complete & Verified!* 📦✨\n\n"
+            f"Woohoo! Your package for Order *{order.order_number}* was safely verified with your recipient's code and delivered! 🎊🛵💨\n\n"
+            f"Thank you so much for choosing *InTime* — we loved delivering for you today! 🚀💫\n"
+            f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
+        )
+
+        # Send notifications
+        await send_custom_message(rider_wa_number, rider_success_msg, auth, graph_url)
+        if order.sender_wa_number:
+            await send_custom_message(order.sender_wa_number, sender_msg, auth, graph_url)
+        if order.recipient_phone_number:
+            await send_details_to_recipients(order.recipient_phone_number, recipient_msg, auth, graph_url)
+
+        # Send rating prompt to customer
+        if order.sender_wa_number:
+            await send_rider_rating_prompt(
+                customer_wa_number=order.sender_wa_number,
+                rider_name=rider_display_name,
+                order_number=order.order_number,
+                auth=auth,
+                graph_url=graph_url
+            )
+
+        print(f"🟢 [CODE VERIFIED] Order {order.order_number} verified with code {clean_submitted} by rider {rider_wa_number}.")
+        return True
+
+    else:
+        # INCORRECT CODE
+        new_attempts = (order.verification_attempts or 0) + 1
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order.order_number)
+            .values(verification_attempts=new_attempts)
+        )
+        await db.commit()
+
+        remaining_trials = max(0, 3 - new_attempts)
+
+        if remaining_trials > 0:
+            trial_str = f"*{remaining_trials}* trial{'s' if remaining_trials > 1 else ''}"
+            fail_msg = (
+                f"❌ *Incorrect Verification Code!*\n\n"
+                f"The code *{clean_submitted or submitted_code}* does not match.\n\n"
+                f"⚠️ You have {trial_str} remaining (Attempt {new_attempts}/3).\n\n"
+                f"Please ask the recipient for their 5-digit verification code and try again."
+            )
+            await send_custom_message(rider_wa_number, fail_msg, auth, graph_url)
+            print(f"⚠️ [CODE FAILED] Order {order.order_number}: attempt {new_attempts}/3 failed (entered: '{clean_submitted}').")
+        else:
+            # 3 ATTEMPTS EXHAUSTED - LOCKOUT
+            lockout_rider_msg = (
+                f"🚫 *Verification Limit Exceeded*\n\n"
+                f"You have failed 3 verification attempts for Order *{order.order_number}*.\n\n"
+                f"For security reasons, code entry is now locked. Please contact InTime support at *+234 815 103 3428* or ask the sender to verify the delivery."
+            )
+            await send_custom_message(rider_wa_number, lockout_rider_msg, auth, graph_url)
+
+            # Alert sender
+            if order.sender_wa_number:
+                alert_sender_msg = (
+                    f"⚠️ *Security Alert: Verification Attempts Failed*\n\n"
+                    f"Your rider entered an incorrect verification code 3 times for Order *{order.order_number}*.\n\n"
+                    f"Please contact your recipient or call InTime support at *+234 815 103 3428* to confirm package handover."
+                )
+                await send_custom_message(order.sender_wa_number, alert_sender_msg, auth, graph_url)
+
+            print(f"🚨 [CODE LOCKOUT] Order {order.order_number}: 3 verification attempts exhausted by rider {rider_wa_number}.")
+
+        return False
 
 
 async def get_active_ride_by_number(order_number: str, db: AsyncSession):
@@ -1651,24 +1789,69 @@ async def classify_message_intent(message_text: str) -> str:
 
 
 async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
-    """Finds active transit order assigned to the rider."""
+    """Finds active transit order assigned to the rider within the active delivery window (last 6 hours)."""
     possible_numbers = get_phone_variants(rider_wa_number)
+
+    # 1. Must be a verified rider registered in riders table
+    rider_check = await db.execute(
+        select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
+    )
+    if not rider_check.scalars().first():
+        return None
+
+    # 2. Must be an order created within the active delivery window (last 6 hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=6)
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.rider_wa_number.in_(possible_numbers))
         .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up"]))
+        .where(models.Orders.created_at >= cutoff)
+        .order_by(models.Orders.created_at.desc())
     )
     return result.scalars().first()
 
 
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
     """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
-    # --- 0. ACTIVE RIDER IN-TRANSIT CHECK ---
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+
+    # --- 0a. EXPLICIT ORDER CREATION TRIGGERS (ALWAYS take top priority) ---
+    order_triggers = [
+        "send an order", "send order", "create order", "book order",
+        "send a package", "ship a package", "book a delivery", "dispatch a package",
+        "send package", "ship package", "book delivery", "dispatch package",
+        "need to send an order", "like to send an order", "want to send an order",
+        "need to send order", "like to send order", "want to send order",
+        "i want to send", "i need to send", "i would like to send", "i will like to send"
+    ]
+    if any(trigger in lower_clean for trigger in order_triggers):
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
     rider_order = await get_active_rider_order(sender_wa_number, db)
     if rider_order:
         lower_text = text_body.strip().lower()
 
-        # Rider asking for the verification code
+        # 1. Check if rider entered / replied with the 5-digit verification code
+        code_match = re.search(r'\b\d{4,6}\b', text_body)
+        if code_match:
+            submitted_code = code_match.group(0)
+            await verify_delivery_code(
+                order=rider_order,
+                submitted_code=submitted_code,
+                rider_wa_number=sender_wa_number,
+                db=db,
+                auth=auth,
+                graph_url=graph_url
+            )
+            return
+
+        # 2. Rider asking for the verification code instructions
         code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
         if any(kw in lower_text for kw in code_keywords):
             await send_custom_message(sender_wa_number, (
@@ -1677,7 +1860,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 f"📋 *What to do:*\n\n"
                 f"• Ask the **recipient** for their *5-digit verification code* upon arrival. 🤝📦\n\n"
                 f"• The recipient received their unique code directly via WhatsApp. 📱✨\n\n"
-                f"• Once you receive and confirm the code, tap the drop-off button to finish delivery! ✅💪"
+                f"• Reply with the 5-digit code directly in this chat (e.g. *12345*) to complete delivery! ✅💪\n\n"
+                f"⚠️ *Note:* You have 3 trials to enter the correct code."
             ), auth, graph_url)
             return
 
@@ -1734,6 +1918,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await send_custom_message(sender_wa_number, (
                 f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
                 f"If you need anything, just type:\n"
+                f"• Reply with the recipient's *5-digit code* (e.g. *12345*) to complete delivery\n"
                 f"• *'code'* — to get instructions on the delivery verification code\n"
                 f"• *'yes'* — to confirm you're near the drop-off\n"
                 f"• *'no'* — if you're still on your way"
@@ -1802,22 +1987,6 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         intent = "GENERAL_CHAT"
     else:
         # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
-        order_triggers = [
-            "send an order", "send order", "create order", "book order",
-            "send a package", "ship a package", "book a delivery", "dispatch a package",
-            "send package", "ship package", "book delivery", "dispatch package",
-            "need to send an order", "like to send an order", "want to send an order",
-            "need to send order", "like to send order", "want to send order",
-            "i want to send", "i need to send", "i would like to send", "i will like to send"
-        ]
-        if any(trigger in lower_clean for trigger in order_triggers):
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-            else:
-                await send_registration_template(sender_wa_number, auth, graph_url)
-            return
-
         delete_triggers = [
             "delete my account", "delete account", "delete my data", "delete data",
             "remove my account", "remove account", "delete info", "remove my data",
@@ -1854,13 +2023,30 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     elif intent == "CANCEL_ORDER":
         order = await get_active_ride(sender_wa_number, db)
-        if order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up"]:
+        if order and order.delivery_progression_status == "package_picked_up":
+            msg = (
+                f"⚠️ *Package Already in Transit*\n\n"
+                f"Order *{order.order_number}* has already been picked up by your rider and is on the way to the recipient.\n\n"
+                f"Orders cannot be cancelled automatically once in transit. Please contact our support team at +234 815 103 3428 or intimesender@gmail.com for assistance."
+            )
+        elif order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup"]:
+            prev_rider_wa = order.rider_wa_number
             await db.execute(
                 update(models.Orders)
                 .where(models.Orders.order_number == order.order_number)
                 .values(status="cancelled")
             )
             await db.commit()
+
+            # Notify rider if one was assigned
+            if prev_rider_wa:
+                rider_cancel_msg = (
+                    f"❌ *Order Cancelled*\n\n"
+                    f"The customer has cancelled Order *{order.order_number}*.\n\n"
+                    f"Thank you for your time — new requests will come your way shortly! 🛵"
+                )
+                await send_custom_message(prev_rider_wa, rider_cancel_msg, auth, graph_url)
+
             msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
         elif order:
             msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."

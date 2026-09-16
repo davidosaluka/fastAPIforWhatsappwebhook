@@ -132,6 +132,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             order = order_res.scalars().first()
 
             if order and order.status == "rider_accepted":
+                if order.delivery_progression_status == "package_picked_up":
+                    in_transit_msg = (
+                        f"⚠️ *Package Already in Transit*\n\n"
+                        f"Your rider has already picked up your package for Order *{order_number}* and is heading to the destination.\n\n"
+                        f"A new rider cannot be assigned while goods are in transit. If you need urgent assistance, please contact our support team at +234 815 103 3428."
+                    )
+                    await replyhandler.send_custom_message(sender_wa_number, in_transit_msg, AUTH, GRAPH_URL)
+                    return
+
                 prev_rider_wa = order.rider_wa_number
 
                 # Unassign current rider, reset order status to confirmed
@@ -193,6 +202,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             order = order_res.scalars().first()
 
             if order and order.status in ["confirmed", "rider_accepted"]:
+                if order.delivery_progression_status == "package_picked_up":
+                    in_transit_msg = (
+                        f"⚠️ *Package Already in Transit*\n\n"
+                        f"Your rider has already picked up your package for Order *{order_number}* and is on the way to the recipient.\n\n"
+                        f"Orders cannot be cancelled automatically once picked up. Please contact our support team at +234 815 103 3428 or intimesender@gmail.com for immediate help."
+                    )
+                    await replyhandler.send_custom_message(sender_wa_number, in_transit_msg, AUTH, GRAPH_URL)
+                    return
+
                 prev_rider_wa = order.rider_wa_number
 
                 # Cancel the order
@@ -358,10 +376,14 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     graph_url=GRAPH_URL
                 )
 
+                code_to_set = order_details.verification_code or ''.join(random.choices(string.digits, k=5))
                 await db.execute(
-                update(models.Orders)
-                .where(models.Orders.order_number == order_number)
-                .values(delivery_progression_status="package_picked_up")
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(
+                        delivery_progression_status="package_picked_up",
+                        verification_code=code_to_set
+                    )
                 )
                 await db.commit()
 
@@ -381,68 +403,100 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )    
             order_details = order_details.scalar_one_or_none()
             if order_details:
-                # Fetch rider name for the rating prompt
-                rider_name_res = await db.execute(
-                    select(models.Riders.first_name, models.Riders.last_name)
-                    .where(models.Riders.rider_wa_number == order_details.rider_wa_number)
+                flow_code = (
+                    json_response.get("verification_code") or
+                    json_response.get("code") or
+                    json_response.get("otp") or
+                    json_response.get("digit") or
+                    json_response.get("pin")
                 )
-                rider_name_row = rider_name_res.first()
-                rider_display_name = f"{rider_name_row[0]} {rider_name_row[1]}" if rider_name_row else "your rider"
+                if flow_code:
+                    await replyhandler.verify_delivery_code(
+                        order=order_details,
+                        submitted_code=str(flow_code),
+                        rider_wa_number=order_details.rider_wa_number or sender_wa_number,
+                        db=db,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                elif order_details.verification_code and order_details.delivery_progression_status != "package_delivered":
+                    code_prompt = (
+                        f"🔐 *Recipient Verification Code Required* 🛵💨\n\n"
+                        f"To complete Order *{order_number}*, please ask the recipient for their *5-digit verification code* and reply with it in this chat (e.g. *12345*).\n\n"
+                        f"⚠️ *Note:* You have 3 trials to enter the correct code."
+                    )
+                    await replyhandler.send_custom_message(
+                        sender_wa_number=order_details.rider_wa_number or sender_wa_number,
+                        message=code_prompt,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                else:
+                    # Fetch rider name for the rating prompt
+                    rider_name_res = await db.execute(
+                        select(models.Riders.first_name, models.Riders.last_name)
+                        .where(models.Riders.rider_wa_number == order_details.rider_wa_number)
+                    )
+                    rider_name_row = rider_name_res.first()
+                    rider_display_name = f"{rider_name_row[0]} {rider_name_row[1]}" if rider_name_row else "your rider"
 
-                message_for_rider = (
-                    f"📦 *Package has been delivered successfully!*\n\n"
-                    f"Thank you for your service! More orders coming soon. 🛵💨🎉\n\n"
-                    f"Order *{order_number}* is completed. Keep up the fantastic hustle! 💪✨"
-                )
-                message_for_recipient = (
-                    f"✅🎉 *Your Package Has Arrived!*\n\n"
-                    f"Your delivery for Order *{order_number}* has been completed successfully! 📦✨\n\n"
-                    f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
-                )
-                message_for_sender = (
-                    f"🎉🥳 *Delivery Complete!* 📦✨\n\n"
-                    f"Woohoo! Your package for Order *{order_number}* has been delivered safely and successfully! 🎊🛵💨\n\n"
-                    f"Thank you so much for choosing *InTime* — we absolutely loved delivering for you today! 🚀💫\n"
-                    f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
-                )
+                    message_for_rider = (
+                        f"📦 *Package has been delivered successfully!*\n\n"
+                        f"Thank you for your service! More orders coming soon. 🛵💨🎉\n\n"
+                        f"Order *{order_number}* is completed. Keep up the fantastic hustle! 💪✨"
+                    )
+                    message_for_recipient = (
+                        f"✅🎉 *Your Package Has Arrived!*\n\n"
+                        f"Your delivery for Order *{order_number}* has been completed successfully! 📦✨\n\n"
+                        f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
+                    )
+                    message_for_sender = (
+                        f"🎉🥳 *Delivery Complete!* 📦✨\n\n"
+                        f"Woohoo! Your package for Order *{order_number}* has been delivered safely and successfully! 🎊🛵💨\n\n"
+                        f"Thank you so much for choosing *InTime* — we absolutely loved delivering for you today! 🚀💫\n"
+                        f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
+                    )
 
-                await db.execute(
-                    update(models.Orders)
-                    .where(models.Orders.order_number == order_number)
-                    .values(delivery_progression_status="package_delivered")
-                )
-                await db.commit()
+                    await db.execute(
+                        update(models.Orders)
+                        .where(models.Orders.order_number == order_number)
+                        .values(
+                            delivery_progression_status="package_delivered",
+                            status="completed"
+                        )
+                    )
+                    await db.commit()
 
-                # Notify rider
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.rider_wa_number,
-                    message=message_for_rider,
-                    auth=AUTH,
-                    graph_url=GRAPH_URL
-                )
-                # Notify sender
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.sender_wa_number,
-                    message=message_for_sender,
-                    auth=AUTH,
-                    graph_url=GRAPH_URL
-                )
-                # Notify recipient
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.recipient_phone_number,
-                    message=message_for_recipient,
-                    auth=AUTH,
-                    graph_url=GRAPH_URL
-                )
+                    # Notify rider
+                    await replyhandler.send_custom_message(
+                        sender_wa_number=order_details.rider_wa_number,
+                        message=message_for_rider,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                    # Notify sender
+                    await replyhandler.send_custom_message(
+                        sender_wa_number=order_details.sender_wa_number,
+                        message=message_for_sender,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+                    # Notify recipient
+                    await replyhandler.send_custom_message(
+                        sender_wa_number=order_details.recipient_phone_number,
+                        message=message_for_recipient,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
 
-                # Send rating prompt to customer (list message with 5 → 1 stars)
-                await replyhandler.send_rider_rating_prompt(
-                    customer_wa_number=order_details.sender_wa_number,
-                    rider_name=rider_display_name,
-                    order_number=order_number,
-                    auth=AUTH,
-                    graph_url=GRAPH_URL
-                )
+                    # Send rating prompt to customer (list message with 5 → 1 stars)
+                    await replyhandler.send_rider_rating_prompt(
+                        customer_wa_number=order_details.sender_wa_number,
+                        rider_name=rider_display_name,
+                        order_number=order_number,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
 
         if rider_selected_option_for_current_ride:
             order_sla_details = await db.execute(
@@ -822,7 +876,14 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         if order.delivery_progression_status == "package_delivered":
             return
 
-    five_digit_code = ''.join(random.choices(string.digits, k=5))
+        five_digit_code = order.verification_code or ''.join(random.choices(string.digits, k=5))
+        if not order.verification_code:
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order_num)
+                .values(verification_code=five_digit_code)
+            )
+            await db.commit()
     message_for_sender = (
         f"🔐 *Delivery Verification Code (Backup)* 📦✨\n\n"
         f"Your rider is approaching the drop-off location for Order *{order_num}*!\n\n"
@@ -837,11 +898,10 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
     message_for_rider = (
         f"🔐 *Drop-off Verification Code* 🛵💨\n\n"
         f"Order: *{order_num}*\n\n"
-        f"🔑 Verification Code: 👉 *{five_digit_code}* 👈\n\n"
         f"📋 *Delivery Steps:*\n\n"
-        f"1️⃣ Ask the recipient for their 5-digit code upon arrival. 🤝\n\n"
-        f"2️⃣ Confirm it matches: *{five_digit_code}* ✅\n\n"
-        f"3️⃣ Tap the button below to confirm drop-off! 📦🚀"
+        f"1️⃣ Ask the recipient for their 5-digit verification code upon arrival. 🤝\n\n"
+        f"2️⃣ Reply with the code directly in this chat (e.g. *{five_digit_code}*) or tap the button below to verify! 💬📱\n\n"
+        f"⚠️ *Note:* You have 3 trials to enter the correct code."
     )
     message_for_recipient = (
         f"🛵💨 *Your Package Is Arriving Soon!* 📦✨\n\n"

@@ -64,6 +64,8 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_drug BOOLEAN DEFAULT FALSE;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_urgent BOOLEAN DEFAULT FALSE;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_priority BOOLEAN DEFAULT FALSE;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS verification_code VARCHAR(10);'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS verification_attempts INTEGER DEFAULT 0;'))
         except Exception as e:
             print(f"Migration note (orders add cols): {e}")
 
@@ -110,6 +112,8 @@ async def lifespan(_app: FastAPI):
             'ALTER TABLE orders ADD COLUMN is_drug BOOLEAN DEFAULT 0;',
             'ALTER TABLE orders ADD COLUMN is_urgent BOOLEAN DEFAULT 0;',
             'ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN verification_code VARCHAR(10);',
+            'ALTER TABLE orders ADD COLUMN verification_attempts INTEGER DEFAULT 0;',
         ]:
             try:
                 async with engine.begin() as conn:
