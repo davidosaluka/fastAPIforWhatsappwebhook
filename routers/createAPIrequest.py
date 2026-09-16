@@ -361,25 +361,27 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         package_description = str(raw_desc) if raw_desc is not None else "Package"
         recipient_phone_number = str(raw_recipient) if raw_recipient is not None else sender_wa_number
 
-        if rider_in_pickup_location and rider_in_pickup_location == "At_Pickup": 
-            order_details = await db.execute(
-                select(models.Orders)
-                .where(models.Orders.order_number == order_number)
-            )    
-            order_details = order_details.scalar_one_or_none()
+        rider_in_pickup = bool(
+            rider_in_pickup_location == "At_Pickup" or
+            (isinstance(rider_in_pickup_location, str) and "pickup" in rider_in_pickup_location.lower()) or
+            any("pickup" in str(k).lower() or "pickup" in str(v).lower() for k, v in json_response.items())
+        )
+
+        if rider_in_pickup:
+            order_details = None
+            if order_number:
+                res = await db.execute(
+                    select(models.Orders).where(models.Orders.order_number == order_number)
+                )    
+                order_details = res.scalar_one_or_none()
+            if not order_details and sender_wa_number:
+                order_details = await replyhandler.get_active_rider_order(sender_wa_number, db)
 
             if order_details:
-                await replyhandler.send_custom_message(
-                    sender_wa_number=order_details.sender_wa_number, 
-                    message="Rider has gotten to your location. You can call the rider or expect a call from then any moment from now" , 
-                    auth=AUTH, 
-                    graph_url=GRAPH_URL
-                )
-
                 code_to_set = order_details.verification_code or ''.join(random.choices(string.digits, k=5))
                 await db.execute(
                     update(models.Orders)
-                    .where(models.Orders.order_number == order_number)
+                    .where(models.Orders.order_number == order_details.order_number)
                     .values(
                         delivery_progression_status="package_picked_up",
                         verification_code=code_to_set
@@ -387,6 +389,76 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 )
                 await db.commit()
 
+                # Fetch sender name for recipient notification
+                sender_res = await db.execute(
+                    select(models.User.name).where(
+                        models.User.wa_id.in_(replyhandler.get_phone_variants(order_details.sender_wa_number))
+                    )
+                )
+                sender_name = sender_res.scalars().first() or "Sender"
+
+                # 1. Notify Rider IMMEDIATELY
+                rider_phone = order_details.rider_wa_number or sender_wa_number
+                rider_pickup_msg = (
+                    f"📦 *Pickup Confirmed!* 🏍️💨\n\n"
+                    f"You have confirmed package pickup for Order *{order_details.order_number}*.\n\n"
+                    f"🏁 *Head to Drop-off:* {order_details.dropoff_location_name or 'Drop-off location'}\n\n"
+                    f"📋 *Next Step upon Arrival:*\n"
+                    f"• Ask the recipient for their *5-digit verification code*\n"
+                    f"• Simply reply with the code here in this chat (e.g. *12345*) to complete delivery! (3 trials available) 🤝✨"
+                )
+                await replyhandler.send_custom_message(
+                    sender_wa_number=rider_phone,
+                    message=rider_pickup_msg,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
+
+                # 2. Notify Customer (Sender)
+                sender_pickup_msg = (
+                    f"📦 *Package Picked Up!* 🛵💨\n\n"
+                    f"Your rider has collected your package for Order *{order_details.order_number}* and is on the way to the recipient!"
+                )
+                await replyhandler.send_custom_message(
+                    sender_wa_number=order_details.sender_wa_number,
+                    message=sender_pickup_msg,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
+
+                # 3. Send 5-Digit Verification Code to Recipient
+                recipient_code_msg = (
+                    f"🛵💨 *Your Package Is On The Way!* 📦✨\n\n"
+                    f"Your dispatch rider has picked up your package from *{sender_name}* (Order *{order_details.order_number}*) and is en route!\n\n"
+                    f"🔐 *Your Delivery Verification Code:*\n"
+                    f"👉  *{code_to_set}*  👈\n\n"
+                    f"📋 *Instructions:*\n"
+                    f"• Share this *5-digit code* with the rider when they arrive to securely receive your package. 🤝\n\n"
+                    f"Thank you for choosing *InTime*! 🌟🚀"
+                )
+                if order_details.recipient_phone_number:
+                    await replyhandler.send_details_to_recipients(
+                        sender_wa_number=order_details.recipient_phone_number,
+                        message=recipient_code_msg,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+
+                # 4. Send Backup Verification Code to Sender
+                sender_backup_code_msg = (
+                    f"🔐 *Delivery Verification Code (Backup)* 📦✨\n\n"
+                    f"Your package for Order *{order_details.order_number}* is on the way!\n\n"
+                    f"🔑 Verification Code: 👉 *{code_to_set}* 👈\n\n"
+                    f"ℹ️ We sent this code directly to your recipient. We're sharing it with you as a helpful backup! 🛡️"
+                )
+                await replyhandler.send_custom_message(
+                    sender_wa_number=order_details.sender_wa_number,
+                    message=sender_backup_code_msg,
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
+
+                # 5. Launch delayed ETA check background monitor
                 asyncio.create_task(_delayed_pickup_arrival_notifications(
                     sender_wa=order_details.sender_wa_number,
                     rider_wa=order_details.rider_wa_number,
@@ -396,12 +468,22 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     graph_url=GRAPH_URL
                 ))
 
-        if rider_in_dropoff_location and rider_in_dropoff_location == "At_dropoff":
-            order_details = await db.execute(
-                select(models.Orders)
-                .where(models.Orders.order_number == order_number)
-            )    
-            order_details = order_details.scalar_one_or_none()
+        rider_in_dropoff = bool(
+            rider_in_dropoff_location == "At_dropoff" or
+            (isinstance(rider_in_dropoff_location, str) and "dropoff" in rider_in_dropoff_location.lower()) or
+            any("dropoff" in str(k).lower() or "dropoff" in str(v).lower() for k, v in json_response.items())
+        )
+
+        if rider_in_dropoff:
+            order_details = None
+            if order_number:
+                res = await db.execute(
+                    select(models.Orders).where(models.Orders.order_number == order_number)
+                )    
+                order_details = res.scalar_one_or_none()
+            if not order_details and sender_wa_number:
+                order_details = await replyhandler.get_active_rider_order(sender_wa_number, db)
+
             if order_details:
                 flow_code = (
                     json_response.get("verification_code") or

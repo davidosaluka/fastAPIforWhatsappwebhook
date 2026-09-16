@@ -1792,19 +1792,13 @@ async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
     """Finds active transit order assigned to the rider within the active delivery window (last 6 hours)."""
     possible_numbers = get_phone_variants(rider_wa_number)
 
-    # 1. Must be a verified rider registered in riders table
-    rider_check = await db.execute(
-        select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
-    )
-    if not rider_check.scalars().first():
-        return None
-
-    # 2. Must be an order created within the active delivery window (last 6 hours)
+    # Must be an order created within the active delivery window (last 6 hours)
     cutoff = datetime.now(UTC) - timedelta(hours=6)
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.rider_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up"]))
+        .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
+        .where(models.Orders.delivery_progression_status != "package_delivered")
         .where(models.Orders.created_at >= cutoff)
         .order_by(models.Orders.created_at.desc())
     )

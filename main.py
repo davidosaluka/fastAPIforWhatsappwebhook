@@ -88,9 +88,9 @@ async def lifespan(_app: FastAPI):
                         rating INTEGER NOT NULL,
                         created_at TIMESTAMPTZ DEFAULT NOW()
                     );
-                    CREATE INDEX IF NOT EXISTS ix_rider_ratings_rider_wa_number ON rider_ratings (rider_wa_number);
-                    CREATE INDEX IF NOT EXISTS ix_rider_ratings_order_number ON rider_ratings (order_number);
                 '''))
+                await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_rider_ratings_rider_wa_number ON rider_ratings (rider_wa_number);'))
+                await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_rider_ratings_order_number ON rider_ratings (order_number);'))
                 print("🟢 [MIGRATION] rider_ratings table ensured.")
         except Exception as e:
             print(f"Migration note (rider_ratings): {e}")
