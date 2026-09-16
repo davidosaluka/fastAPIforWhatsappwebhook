@@ -1588,6 +1588,15 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
 
     await db.commit()
 
+    # 2. Cancel any pending unfulfilled confirmed orders so old records do not block future sign-ups
+    await db.execute(
+        update(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.in_(["confirmed"]))
+        .values(status="cancelled")
+    )
+    await db.commit()
+
     # Clear chat history memory
     _chat_memory.pop(sender_wa_number, None)
     for variant in possible_numbers:

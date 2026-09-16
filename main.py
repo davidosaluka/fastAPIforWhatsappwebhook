@@ -105,14 +105,17 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE riders ADD COLUMN availability_status VARCHAR(50);'))
         except Exception:
             pass
-        try:
-            async with engine.begin() as conn:
-                await conn.execute(text('ALTER TABLE orders ADD COLUMN customer_initial_offered_price VARCHAR(50);'))
-                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_drug BOOLEAN DEFAULT 0;'))
-                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_urgent BOOLEAN DEFAULT 0;'))
-                await conn.execute(text('ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;'))
-        except Exception:
-            pass
+        for col_stmt in [
+            'ALTER TABLE orders ADD COLUMN customer_initial_offered_price VARCHAR(50);',
+            'ALTER TABLE orders ADD COLUMN is_drug BOOLEAN DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN is_urgent BOOLEAN DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;',
+        ]:
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text(col_stmt))
+            except Exception:
+                pass
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE users ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0;'))

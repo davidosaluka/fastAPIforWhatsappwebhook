@@ -1,6 +1,6 @@
 import asyncio
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import random
 import string
 import time
@@ -290,7 +290,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
         
-        name        = json_response.get("name") or json_response.get("user_name") or json_response.get("screen_0_Name_0") or json_response.get("full_name")
+        name        = (
+            json_response.get("name") or 
+            json_response.get("user_name") or 
+            json_response.get("screen_0_Name_0") or 
+            json_response.get("full_name") or
+            json_response.get("Name") or
+            json_response.get("first_name") or
+            json_response.get("customer_name")
+        )
         rider_proposed_amount = json_response.get("proposed_amount") or json_response.get("rider_proposed_amount")
         customer_fare_increase_amount = json_response.get("customer_fare_increase_amount")
         custRespToRiderOff = json_response.get("custRespToRiderOff")       
@@ -328,7 +336,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             # Order fields always take priority — prevents combined registration+order forms being re-classified as user_registration
             if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
-            elif (name or email) and not raw_price and not raw_desc and not raw_recipient:
+            else:
                 template_id = "user_registration"
 
         customer_initial_offered_price = str(raw_price) if raw_price is not None else "0"
@@ -519,35 +527,70 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                             db=db
                         )
 
-                # createUser returns the existing User ORM object for already-registered users,
-                # and a plain dict for brand-new registrations.
-                # Only apply the active-order guard for re-submissions (existing users),
-                # NOT for fresh registrations — otherwise hard-deleted users who re-register
-                # get stuck because their old orders are still in the orders table.
-                is_existing_user_resubmit = isinstance(user_result, models.User)
+                # Cancel any old unfulfilled "confirmed" orders for this customer so they start with a clean slate
+                await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.sender_wa_number.in_(replyhandler.get_phone_variants(sender_wa_number)))
+                    .where(models.Orders.status.in_(["confirmed"]))
+                    .values(status="cancelled")
+                )
+                await db.commit()
 
-                if is_existing_user_resubmit:
-                    # Existing user re-submitted the form: only send order form if no active order
-                    active_check = await db.execute(
-                        select(models.Orders)
-                        .where(models.Orders.sender_wa_number.in_(replyhandler.get_phone_variants(sender_wa_number)))
-                        .where(models.Orders.status.in_(["confirmed", "rider_accepted"]))
+                # Guard: only notify if the customer has an in-progress delivery with a rider actively en route
+                active_delivery_check = await db.execute(
+                    select(models.Orders)
+                    .where(models.Orders.sender_wa_number.in_(replyhandler.get_phone_variants(sender_wa_number)))
+                    .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
+                    .where(models.Orders.created_at >= datetime.now(UTC) - timedelta(hours=24))
+                )
+                active_delivery = active_delivery_check.scalars().first()
+
+                if active_delivery:
+                    info_msg = (
+                        f"📦 *Delivery In Progress*\n\n"
+                        f"Welcome back! You already have an active order being handled by a rider (Order *{active_delivery.order_number}*).\n\n"
+                        f"Type *Track Order* to see live progress, or contact support if you need assistance!"
                     )
-                    has_active_order = active_check.scalars().first() is not None
-                    if not has_active_order:
-                        await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
-                    else:
-                        print(f"ℹ️ [SKIP WELCOME] Existing user {sender_wa_number} already has an active order — skipping re-send of order form.")
+                    await replyhandler.send_custom_message(sender_wa_number, info_msg, AUTH, GRAPH_URL)
                 else:
-                    # Brand-new registration — always send the order form, no matter what
+                    # Always dispatch the order details form to the customer upon registration
                     await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
         
             case "order_details" | "other_details":
                 is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
                 if not is_existing_user:
-                    print(f"⚠️ [UNREGISTERED ORDER TRY] Unregistered or deleted user {sender_wa_number} attempted to send order details. Sending registration template.")
-                    await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
-                    return
+                    # Fallback auto-reactivation: if account was deleted in DB, reactivate it now
+                    possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
+                    del_user_res = await db.execute(
+                        select(models.User).where(
+                            (models.User.display_phone_number.in_(possible_numbers)) |
+                            (models.User.wa_id.in_(possible_numbers)) |
+                            (models.User.phone_number_id.in_(possible_numbers)) |
+                            (models.User.wa_id.like(f"DELETED_%_{sender_wa_number}"))
+                        )
+                    )
+                    del_user = del_user_res.scalars().first()
+                    if del_user:
+                        del_user.is_deleted = False
+                        del_user.wa_id = sender_wa_number
+                        del_user.display_phone_number = sender_wa_number
+                        await db.commit()
+                        await db.refresh(del_user)
+                        print(f"🟢 [AUTO-REACTIVATED] User {sender_wa_number} reactivated on order details submission.")
+                        is_existing_user = True
+                    else:
+                        # Auto-create user from contact profile so order is never dropped
+                        contacts = value.get("contacts", [{}])
+                        profile = contacts[0].get("profile", {}) if contacts else {}
+                        cust_name = profile.get("name") or name or "Customer"
+                        await createUser(
+                            name=cust_name,
+                            wa_id=sender_wa_number,
+                            display_phone_number=sender_wa_number,
+                            phone_number_id=sender_wa_number,
+                            db=db
+                        )
+                        is_existing_user = True
 
                 await db.execute(
                 update(models.Orders)
@@ -660,23 +703,36 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         replyhandler.get_phone_variants(clean_phone_id)
     ))
 
-    result = await db.execute(
-        select(models.User).where(
-            ((models.User.phone_number_id.in_(possible_numbers)) |
-             (models.User.wa_id.in_(possible_numbers)) |
-             (models.User.display_phone_number.in_(possible_numbers))) &
-            (models.User.is_deleted == False)
-        )
+    # Search for ANY existing record matching these numbers, including soft-deleted and DELETED_ prefixed users
+    stmt = select(models.User).where(
+        (models.User.phone_number_id.in_(possible_numbers)) |
+        (models.User.wa_id.in_(possible_numbers)) |
+        (models.User.display_phone_number.in_(possible_numbers)) |
+        (models.User.wa_id.like(f"DELETED_%_{clean_wa_id}")) |
+        (models.User.display_phone_number.like(f"DELETED_%_{clean_display}")) |
+        (models.User.phone_number_id.like(f"DELETED_%_{clean_phone_id}"))
     )
+    result = await db.execute(stmt)
     existing_user = result.scalars().first()
+
     if existing_user:
-        if clean_name and clean_name != "Customer" and existing_user.name != clean_name:
+        # Reactivate user record if it was soft-deleted, and restore clean phone fields
+        existing_user.is_deleted = False
+        existing_user.wa_id = clean_wa_id
+        existing_user.display_phone_number = clean_display
+        existing_user.phone_number_id = clean_phone_id
+        if clean_name and clean_name != "Customer":
             existing_user.name = clean_name
+        try:
             await db.commit()
             await db.refresh(existing_user)
-        print(f"ℹ️ [USER EXISTS] User '{existing_user.name}' ({clean_wa_id}) is already registered.")
+            print(f"🟢 [USER REACTIVATED/UPDATED] User '{existing_user.name}' ({clean_wa_id}) is active in DB.")
+        except Exception as e:
+            await db.rollback()
+            print(f"⚠️ [USER UPDATE ERROR] ({clean_wa_id}): {e}")
         return existing_user
 
+    # Brand-new user creation
     new_user = models.User(
         name=clean_name,
         wa_id=clean_wa_id,
@@ -690,11 +746,33 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         await db.commit()
         await db.refresh(new_user)
         print(f"🟢 [USER SAVED] Registered new user '{clean_name}' ({clean_wa_id}) in DB.")
+        return new_user
+    except IntegrityError:
+        await db.rollback()
+        # Fallback: recover by fetching the existing record that triggered the unique constraint
+        retry_res = await db.execute(
+            select(models.User).where(
+                (models.User.wa_id == clean_wa_id) |
+                (models.User.wa_id.like(f"%{clean_wa_id}%"))
+            )
+        )
+        recovered = retry_res.scalars().first()
+        if recovered:
+            recovered.is_deleted = False
+            recovered.wa_id = clean_wa_id
+            recovered.display_phone_number = clean_display
+            recovered.phone_number_id = clean_phone_id
+            if clean_name and clean_name != "Customer":
+                recovered.name = clean_name
+            await db.commit()
+            await db.refresh(recovered)
+            print(f"🟢 [USER RECOVERED] Recovered and reactivated user '{recovered.name}' ({clean_wa_id}).")
+            return recovered
     except Exception as e:
         await db.rollback()
-        print(f"ℹ️ [USER CREATE HANDLED] User constraint/duplicate for ({clean_wa_id}): {e}")
+        print(f"❌ [USER CREATE ERROR] ({clean_wa_id}): {e}")
 
-    return ({"status": status.HTTP_201_CREATED, "message": "User Created Successfully"})
+    return new_user
 
 
 
