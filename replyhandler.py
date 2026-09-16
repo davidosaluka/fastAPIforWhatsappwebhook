@@ -715,6 +715,64 @@ async def send_rider_rating_prompt(
             await send_custom_message(customer_wa_number, fallback_msg, auth, graph_url)
 
 
+async def send_rider_eta_prompt(
+    rider_wa_number: str,
+    order_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends an interactive WhatsApp button prompt to the rider asking if they are 10 minutes away from drop-off."""
+    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
+    body_text = (
+        f"📍 *ETA Check*\n\n"
+        f"Are you about 10 minutes away from the drop-off location for Order *{order_number}*?"
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"ETA_YES_10MINS:{order_number}",
+                            "title": "🛵 Yes, ~10 Mins"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"ETA_NO_STILL_FAR:{order_number}",
+                            "title": "⏳ Still On Way"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(graph_url, json=req_body, headers=headers)
+            print("rider ETA prompt sent:", res.status_code, res.text)
+            if res.status_code >= 400:
+                # Fallback to plain text if interactive button is rejected
+                await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
+    except Exception as e:
+        print(f"Error sending interactive ETA buttons to rider: {e}")
+        await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
+
+
 async def save_rider_rating(
     order_number: str,
     rating_val: int,

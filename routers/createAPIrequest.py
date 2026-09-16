@@ -275,6 +275,50 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 except ValueError:
                     pass
 
+        elif button_id.startswith("ETA_YES_10MINS:"):
+            order_number = button_id.split(":", 1)[1]
+            order_res = await db.execute(
+                select(models.Orders).where(models.Orders.order_number == order_number)
+            )
+            order = order_res.scalars().first()
+            if order:
+                rider_msg = (
+                    f"Awesome 🛵!\n\n"
+                    f"Thanks for confirming. When you arrive at the drop-off location for Order *{order.order_number}*, please request the 5-digit verification code from the recipient."
+                )
+                await replyhandler.send_custom_message(sender_wa_number, rider_msg, AUTH, GRAPH_URL)
+
+                # Fetch sender name
+                sender_res = await db.execute(
+                    select(models.User.name).where(
+                        models.User.wa_id.in_(replyhandler.get_phone_variants(order.sender_wa_number))
+                    )
+                )
+                sender_name = sender_res.scalars().first() or "Sender"
+
+                customer_eta_msg = (
+                    f"🛵 *Delivery Update*\n\n"
+                    f"Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{order.order_number}*!"
+                )
+                recipient_eta_msg = (
+                    f"📦 *Package Update*\n\n"
+                    f"Your package from *{sender_name}* (Order *{order.order_number}*) is getting close!\n\n"
+                    f"Your rider has confirmed they are approximately 10 minutes away."
+                )
+
+                if order.sender_wa_number:
+                    await replyhandler.send_custom_message(sender_wa_number=order.sender_wa_number, message=customer_eta_msg, auth=AUTH, graph_url=GRAPH_URL)
+                if order.recipient_phone_number:
+                    await replyhandler.send_details_to_recipients(sender_wa_number=order.recipient_phone_number, message=recipient_eta_msg, auth=AUTH, graph_url=GRAPH_URL)
+
+        elif button_id.startswith("ETA_NO_STILL_FAR:"):
+            order_number = button_id.split(":", 1)[1]
+            rider_msg = (
+                f"Got it 👍\n\n"
+                f"Take your time and ride safely! We'll check back with you shortly regarding Order *{order_number}*."
+            )
+            await replyhandler.send_custom_message(sender_wa_number, rider_msg, AUTH, GRAPH_URL)
+
     if message["type"] == "interactive" and message["interactive"]["type"] == "list_reply":
         list_reply = message["interactive"]["list_reply"]
         list_id = list_reply.get("id", "")
@@ -944,9 +988,13 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         )
         sender_name = sender_res.scalars().first() or "Sender"
 
-    # Step 1: Send ETA Check prompt strictly to the Rider first
-    rider_eta_msg = f"📍 *ETA Check*: Are you about 10 minutes away from the drop-off location for Order *{order_num}*?"
-    await replyhandler.send_custom_message(sender_wa_number=rider_wa, message=rider_eta_msg, auth=auth, graph_url=graph_url)
+    # Step 1: Send ETA Check prompt strictly to the Rider first via interactive buttons
+    await replyhandler.send_rider_eta_prompt(
+        rider_wa_number=rider_wa,
+        order_number=order_num,
+        auth=auth,
+        graph_url=graph_url
+    )
 
     # --- STEP 2: VERIFICATION CODE & DROPOFF FLOW (5 mins after 10-min proximity alert) ---
     await asyncio.sleep(300)
