@@ -30,7 +30,7 @@ The system is built on a modern, fully asynchronous Python stack:
 - **ORM & Database**: [SQLAlchemy 2.0](https://www.sqlalchemy.org/) (`AsyncSession`, `AsyncEngine`) with [PostgreSQL](https://www.postgresql.org/) (`asyncpg` for production/Supabase) and [SQLite](https://www.sqlite.org/) (`aiosqlite` for local development).
 - **Database Migrations**: Automatic DDL migrations during startup lifespan + optional [Alembic](https://alembic.sqlalchemy.org/).
 - **Task Scheduling**: [APScheduler](https://apscheduler.readthedocs.io/) (`AsyncIOScheduler`) for daily cron check-ins.
-- **AI & Natural Language**: [Groq API](https://groq.com/) (`AsyncGroq`) using Llama 3.3 / Llama 3.1 models for semantic intent classification and conversational support.
+- **AI & Natural Language**: [Groq API](https://groq.com/) (`AsyncGroq`) using high-performance models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`) for semantic intent classification and conversational support.
 - **Communication Infrastructure**: Meta WhatsApp Cloud API (Graph API v18.0+) via [`httpx`](https://www.python-httpx.org/).
 
 ---
@@ -305,7 +305,7 @@ Webhook payload audit log used for deduplication.
 
 ## 🤖 AI Routing & Femi Conversational Agent
 
-The system uses **Groq API** (`AsyncGroq`) with fallback across multiple models (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `mixtral-8x7b-32768`, `llama3-70b-8192`):
+The system uses **Groq API** (`AsyncGroq`) with fallback across multiple production models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`):
 
 1. **Mid-Delivery Rider Interception Guard**:
    - Before evaluating AI intents, the system checks if the sender is a rider on an active delivery (`rider_accepted`, `awaiting_pickup`, `package_picked_up`).

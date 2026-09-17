@@ -62,7 +62,7 @@ The application follows an asynchronous event-driven architecture designed for h
 - **Async ORM**: SQLAlchemy 2.0 (`AsyncSession`, `AsyncEngine`) with `asyncpg` for PostgreSQL (Supabase compatibility) and `aiosqlite` for local SQLite development.
 - **Database Connection Pooling**: Configured with `statement_cache_size = 0` to work seamlessly with PgBouncer connection pooling.
 - **Scheduler**: APScheduler (`AsyncIOScheduler`) with `Africa/Lagos` timezone.
-- **LLM Integration**: Groq API (`AsyncGroq`) running Llama 3.3 70B / Llama 3.1 8B / GPT-OSS models.
+- **LLM Integration**: Groq API (`AsyncGroq`) running production models (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`).
 - **HTTP Client**: `httpx.AsyncClient` for non-blocking API calls to Meta Graph API.
 
 ---
@@ -309,9 +309,10 @@ To prevent accidental deletions, the system responds with an interactive message
 
 ### Execution
 When `CONFIRM_DELETE_ACCOUNT` is selected:
-1. `delete_user_data(sender_wa_number, db)` removes the user record from the `users` table across all phone number variants.
-2. In-memory chat history (`_chat_memory`) is purged.
-3. The user receives a confirmation message informing them that their profile has been deleted and that they may re-register at any time by typing *Send an Order*.
+1. `delete_user_data(sender_wa_number, db)` performs an NDPA-compliant soft delete across all matching phone variants by setting `is_deleted = True`, anonymizing PII (`name = "Anonymized User"`), and prefixing phone identifiers (`DELETED_<id>_<wa_id>`) to protect user privacy while maintaining transactional audit integrity for completed orders.
+2. Cancels any unfulfilled `confirmed` orders for the user so old draft requests do not block future sign-ups.
+3. In-memory chat history (`_chat_memory`) is purged.
+4. The user receives a confirmation message informing them that their profile has been deleted and that they may re-register at any time by typing *Send an Order*.
 
 ---
 
