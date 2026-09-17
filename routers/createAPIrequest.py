@@ -896,6 +896,7 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
     existing_user = result.scalars().first()
 
     if existing_user:
+        was_previously_deleted = existing_user.is_deleted or "DELETED_" in str(existing_user.wa_id)
         # Reactivate user record if it was soft-deleted, and restore clean phone fields
         existing_user.is_deleted = False
         existing_user.wa_id = clean_wa_id
@@ -910,6 +911,22 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         except Exception as e:
             await db.rollback()
             print(f"⚠️ [USER UPDATE ERROR] ({clean_wa_id}): {e}")
+
+        if was_previously_deleted:
+            # Clean up old orders from the deleted session so they never leak into the reactivated session
+            old_orders_res = await db.execute(
+                select(models.Orders).where(
+                    models.Orders.sender_wa_number.in_(possible_numbers)
+                )
+            )
+            old_orders = old_orders_res.scalars().all()
+            for ord_obj in old_orders:
+                if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
+                    if ord_obj.delivery_progression_status != "package_delivered":
+                        ord_obj.status = "cancelled"
+                ord_obj.sender_wa_number = f"DELETED_{clean_wa_id}"
+            await db.commit()
+
         return existing_user
 
     # Brand-new user creation

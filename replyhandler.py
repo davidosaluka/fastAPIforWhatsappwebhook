@@ -1784,13 +1784,27 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
 
     await db.commit()
 
-    # 2. Cancel any pending unfulfilled confirmed orders so old records do not block future sign-ups
-    await db.execute(
-        update(models.Orders)
-        .where(models.Orders.sender_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(["confirmed"]))
-        .values(status="cancelled")
+    # 2. Cancel and anonymize all orders for this user so old records do not block future sign-ups
+    user_orders_res = await db.execute(
+        select(models.Orders).where(
+            models.Orders.sender_wa_number.in_(possible_numbers)
+        )
     )
+    user_orders = user_orders_res.scalars().all()
+
+    for ord_obj in user_orders:
+        if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
+            if ord_obj.delivery_progression_status != "package_delivered":
+                ord_obj.status = "cancelled"
+                if ord_obj.rider_wa_number:
+                    cancel_msg = (
+                        f"❌ *Order Cancelled*\n\n"
+                        f"Order *{ord_obj.order_number}* has been cancelled because the customer deleted their account.\n\n"
+                        f"Thank you for your time — new requests will come your way shortly! 🛵"
+                    )
+                    asyncio.create_task(send_custom_message(ord_obj.rider_wa_number, cancel_msg, os.getenv("AUTHORIZATION"), os.getenv("GRAPH_URL")))
+        ord_obj.sender_wa_number = f"DELETED_{ord_obj.sender_wa_number}"
+
     await db.commit()
 
     # Clear chat history memory
