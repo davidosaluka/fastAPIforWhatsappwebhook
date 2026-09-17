@@ -18,7 +18,7 @@ GRAPH_URL = os.getenv("GRAPH_URL")
 LAST_CHECKIN_DATE = None
 
 async def send_daily_rider_templates():
-    """Sends WhatsApp check-in template to all riders daily at 8:00 AM and sets their status to offline until they check in."""
+    """Sends WhatsApp check-in template to all riders daily at 7:00 AM and sets their status to offline until they check in."""
     global LAST_CHECKIN_DATE
     lagos_tz = datetime.now(UTC).date()
     if LAST_CHECKIN_DATE == lagos_tz:
@@ -54,7 +54,7 @@ def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     scheduler.add_job(
         send_daily_rider_templates,
-        trigger=CronTrigger(hour=8, minute=0, timezone="Africa/Lagos"),
+        trigger=CronTrigger(hour=7, minute=0, timezone="Africa/Lagos"),
         id="daily_rider_template",
         replace_existing=True,
     )

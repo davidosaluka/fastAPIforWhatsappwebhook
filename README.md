@@ -47,7 +47,7 @@ The system is built on a modern, fully asynchronous Python stack:
 8. **Active Rider Mid-Transit Interception**: Incoming messages from riders on active deliveries are intercepted mid-ride to provide instant code instructions and ETA confirmations, completely bypassing the conversational AI.
 9. **Automated Background Timers**: State-aware background monitoring (`asyncio.create_task`) for order follow-ups, image upload reminders, session timeouts, pickup arrival prompts, and proximity checks.
 10. **"Femi" AI Assistant**: Multi-turn conversational chatbot powered by Groq LLM that handles general chatter, answers logistics questions, and guides customers to place orders.
-11. **Daily Rider Availability Reset**: Automated cron job at 8:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
+11. **Daily Rider Availability Reset**: Automated cron job at 7:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
 12. **Account & Data Deletion (NDPR Compliant)**: Soft-delete customer profiles (`is_deleted = True`) and purge conversation memory while preserving order audit history. Includes an interactive confirmation prompt ("Are you sure...") to prevent accidental deletions.
 
 ---
@@ -125,7 +125,7 @@ fastAPIforWhatsappwebhook/
 ├── main.py                  # FastAPI Application Instance & Lifespan Migrations
 ├── models.py                # SQLAlchemy DB Models (User, Orders, Riders, etc.)
 ├── replyhandler.py          # Business Logic Engine, Meta API Helpers, AI Agent
-├── scheduler.py             # APScheduler Background Cron Jobs (Daily 8 AM Check-in)
+├── scheduler.py             # APScheduler Background Cron Jobs (Daily 7 AM Check-in)
 ├── schemas.py               # Pydantic Schemas for Request/Response Validation
 ├── .env                     # Environment Variables (Secrets & Configuration)
 ├── .gitignore               # Git Ignore rules
@@ -142,7 +142,7 @@ fastAPIforWhatsappwebhook/
 - `replyhandler.py`: The core engine of the application (~1,400 lines). Contains Meta Graph API call wrappers, phone number normalizers, dispatch broadcast logic, order state updates, multi-step background timers, and the Groq LLM integration ("Femi" chatbot).
 - `database.py`: Supports PostgreSQL with connection pooling / PgBouncer settings, automatically falling back to an asynchronous SQLite database (`intime.db`) if `DATABASE_URL` is omitted.
 - `models.py`: Defines the SQLAlchemy declarative ORM models and order number generators.
-- `scheduler.py`: Configures APScheduler with Africa/Lagos timezone to trigger daily rider check-ins at 8:00 AM.
+- `scheduler.py`: Configures APScheduler with Africa/Lagos timezone to trigger daily rider check-ins at 7:00 AM.
 
 ---
 
@@ -330,7 +330,7 @@ The system uses **Groq API** (`AsyncGroq`) with fallback across multiple product
 ## ⏱️ Background Scheduler & Timers
 
 ### 1. APScheduler Cron Jobs (`scheduler.py`)
-- **Daily Rider Check-in**: Runs every day at **8:00 AM Lagos Time**.
+- **Daily Rider Check-in**: Runs every day at **7:00 AM Lagos Time**.
 - Resets all riders' `availability_status` to `"offline"`.
 - Sends the `rider_checkin` WhatsApp template asking riders to press "I'm Available" to re-enroll in daily dispatch.
 

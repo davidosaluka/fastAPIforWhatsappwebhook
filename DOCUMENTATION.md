@@ -52,7 +52,7 @@ The application follows an asynchronous event-driven architecture designed for h
        ▼                                   ▼                                 ▼
 ┌──────────────┐                 ┌──────────────────┐               ┌─────────────────┐
 │ Database Engine              │ Groq AI API      │               │ APScheduler     │
-│ PostgreSQL / │                 │ Intent Router &  │               │ 8:00 AM Daily   │
+│ PostgreSQL / │                 │ Intent Router &  │               │ 7:00 AM Daily   │
 │ SQLite       │                 │ Femi Assistant   │               │ Rider Check-in  │
 └──────────────┘                 └──────────────────┘               └─────────────────┘
 ```
@@ -319,7 +319,7 @@ When `CONFIRM_DELETE_ACCOUNT` is selected:
 ## 8. Background Tasks & Automation Engine
 
 ### 8.1 Daily Cron Job (`scheduler.py`)
-- Runs every day at **8:00 AM Lagos Time**.
+- Runs every day at **7:00 AM Lagos Time**.
 - Resets all riders' `availability_status` to `"offline"`.
 - Sends Meta WhatsApp template `rider_checkin` asking riders to press *"I'm Available"* to re-enroll in daily dispatch.
 
