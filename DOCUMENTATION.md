@@ -300,19 +300,23 @@ To comply with the **Nigeria Data Protection Act (NDPA)** and international priv
 1. **Template Quick Reply**: Tapping the **"Delete my Account"** button in the welcome message.
 2. **Natural Text Message**: Typing messages like *"delete my account"*, *"delete my data"*, or *"remove my info"* (classified under `DELETE_ACCOUNT` intent).
 
-### Safety Confirmation Step
-To prevent accidental deletions, the system responds with an interactive message containing two buttons:
+### Active Order Guard & Deletion Block
+Account deletion is strictly blocked if the customer has an active order in progress:
+- **Active Order (Not Picked Up Yet)**: If an active order exists (`confirmed`, `rider_accepted`, `awaiting_pickup`), deletion is blocked and the user is instructed to cancel their active order first before deleting their account.
+- **Package In Transit (`package_picked_up`)**: If the rider has already collected the package, deletion is blocked to safeguard goods in transit; the customer is informed that delivery must complete before account deletion can be processed.
+
+### Safety Confirmation Step (No Active Orders)
+If no active orders exist, the system responds with an interactive confirmation message containing two buttons:
 - **Header/Body**: *"⚠️ Account Deletion Request: Are you sure you want to delete your account? This action will permanently remove your user profile from InTime."*
 - **Action Buttons**:
   - `CONFIRM_DELETE_ACCOUNT` (`"🗑️ Yes, Delete"`)
   - `CANCEL_DELETE_ACCOUNT` (`"❌ Cancel"`)
 
 ### Execution
-When `CONFIRM_DELETE_ACCOUNT` is selected:
+When `CONFIRM_DELETE_ACCOUNT` is selected (and re-verified against active orders):
 1. `delete_user_data(sender_wa_number, db)` performs an NDPA-compliant soft delete across all matching phone variants by setting `is_deleted = True`, anonymizing PII (`name = "Anonymized User"`), and prefixing phone identifiers (`DELETED_<id>_<wa_id>`) to protect user privacy while maintaining transactional audit integrity for completed orders.
-2. Cancels any unfulfilled `confirmed` orders for the user so old draft requests do not block future sign-ups.
-3. In-memory chat history (`_chat_memory`) is purged.
-4. The user receives a confirmation message informing them that their profile has been deleted and that they may re-register at any time by typing *Send an Order*.
+2. In-memory chat history (`_chat_memory`) is purged.
+3. The user receives a confirmation message informing them that their profile has been deleted and that they may re-register at any time by typing *Send an Order*.
 
 ---
 

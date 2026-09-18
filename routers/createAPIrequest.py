@@ -101,7 +101,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         elif message["button"]["payload"] in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
             if is_existing_user:
-                await replyhandler.send_delete_account_confirmation(sender_wa_number, AUTH, GRAPH_URL)
+                await replyhandler.send_delete_account_confirmation(sender_wa_number, AUTH, GRAPH_URL, db)
             else:
                 custom_message = "You currently do not have a registered account with InTime."
                 await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
@@ -243,13 +243,33 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 )
 
         elif button_id == "CONFIRM_DELETE_ACCOUNT":
-            await replyhandler.delete_user_data(sender_wa_number, db)
-            confirm_msg = (
-                "🗑️ *Account Deleted*\n\n"
-                "Your account and profile data have been permanently deleted from InTime.\n\n"
-                "If you ever wish to use our services again, simply type *Send an Order* to re-register!"
-            )
-            await replyhandler.send_custom_message(sender_wa_number, confirm_msg, AUTH, GRAPH_URL)
+            active_order = await replyhandler.check_active_user_order(sender_wa_number, db)
+            if active_order:
+                if active_order.delivery_progression_status == "package_picked_up":
+                    in_transit_msg = (
+                        f"⚠️ *Account Deletion Blocked*\n\n"
+                        f"Your package for Order *{active_order.order_number}* is currently in transit with your dispatch rider.\n\n"
+                        f"For safety and security of goods in transit, your active delivery must be completed before your account can be deleted. "
+                        f"Once your package has been delivered to the recipient, you can proceed with deleting your account!"
+                    )
+                    await replyhandler.send_custom_message(sender_wa_number, in_transit_msg, AUTH, GRAPH_URL)
+                else:
+                    active_msg = (
+                        f"⚠️ *Account Deletion Blocked*\n\n"
+                        f"You currently have an active order (**Order *{active_order.order_number}***) in progress.\n\n"
+                        f"Account deletion cannot be processed while an order is active. "
+                        f"Please cancel your active order first (or wait for it to complete) before deleting your account.\n\n"
+                        f"ℹ️ *To cancel your active order, simply type 'Cancel Order' or tap the cancel button on your order details.*"
+                    )
+                    await replyhandler.send_custom_message(sender_wa_number, active_msg, AUTH, GRAPH_URL)
+            else:
+                await replyhandler.delete_user_data(sender_wa_number, db)
+                confirm_msg = (
+                    "🗑️ *Account Deleted*\n\n"
+                    "Your account and profile data have been permanently deleted from InTime.\n\n"
+                    "If you ever wish to use our services again, simply type *Send an Order* to re-register!"
+                )
+                await replyhandler.send_custom_message(sender_wa_number, confirm_msg, AUTH, GRAPH_URL)
 
         elif button_id == "CANCEL_DELETE_ACCOUNT":
             cancel_msg = (

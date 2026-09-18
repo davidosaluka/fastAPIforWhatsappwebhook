@@ -48,7 +48,7 @@ The system is built on a modern, fully asynchronous Python stack:
 9. **Automated Background Timers**: State-aware background monitoring (`asyncio.create_task`) for order follow-ups, image upload reminders, session timeouts, pickup arrival prompts, and proximity checks.
 10. **"Femi" AI Assistant**: Multi-turn conversational chatbot powered by Groq LLM that handles general chatter, answers logistics questions, and guides customers to place orders.
 11. **Daily Rider Availability Reset**: Automated cron job at 7:00 AM daily resetting riders to `offline` and sending WhatsApp check-in templates.
-12. **Account & Data Deletion (NDPR Compliant)**: Soft-delete customer profiles (`is_deleted = True`) and purge conversation memory while preserving order audit history. Includes an interactive confirmation prompt ("Are you sure...") to prevent accidental deletions.
+12. **Account & Data Deletion (NDPR Compliant)**: Soft-delete customer profiles (`is_deleted = True`) and purge conversation memory while preserving order audit history. Account deletion is strictly blocked if an active order exists (instructing customer to cancel if not picked up yet, or complete delivery if in transit).
 
 ---
 
@@ -74,16 +74,23 @@ sequenceDiagram
     end
 
     alt Delete Account Triggered (Button or Intent)
-        FastAPI->>WhatsApp: Send Interactive Deletion Confirmation ("Are you sure...")
-        alt User Clicks "Yes, Delete"
-            Customer->>WhatsApp: Button Reply: CONFIRM_DELETE_ACCOUNT
-            WhatsApp->>FastAPI: POST /webhook
-            FastAPI->>DB: UPDATE users SET is_deleted=TRUE WHERE phone IN (...)
-            FastAPI->>FastAPI: Clear user chat memory (_chat_memory)
-            FastAPI->>WhatsApp: Send Deletion Confirmation Message
-        else User Clicks "Cancel"
-            Customer->>WhatsApp: Button Reply: CANCEL_DELETE_ACCOUNT
-            FastAPI->>WhatsApp: Send Cancellation Notification
+        FastAPI->>DB: Check for active order (status: 'confirmed'/'rider_accepted'/'in_transit')
+        alt Active Order Exists (Not Picked Up)
+            FastAPI->>WhatsApp: Send Deletion Blocked Notice ("Please cancel active order first")
+        else Package In Transit ('package_picked_up')
+            FastAPI->>WhatsApp: Send Deletion Blocked Notice ("Delivery must complete first")
+        else No Active Order
+            FastAPI->>WhatsApp: Send Interactive Deletion Confirmation ("Are you sure...")
+            alt User Clicks "Yes, Delete"
+                Customer->>WhatsApp: Button Reply: CONFIRM_DELETE_ACCOUNT
+                WhatsApp->>FastAPI: POST /webhook
+                FastAPI->>DB: UPDATE users SET is_deleted=TRUE WHERE phone IN (...)
+                FastAPI->>FastAPI: Clear user chat memory (_chat_memory)
+                FastAPI->>WhatsApp: Send Deletion Confirmation Message
+            else User Clicks "Cancel"
+                Customer->>WhatsApp: Button Reply: CANCEL_DELETE_ACCOUNT
+                FastAPI->>WhatsApp: Send Cancellation Notification
+            end
         end
     else Registration Needed
         FastAPI->>WhatsApp: Send Registration Template/Flow

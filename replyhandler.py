@@ -123,12 +123,53 @@ async def send_rider_accepted_with_options(
     return
 
 
+async def check_active_user_order(customer_wa_number: str, db: AsyncSession):
+    """Returns the most recent active in-progress order for a customer, if any."""
+    possible_numbers = get_phone_variants(customer_wa_number)
+    active_order_res = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.in_(["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
+        .order_by(models.Orders.created_at.desc())
+    )
+    return active_order_res.scalars().first()
+
+
 async def send_delete_account_confirmation(
     customer_wa_number: str,
     auth: str,
-    graph_url: str
+    graph_url: str,
+    db: AsyncSession
 ):
-    """Sends account deletion confirmation prompt with interactive Yes/No buttons."""
+    """
+    Checks if customer has an active order before allowing account deletion.
+    - If package in transit (picked up): informs customer delivery must complete first.
+    - If active (not picked up yet): instructs customer to cancel active order first.
+    - If no active order: sends confirmation prompt with interactive Yes/No buttons.
+    """
+    active_order = await check_active_user_order(customer_wa_number, db)
+
+    if active_order:
+        if active_order.delivery_progression_status == "package_picked_up":
+            in_transit_msg = (
+                f"⚠️ *Account Deletion Blocked*\n\n"
+                f"Your package for Order *{active_order.order_number}* is currently in transit with your dispatch rider.\n\n"
+                f"For safety and security of goods in transit, your active delivery must be completed before your account can be deleted. "
+                f"Once your package has been delivered to the recipient, you can proceed with deleting your account!"
+            )
+            await send_custom_message(customer_wa_number, in_transit_msg, auth, graph_url)
+            return
+        else:
+            active_msg = (
+                f"⚠️ *Account Deletion Blocked*\n\n"
+                f"You currently have an active order (**Order *{active_order.order_number}***) in progress.\n\n"
+                f"Account deletion cannot be processed while an order is active. "
+                f"Please cancel your active order first (or wait for it to complete) before deleting your account.\n\n"
+                f"ℹ️ *To cancel your active order, simply type 'Cancel Order' or tap the cancel button on your order details.*"
+            )
+            await send_custom_message(customer_wa_number, active_msg, auth, graph_url)
+            return
+
     target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
     body_text = (
         "⚠️ *Account Deletion Request*\n\n"
@@ -2070,7 +2111,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         if any(trigger in lower_clean for trigger in delete_triggers):
             registered = await is_user_registered(sender_wa_number, db)
             if registered:
-                await send_delete_account_confirmation(sender_wa_number, auth, graph_url)
+                await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
             else:
                 msg = "You currently do not have a registered account with InTime."
                 await send_custom_message(sender_wa_number, msg, auth, graph_url)
@@ -2090,7 +2131,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     elif intent == "DELETE_ACCOUNT":
         registered = await is_user_registered(sender_wa_number, db)
         if registered:
-            await send_delete_account_confirmation(sender_wa_number, auth, graph_url)
+            await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
         else:
             msg = "You currently do not have a registered account with InTime."
             await send_custom_message(sender_wa_number, msg, auth, graph_url)
