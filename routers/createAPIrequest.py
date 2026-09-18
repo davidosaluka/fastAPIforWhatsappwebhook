@@ -406,20 +406,25 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         rider_in_pickup_location = json_response.get("screen_for_pickup_location_prompt") 
         rider_in_dropoff_location = json_response.get("screen_for_dropoff_location_prompt") 
 
-        is_rider_action = bool(
+        is_specific_action = bool(
             rider_in_pickup_location or
             rider_in_dropoff_location or
             rider_selected_option_for_current_ride or
             rider_proposed_amount or
-            custRespToRiderOff
+            custRespToRiderOff or
+            customer_fare_increase_amount
         )
 
-        if not is_rider_action and (not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]):
+        if is_specific_action:
+            template_id = None
+        elif not template_id or template_id not in ["order_details", "other_details", "user_registration", "w"]:
             # Order fields always take priority — prevents combined registration+order forms being re-classified as user_registration
             if raw_price or raw_desc or raw_recipient or json_response.get("pickup_HouseFlat_Number_0") or json_response.get("pickup_address"):
                 template_id = "order_details"
-            else:
+            elif name or json_response.get("screen_0_Name_0"):
                 template_id = "user_registration"
+            else:
+                template_id = None
 
         customer_initial_offered_price = str(raw_price) if raw_price is not None else "0"
         package_description = str(raw_desc) if raw_desc is not None else "Package"
@@ -671,16 +676,19 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await db.execute(
                 update(models.Orders)
                 .where(models.Orders.order_number == order_number)
-                .values(final_price_agreed_by_cust_and_rider=customer_fare_increase_amount)
+                .values(
+                    customer_initial_offered_price=str(customer_fare_increase_amount),
+                    final_price_agreed_by_cust_and_rider=str(customer_fare_increase_amount)
+                )
             )
             await db.commit()
 
             result = await db.execute(
-            select(models.Orders)
-            .where(models.Orders.order_number == order_number)
+                select(models.Orders)
+                .where(models.Orders.order_number == order_number)
             )
-
             result = result.scalar_one_or_none()
+
             if result:
                 order_details = {
                     "package_description": result.package_description,
@@ -693,6 +701,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     "is_drug": result.is_drug,
                     "is_urgent": result.is_urgent
                 }
+                await replyhandler.send_custom_message(
+                    sender_wa_number=sender_wa_number,
+                    message=f"✅ *Fare Updated*\n\nYour fare for Order *{result.order_number}* has been updated to *₦{customer_fare_increase_amount}*. Re-broadcasting your order to nearby riders now! 🛵💨",
+                    auth=AUTH,
+                    graph_url=GRAPH_URL
+                )
                 await replyhandler.get_rider(sender_wa_number=sender_wa_number, auth=AUTH, graph_url=GRAPH_URL, order_details=order_details, db=db)
         if custRespToRiderOff:
             if custRespToRiderOff == "acceptingRiderOffer":
