@@ -1282,10 +1282,21 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
     """
     State-aware background task that monitors order search progress.
     Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
+    Timeline:
+      - 2 minutes (120s): If riders have viewed the order, notifies customer:
+        "Good news 👀 *{read_count}* rider(s) have viewed your delivery offer! We're waiting for one to accept."
+        (Silent if 0 views).
+      - 5 minutes (300s total, +180s): If riders viewed, sends updated view count.
+        If no riders viewed yet but order was delivered:
+        "Good news 👀 We have delivered your order to *{delivered_count}* rider(s) and they are yet to view it. We'll update you as soon as they open it!"
+      - 7 minutes (420s total, +120s): If still no rider accepted, prompts customer with fare escalation:
+        "🔔 Need a rider faster?" flow.
     """
     try:
-        # Follow-up 1: 60 seconds (1 minute)
-        await asyncio.sleep(60)
+        notified_views = 0
+
+        # --- CHECKPOINT 1: 2 Minutes (120 seconds) ---
+        await asyncio.sleep(120)
 
         from database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
@@ -1297,27 +1308,53 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
                 select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
             )
             offers = offers_res.scalars().all()
-            total_notified = len(offers)
+            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+
+            # Only notify at 2 mins if riders have actively viewed the order
+            if read_count > 0:
+                verb_phrase = "s have" if read_count > 1 else " has"
+                msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+                notified_views = read_count
+
+        # --- CHECKPOINT 2: 5 Minutes (300 seconds total, +180 seconds) ---
+        await asyncio.sleep(180)
+
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return
+
+            offers_res = await db.execute(
+                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
+            )
+            offers = offers_res.scalars().all()
             read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
             delivered_count = sum(1 for o in offers if o.status in ["delivered", "read", "viewed"])
+            total_notified = len(offers)
+            effective_delivered = delivered_count if delivered_count > 0 else total_notified
 
             if read_count > 0:
-                msg = f"Good news 👀 *{read_count}* rider{'s' if read_count > 1 else ''} have viewed your delivery offer! We're waiting for one to accept."
-            elif delivered_count > 0 or total_notified > 0:
-                count = delivered_count if delivered_count > 0 else total_notified
-                msg = f"Good news 👀 We've dispatched your order to *{count}* nearby rider{'s' if count > 1 else ''}. We're waiting for them to view and accept!"
+                if read_count != notified_views:
+                    verb_phrase = "s have" if read_count > 1 else " has"
+                    msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
+                    await send_custom_message(sender_wa_number, msg, auth, graph_url)
+                    notified_views = read_count
+            elif effective_delivered > 0:
+                plural_del = "s" if effective_delivered > 1 else ""
+                msg = f"Good news 👀 We have delivered your order to *{effective_delivered}* rider{plural_del} and they are yet to view it. We'll update you as soon as they open it!"
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
             else:
                 msg = "Stay locked in 👀 We're searching for available riders nearby for your package. We'll update you as soon as one accepts."
-            
-            await send_custom_message(sender_wa_number, msg, auth, graph_url)
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
 
-        # Follow-up 2: 2 minutes later (300 seconds total) -> Fare Escalation Recommendation
+        # --- CHECKPOINT 3: 7 Minutes (420 seconds total, +120 seconds) ---
         await asyncio.sleep(120)
 
         async with AsyncSessionLocal() as db:
             order = await get_active_ride_by_number(order_number, db)
             if not order or order.status != "confirmed":
-                return  # Stop immediately if rider accepted, cancelled, or completed!
+                return
 
             escalation_msg = (
                 "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"

@@ -345,7 +345,7 @@ The system uses **Groq API** (`AsyncGroq`) with fallback across multiple product
 Using non-blocking `asyncio.create_task()`, the application monitors user and order progression:
 - **`schedule_registration_reminder`**: Reminds un-registered users 5 minutes after initial interaction.
 - **`schedule_user_session_timeout`**: Sends a reminder 5 minutes after order creation if no package photo is uploaded; automatically expires (`status="expired"`) the order after 15 minutes of inactivity.
-- **`schedule_order_followups`**: 1 minute after order creation, sends a live read-count status update to the sender; at 3 minutes, prompts the sender with a Meta Flow to increase their fare if no rider has accepted.
+- **`schedule_order_followups`**: 2 minutes after order creation, sends a status update if riders have viewed the offer; at 5 minutes, notifies if delivered but yet to view; at 7 minutes, prompts the sender with a Meta Flow to increase their fare if no rider has accepted.
 - **`schedule_customer_offer_timeout`**: Reminds customer 4 minutes after a rider makes a counter-offer.
 - **`_delayed_pickup_arrival_notifications`**: 5 minutes after pickup arrival: checks rider ETA. 10 minutes after pickup: generates a **random 5-digit verification code**, dispatches it to Sender, Recipient, and Rider, and sends the drop-off confirmation Meta Flow to the rider.
 

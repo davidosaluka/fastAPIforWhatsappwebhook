@@ -330,7 +330,7 @@ When `CONFIRM_DELETE_ACCOUNT` is selected (and re-verified against active orders
 ### 8.2 Non-Blocking Async Timers (`replyhandler.py` & `routers/createAPIrequest.py`)
 - `schedule_registration_reminder`: 5-minute reminder if user starts registration but stalls.
 - `schedule_user_session_timeout`: 5-minute photo reminder & 15-minute order auto-expiration if package photo is not uploaded.
-- `schedule_order_followups`: 1-minute read-count status update & 3-minute fare escalation flow prompt.
+- `schedule_order_followups`: 2-minute active view status update, 5-minute delivered status notice, & 7-minute fare escalation flow prompt.
 - `schedule_customer_offer_timeout`: 4-minute counter-offer reminder.
 - `schedule_rider_process_reminders`: 10-minute check after order acceptance reminding rider to confirm arrival at pickup location, with staged follow-ups during package transit.
 - `_delayed_pickup_arrival_notifications`: 
