@@ -1461,8 +1461,8 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncS
     riders = list(riders_res.scalars().all())
 
     # --- TENTATIVE TEST-RIDER FALLBACK FOR META APP REVIEW ---
-    enable_test_fallback = os.getenv("ENABLE_REVIEW_TEST_FALLBACK", "false").strip().lower() in ("true", "1", "yes", "t")
-    test_rider_wa = os.getenv("TEST_RIDER_WA_NUMBER", "").strip()
+    enable_test_fallback = os.getenv("ENABLE_REVIEW_TEST_FALLBACK", "true").strip().lower() in ("true", "1", "yes", "t")
+    test_rider_wa = os.getenv("TEST_RIDER_WA_NUMBER", "2348122319750").strip()
 
     if not riders and enable_test_fallback and test_rider_wa:
         test_rider_variants = get_phone_variants(test_rider_wa)
