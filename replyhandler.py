@@ -9,7 +9,10 @@ import httpx
 import os
 import re
 import random
+from dotenv import load_dotenv
 from groq import AsyncGroq
+
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # In-memory chat history store for Groq multi-turn conversations.
@@ -616,6 +619,37 @@ def get_phone_variants(phone: str) -> list[str]:
     return [v for v in variants if v]
 
 
+async def get_active_order_for_customer_or_recipient(wa_number: str, db: AsyncSession):
+    """
+    Retrieves the most recent active order where the user is either the sender or the recipient.
+    Used for OTP inquiries and tracking where either party may request status or verification codes.
+    """
+    possible_numbers = get_phone_variants(wa_number)
+    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
+    result = await db.execute(
+        select(models.Orders)
+        .where(
+            (models.Orders.sender_wa_number.in_(possible_numbers)) |
+            (models.Orders.recipient_phone_number.in_(possible_numbers))
+        )
+        .where(models.Orders.status.in_(active_statuses))
+        .where(models.Orders.status != "completed")
+        .where(
+            (models.Orders.delivery_progression_status.is_(None)) |
+            (models.Orders.delivery_progression_status != "package_delivered")
+        )
+        .order_by(models.Orders.created_at.desc())
+    )
+    order = result.scalars().first()
+    if order:
+        if order.status == "confirmed" and order.sla_expires_by:
+            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
+            if sla_dt <= datetime.now(UTC):
+                return None
+        return order
+    return None
+
+
 async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     possible_numbers = get_phone_variants(sender_wa_number)
     active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
@@ -632,8 +666,10 @@ async def get_active_ride(sender_wa_number: str, db: AsyncSession):
     )
     order = result.scalars().first()
     if order:
-        if order.status == "confirmed" and order.sla_expires_by and order.sla_expires_by <= datetime.now(UTC):
-            return None
+        if order.status == "confirmed" and order.sla_expires_by:
+            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
+            if sla_dt <= datetime.now(UTC):
+                return None
         return order
     return None
 
@@ -1416,12 +1452,44 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncS
         print(f"[REROUTE] Cleared previous RiderOffer records for order {order_details['order_number']}")
 
     sender_variants = get_phone_variants(sender_wa_number)
-    riders = await db.execute(
+    riders_res = await db.execute(
         select(models.Riders)
         .where(models.Riders.availability_status == "available")
+        .where(models.Riders.kyc_status == "verified")
         .where(models.Riders.rider_wa_number.not_in(sender_variants))
     )
-    riders = riders.scalars().all()
+    riders = list(riders_res.scalars().all())
+
+    # --- TENTATIVE TEST-RIDER FALLBACK FOR META APP REVIEW ---
+    enable_test_fallback = os.getenv("ENABLE_REVIEW_TEST_FALLBACK", "false").strip().lower() in ("true", "1", "yes", "t")
+    test_rider_wa = os.getenv("TEST_RIDER_WA_NUMBER", "").strip()
+
+    if not riders and enable_test_fallback and test_rider_wa:
+        test_rider_variants = get_phone_variants(test_rider_wa)
+        fallback_res = await db.execute(
+            select(models.Riders).where(models.Riders.rider_wa_number.in_(test_rider_variants))
+        )
+        fallback_rider = fallback_res.scalars().first()
+        if not fallback_rider:
+            fallback_rider = models.Riders(
+                first_name="Test",
+                last_name="Rider",
+                rider_wa_number=test_rider_wa,
+                rider_phonenumber_2=test_rider_wa,
+                availability_status="available",
+                kyc_status="verified"
+            )
+            db.add(fallback_rider)
+            await db.commit()
+            await db.refresh(fallback_rider)
+        elif fallback_rider.availability_status != "available" or fallback_rider.kyc_status != "verified":
+            fallback_rider.availability_status = "available"
+            fallback_rider.kyc_status = "verified"
+            await db.commit()
+            await db.refresh(fallback_rider)
+
+        riders = [fallback_rider]
+        print(f"[REVIEW TEST MODE ACTIVE] Production rider pool empty. Dispatched order {order_details['order_number']} to fallback test rider {test_rider_wa}.")
 
     print(f"[DISPATCH SEARCH] Order {order_details['order_number']} dispatched by ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
     if not riders:
@@ -2078,6 +2146,37 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             ), auth, graph_url)
             return
 
+    # --- 0c. CUSTOMER / RECIPIENT INBOUND OTP INQUIRIES ---
+    # Intercept queries like "I need the code", "what is my OTP?", "where is the code?", "delivery code"
+    # before routing to Groq Intent Classifier or Femi AI.
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+    otp_keywords_pattern = re.compile(
+        r'\b(otp|pin|passcode|pass\s*code|verification|verify)\b|\b(delivery|dropoff|drop\s*off|pickup)\s+code\b|\bcode\b',
+        re.IGNORECASE
+    )
+    is_promo = any(promo_word in lower_clean for promo_word in ["promo", "discount", "referral", "coupon"])
+
+    if not is_promo and otp_keywords_pattern.search(lower_clean):
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+        if order:
+            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+                otp_msg = (
+                    f"🔐 *Delivery Verification Code*\n\n"
+                    f"Order: *{order.order_number}*\n"
+                    f"Code: 👉 *{order.verification_code}* 👈\n\n"
+                    f"*Instructions:*\n"
+                    f"Share this 5-digit code with the rider *only* when they arrive at the drop-off location."
+                )
+                await send_custom_message(sender_wa_number, otp_msg, auth, graph_url)
+                return
+            else:
+                pending_msg = (
+                    f"📦 *Delivery Code Update*\n\n"
+                    f"Your package has not been picked up yet. A 5-digit verification code will be generated and sent to you automatically as soon as the rider confirms pickup."
+                )
+                await send_custom_message(sender_wa_number, pending_msg, auth, graph_url)
+                return
+
     # --- 1. ACTIVE WORKFLOW STATE CHECK ---
     active_order = await get_active_ride(sender_wa_number, db)
     if active_order and active_order.package_image_id is None:
@@ -2209,18 +2308,25 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         return
 
     elif intent == "TRACK_ORDER":
-        order = await get_active_ride(sender_wa_number, db)
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
         if order:
             rider_info = f"Rider Phone: *{order.rider_wa_number}*" if order.rider_wa_number else "Searching for available riders..."
+            if order.delivery_progression_status == "package_picked_up":
+                status_display = "*In Transit to Drop-off*"
+            else:
+                status_display = f"*{order.status.replace('_', ' ').title()}*"
+
             msg = (
                 f"📦 *Order Status Update*\n\n"
                 f"Order Number: *{order.order_number}*\n"
-                f"Status: *{order.status.replace('_', ' ').title()}*\n\n"
+                f"Status: {status_display}\n\n"
                 f"📍 Pickup: {order.pickup_location_name or 'Not set'}\n"
                 f"🏁 Dropoff: {order.dropoff_location_name or 'Not set'}\n"
                 f"📝 Package: {order.package_description or 'Not specified'}\n\n"
                 f"🧑‍✈️ {rider_info}"
             )
+            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+                msg += f"\n\n🔐 *Verification Code:* 👉 *{order.verification_code}* 👈\n\n_(Share this with the rider only upon drop-off arrival)_"
         else:
             msg = "You currently have no active delivery orders."
         await send_custom_message(sender_wa_number, msg, auth, graph_url)
@@ -2236,9 +2342,11 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent - Femi Avatar) ---
     try:
-        order = await get_active_ride(sender_wa_number, db)
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
         if order:
-            order_context = f"Active order: {order.order_number} (Status: {order.status})."
+            prog_status = f", Delivery Progression: {order.delivery_progression_status}" if order.delivery_progression_status else ""
+            v_code = f", Verification Code: {order.verification_code}" if order.verification_code else ""
+            order_context = f"Active order: {order.order_number} (Status: {order.status}{prog_status}{v_code})."
         else:
             order_context = "No active delivery order."
 
