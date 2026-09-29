@@ -302,9 +302,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             )
             order = order_res.scalars().first()
             if order:
+                recipient_phone_str = order.recipient_phone_number or "Not provided"
                 rider_msg = (
                     f"Awesome 🛵!\n\n"
-                    f"Thanks for confirming. When you arrive at the drop-off location for Order *{order.order_number}*, please request the 5-digit verification code from the recipient."
+                    f"Thanks for confirming. When you arrive at the drop-off location for Order *{order.order_number}* ({order.dropoff_location_name or 'Drop-off'}):\n\n"
+                    f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                    f"Please contact the recipient and request their 5-digit verification code to complete delivery."
                 )
                 await replyhandler.send_custom_message(sender_wa_number, rider_msg, AUTH, GRAPH_URL)
 
@@ -368,7 +371,17 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         
         template_id = json_response.get("template_id")  
         raw_token = nfm_reply.get("flow_token") or json_response.get("flow_token")
-        flow_token = json.loads(raw_token) if raw_token and raw_token != "unused" and isinstance(raw_token, str) else (raw_token if isinstance(raw_token, dict) else {})
+        if isinstance(raw_token, str) and raw_token != "unused":
+            try:
+                flow_token = json.loads(raw_token)
+                if not isinstance(flow_token, dict):
+                    flow_token = {"order_number": str(flow_token)}
+            except Exception:
+                flow_token = {"order_number": raw_token}
+        elif isinstance(raw_token, dict):
+            flow_token = raw_token
+        else:
+            flow_token = {}
         order_number = flow_token.get("order_number")
         rider_wa_number = flow_token.get("rider_wa_number")
         
@@ -428,7 +441,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         customer_initial_offered_price = str(raw_price) if raw_price is not None else "0"
         package_description = str(raw_desc) if raw_desc is not None else "Package"
-        recipient_phone_number = str(raw_recipient) if raw_recipient is not None else sender_wa_number
+        recipient_phone_number = replyhandler.normalize_phone_number(str(raw_recipient)) if raw_recipient is not None else replyhandler.normalize_phone_number(sender_wa_number)
 
         rider_in_pickup = bool(
             rider_in_pickup_location == "At_Pickup" or
@@ -448,12 +461,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
             if order_details:
                 code_to_set = order_details.verification_code or ''.join(random.choices(string.digits, k=5))
+                rider_phone = order_details.rider_wa_number or sender_wa_number
                 await db.execute(
                     update(models.Orders)
                     .where(models.Orders.order_number == order_details.order_number)
                     .values(
                         delivery_progression_status="package_picked_up",
-                        verification_code=code_to_set
+                        verification_code=code_to_set,
+                        rider_wa_number=rider_phone,
+                        status="in_transit"
                     )
                 )
                 await db.commit()
@@ -466,14 +482,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 )
                 sender_name = sender_res.scalars().first() or "Sender"
 
-                # 1. Notify Rider IMMEDIATELY
-                rider_phone = order_details.rider_wa_number or sender_wa_number
+                # 1. Notify Rider IMMEDIATELY (include recipient phone number for drop-off contact)
+                recipient_phone_str = order_details.recipient_phone_number or "Not provided"
                 rider_pickup_msg = (
                     f"📦 *Pickup Confirmed!* 🏍️💨\n\n"
                     f"You have confirmed package pickup for Order *{order_details.order_number}*.\n\n"
                     f"🏁 *Head to Drop-off:* {order_details.dropoff_location_name or 'Drop-off location'}\n\n"
+                    f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
                     f"📋 *Next Step upon Arrival:*\n"
-                    f"• Ask the recipient for their *5-digit verification code*\n"
+                    f"• Contact the recipient and ask for their *5-digit verification code*\n"
                     f"• Simply reply with the code here in this chat (e.g. *12345*) to complete delivery! (3 trials available) 🤝✨"
                 )
                 await replyhandler.send_custom_message(
@@ -506,8 +523,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     f"Thank you for choosing *InTime*! 🌟🚀"
                 )
                 if order_details.recipient_phone_number:
+                    norm_recip = replyhandler.normalize_phone_number(order_details.recipient_phone_number) or order_details.recipient_phone_number
                     await replyhandler.send_details_to_recipients(
-                        sender_wa_number=order_details.recipient_phone_number,
+                        sender_wa_number=norm_recip,
                         message=recipient_code_msg,
                         auth=AUTH,
                         graph_url=GRAPH_URL
@@ -571,9 +589,11 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                         graph_url=GRAPH_URL
                     )
                 elif order_details.verification_code and order_details.delivery_progression_status != "package_delivered":
+                    recipient_phone_str = order_details.recipient_phone_number or "Not provided"
                     code_prompt = (
                         f"🔐 *Recipient Verification Code Required* 🛵💨\n\n"
-                        f"To complete Order *{order_number}*, please ask the recipient for their *5-digit verification code* and reply with it in this chat (e.g. *12345*).\n\n"
+                        f"To complete Order *{order_number}*, please contact the recipient at *{recipient_phone_str}* for their *5-digit verification code* and reply with it in this chat (e.g. *12345*).\n\n"
+                        f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
                         f"⚠️ *Note:* You have 3 trials to enter the correct code."
                     )
                     await replyhandler.send_custom_message(
@@ -1076,12 +1096,14 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         f"⚠️ *Important Security Note:*\n"
         f"Please share this code *ONLY* with your recipient, *NEVER* directly with the rider! 🛡️"
     )
+    recipient_phone_str = recipient_phone or (order.recipient_phone_number if order else "Not provided")
     message_for_rider = (
         f"🔐 *Drop-off Verification Code* 🛵💨\n\n"
         f"Order: *{order_num}*\n\n"
+        f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
         f"📋 *Delivery Steps:*\n\n"
         f"1️⃣ Ask the recipient for their 5-digit verification code upon arrival. 🤝\n\n"
-        f"2️⃣ Reply with the code directly in this chat (e.g. *{five_digit_code}*) or tap the button below to verify! 💬📱\n\n"
+        f"2️⃣ Reply with the code directly in this chat (e.g. *12345*) or tap the button below to verify! 💬📱\n\n"
         f"⚠️ *Note:* You have 3 trials to enter the correct code."
     )
     message_for_recipient = (
@@ -1107,12 +1129,13 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         auth=auth, 
         graph_url=graph_url
     )
-    await replyhandler.send_custom_message(
-        sender_wa_number=recipient_phone, 
-        message=message_for_recipient,
-        auth=auth, 
-        graph_url=graph_url
-    )
+    if recipient_phone:
+        await replyhandler.send_details_to_recipients(
+            sender_wa_number=recipient_phone, 
+            message=message_for_recipient,
+            auth=auth, 
+            graph_url=graph_url
+        )
 
     await replyhandler.send_custom_flow(
         wa_number=rider_wa,

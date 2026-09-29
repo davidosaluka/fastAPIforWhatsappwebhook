@@ -348,7 +348,9 @@ async def send_custom_message(sender_wa_number, message, auth, graph_url):
 
 async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
     """Sends delivery notifications specifically to package recipients, ensuring phone format normalization."""
-    await send_custom_message(sender_wa_number=sender_wa_number, message=message, auth=auth, graph_url=graph_url)
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    print(f"[RECIPIENT NOTIFY] Sending message to recipient: {target_number} (raw input: {sender_wa_number})")
+    await send_custom_message(sender_wa_number=target_number, message=message, auth=auth, graph_url=graph_url)
 
 async def send_image(sender_wa_number, auth, graph_url, image_id):
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
@@ -1588,26 +1590,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncS
 #             print(order_details)
 #             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
 
-async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": sender_wa_number,
-        "type": "text",
-        "text": {
-            "body": message
-        }
-    }
 
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-    return
 
 
 
@@ -1642,9 +1625,16 @@ async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_
                 models.User.wa_id.in_(get_phone_variants(customer_wa_number))
             )
         )
-        sender_name = sender_user_res.scalars().first() or "Someone"
-
-        rider_message = f"🎉 Ride accepted! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
+        recipient_phone_str = order.recipient_phone_number or "Not provided"
+        rider_message = (
+            f"🎉 *Ride Accepted!* 🏍️💨\n\n"
+            f"You have accepted Order *{order.order_number}*.\n\n"
+            f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+            f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+            f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+            f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+            f"Please head to the pickup location now. Safe riding! 🌟"
+        )
         recipient_message = (
             f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
@@ -1825,9 +1815,16 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
                 models.User.wa_id.in_(get_phone_variants(customer_wa_number))
             )
         )
-        sender_name = sender_user_res.scalars().first() or "Someone"
-
-        rider_message = f"🎉 Ride confirmed! The customer's number is *{customer_wa_number}*. Please head to the pickup location now. Safe riding! 🏍️"
+        recipient_phone_str = order.recipient_phone_number or "Not provided"
+        rider_message = (
+            f"🎉 *Ride Confirmed!* 🏍️💨\n\n"
+            f"Order *{order.order_number}* has been confirmed!\n\n"
+            f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+            f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+            f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+            f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+            f"Please head to the pickup location now. Safe riding! 🌟"
+        )
         recipient_message = (
             f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
             f"📦 Description: {order.package_description}\n\n"
@@ -2007,17 +2004,14 @@ async def classify_message_intent(message_text: str) -> str:
 
 
 async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
-    """Finds active transit order assigned to the rider within the active delivery window (last 6 hours)."""
+    """Finds active transit order assigned to the rider."""
     possible_numbers = get_phone_variants(rider_wa_number)
 
-    # Must be an order created within the active delivery window (last 6 hours)
-    cutoff = datetime.now(UTC) - timedelta(hours=6)
     result = await db.execute(
         select(models.Orders)
         .where(models.Orders.rider_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(["rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
+        .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
         .where(models.Orders.delivery_progression_status != "package_delivered")
-        .where(models.Orders.created_at >= cutoff)
         .order_by(models.Orders.created_at.desc())
     )
     return result.scalars().first()
@@ -2046,6 +2040,23 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
     rider_order = await get_active_rider_order(sender_wa_number, db)
+    if not rider_order:
+        # Fallback: check if sender sent a 4-6 digit verification code for an in-transit pickup order
+        code_match_fallback = re.search(r'\b\d{4,6}\b', text_body)
+        if code_match_fallback:
+            possible_numbers = get_phone_variants(sender_wa_number)
+            fallback_res = await db.execute(
+                select(models.Orders)
+                .where(
+                    (models.Orders.rider_wa_number.in_(possible_numbers)) |
+                    (models.Orders.rider_wa_number.is_(None))
+                )
+                .where(models.Orders.delivery_progression_status == "package_picked_up")
+                .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
+                .order_by(models.Orders.created_at.desc())
+            )
+            rider_order = fallback_res.scalars().first()
+
     if rider_order:
         lower_text = text_body.strip().lower()
 
@@ -2066,11 +2077,14 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         # 2. Rider asking for the verification code instructions
         code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
         if any(kw in lower_text for kw in code_keywords):
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
             await send_custom_message(sender_wa_number, (
                 f"🔐 *Delivery Verification Code Help* 🛵💨\n\n"
                 f"Order: *{rider_order.order_number}*\n\n"
+                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
                 f"📋 *What to do:*\n\n"
-                f"• Ask the **recipient** for their *5-digit verification code* upon arrival. 🤝📦\n\n"
+                f"• Ask the **recipient** at *{recipient_phone_str}* for their *5-digit verification code* upon arrival. 🤝📦\n\n"
                 f"• The recipient received their unique code directly via WhatsApp. 📱✨\n\n"
                 f"• Reply with the 5-digit code directly in this chat (e.g. *12345*) to complete delivery! ✅💪\n\n"
                 f"⚠️ *Note:* You have 3 trials to enter the correct code."
@@ -2092,9 +2106,12 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             return
 
         elif any(pos in lower_text for pos in positive_eta_triggers):
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
             rider_msg = (
                 f"Awesome 🛵!\n\n"
-                f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}*, please request the 5-digit verification code from the recipient."
+                f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}* ({rider_order.dropoff_location_name or 'Drop-off'}):\n\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please request the 5-digit verification code from the recipient."
             )
             await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
 
@@ -2128,6 +2145,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
         else:
             # Unrecognised text from rider mid-delivery — give contextual reply, don't let Femi AI handle it
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
             if rider_order.delivery_progression_status == "package_picked_up":
                 status_label = "in transit to the drop-off location"
             elif rider_order.delivery_progression_status == "package_delivered" or rider_order.status == "completed":
@@ -2138,6 +2156,8 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 status_label = "on an active delivery"
             await send_custom_message(sender_wa_number, (
                 f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
+                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
                 f"If you need anything, just type:\n"
                 f"• Reply with the recipient's *5-digit code* (e.g. *12345*) to complete delivery\n"
                 f"• *'code'* — to get instructions on the delivery verification code\n"
