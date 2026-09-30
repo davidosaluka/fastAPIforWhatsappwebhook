@@ -328,18 +328,18 @@ When `CONFIRM_DELETE_ACCOUNT` is selected (and re-verified against active orders
 - Sends Meta WhatsApp template `rider_checkin` asking riders to press *"I'm Available"* to re-enroll in daily dispatch.
 
 ### 8.2 Non-Blocking Async Timers (`replyhandler.py` & `routers/createAPIrequest.py`)
-- `schedule_registration_reminder`: 5-minute reminder if user starts registration but stalls.
+- `schedule_registration_reminder`: 5-minute reminder if user starts registration but stalls (strictly filtered to prospective customers; never sent to riders or package recipients).
 - `schedule_user_session_timeout`: 5-minute photo reminder & 15-minute order auto-expiration if package photo is not uploaded.
 - `schedule_order_followups`: 2-minute active view status update, 5-minute delivered status notice, & 7-minute fare escalation flow prompt.
 - `schedule_customer_offer_timeout`: 4-minute counter-offer reminder.
-- `schedule_rider_process_reminders`: 10-minute check after order acceptance reminding rider to confirm arrival at pickup location, with staged follow-ups during package transit.
+- `schedule_rider_process_reminders`: 10-minute check after order acceptance reminding rider to confirm arrival at pickup location, with staged follow-ups during package transit reminding rider to verify delivery with the 5-digit code.
 - `_delayed_pickup_arrival_notifications`: 
   - **Stage 1 (5 mins after pickup)**: Sends an ETA Check to the rider (`Are you about 10 minutes away from drop-off?`).
   - **Stage 2 (10 mins after pickup)**: Generates a **random 5-digit verification code** and delivers it using spacious, emoji-formatted layouts:
     - *Recipient*: Receives their unique delivery code with clear instructions to provide it to the rider upon arrival.
     - *Sender*: Receives a secure backup copy with explicit warnings never to share it directly with the rider.
-    - *Rider*: Receives drop-off steps along with the delivery verification code.
-  - **Stage 3**: Dispatches the interactive drop-off confirmation Meta Flow (`flow_to_ask_if_rider_has_dropped_off_package`) to the rider.
+    - *Rider*: Receives drop-off steps instructing them to request the 5-digit code from the recipient and reply in chat to complete delivery.
+  - **Delivery Verification**: Deliveries are verified and completed when the rider submits the valid 5-digit security code.
 
 ---
 

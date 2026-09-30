@@ -37,10 +37,30 @@ def add_user_chat_memory(sender_wa_number: str, role: str, content: str) -> None
         _chat_memory[sender_wa_number] = history[-MAX_HISTORY:]
 
 
-def get_dynamic_femi_welcome(username: str) -> str:
+def get_dynamic_femi_welcome(username: str, is_recipient: bool = False) -> str:
     """Generates dynamic, spacious introductory messages for Femi avatar."""
     name = username if username and username.lower() not in ["user", "customer"] else ""
     name_str = f" {name}" if name else ""
+
+    if is_recipient:
+        recipient_templates = [
+            (
+                f"Hello{name_str} 👋! I'm Femi from *InTime* 🛵✨.\n\n"
+                f"I'm here to assist you with your incoming package delivery 📦.\n\n"
+                f"If you need any information about your delivery status or verification code, just let me know!"
+            ),
+            (
+                f"Hi{name_str} 👋, I'm Femi from *InTime*!\n\n"
+                f"I can help you check on your incoming package or provide your delivery verification code.\n\n"
+                f"How can I help you today? 😊"
+            ),
+            (
+                f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
+                f"I'm Femi, your delivery assistant. I'm here to support you with your incoming package.\n\n"
+                f"Feel free to ask about your rider's arrival or your 5-digit delivery code!"
+            )
+        ]
+        return random.choice(recipient_templates)
 
     templates = [
         (
@@ -420,21 +440,35 @@ async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph
     """
     Monitors user registration inactivity.
     Sends a friendly reminder after 5 minutes if user hasn't completed registration or placed an order.
+    Never sends reminders to riders or package recipients.
     """
     try:
         await asyncio.sleep(300)
 
         from database import AsyncSessionLocal
         async with AsyncSessionLocal() as db:
+            role = await get_user_role(sender_wa_number, db)
+            if role in ["rider", "recipient"]:
+                print(f"[REGISTRATION REMINDER] Aborting reminder for {sender_wa_number} (role: '{role}')")
+                return
+
             registered = await is_user_registered(sender_wa_number, db)
             if registered:
                 return  # Stop if user already registered!
 
             possible_numbers = get_phone_variants(sender_wa_number)
             has_order = await db.execute(
-                select(models.Orders).where(models.Orders.sender_wa_number.in_(possible_numbers))
+                select(models.Orders.id).where(models.Orders.sender_wa_number.in_(possible_numbers)).limit(1)
             )
             if has_order.scalars().first() is not None:
+                return
+
+            # Extra safeguard: check if this number is a recipient of ANY order
+            is_recipient = await db.execute(
+                select(models.Orders.id).where(models.Orders.recipient_phone_number.in_(possible_numbers)).limit(1)
+            )
+            if is_recipient.scalars().first() is not None:
+                print(f"[REGISTRATION REMINDER] Aborting reminder for recipient {sender_wa_number}")
                 return
 
             reminder_msg = (
@@ -619,6 +653,62 @@ def get_phone_variants(phone: str) -> list[str]:
         raw_fmt = canonical[3:]
         variants.update([canonical, local_fmt, plus_fmt, raw_fmt])
     return [v for v in variants if v]
+
+
+async def get_user_role(wa_number: str, db: AsyncSession) -> str:
+    """
+    Categorizes a WhatsApp phone number into one of four roles:
+    - 'rider': Number is registered as a dispatch rider in models.Riders.
+    - 'customer': Number is registered in models.User (not deleted) or has created orders as sender_wa_number.
+    - 'recipient': Number is listed as recipient_phone_number on any active or historical order, and has not registered as a customer.
+    - 'guest': Unregistered user with no rider, customer, or recipient history.
+    """
+    if not wa_number:
+        return "guest"
+
+    possible_numbers = get_phone_variants(wa_number)
+
+    # 1. Check Rider
+    rider_res = await db.execute(
+        select(models.Riders.id).where(
+            (models.Riders.rider_wa_number.in_(possible_numbers)) |
+            (models.Riders.rider_phonenumber_2.in_(possible_numbers))
+        ).limit(1)
+    )
+    if rider_res.scalars().first() is not None:
+        return "rider"
+
+    # 2. Check Registered Customer (models.User)
+    user_res = await db.execute(
+        select(models.User.id).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        ).limit(1)
+    )
+    if user_res.scalars().first() is not None:
+        return "customer"
+
+    # Check Customer who sent an order
+    sender_res = await db.execute(
+        select(models.Orders.id).where(
+            models.Orders.sender_wa_number.in_(possible_numbers)
+        ).limit(1)
+    )
+    if sender_res.scalars().first() is not None:
+        return "customer"
+
+    # 3. Check Recipient
+    recipient_res = await db.execute(
+        select(models.Orders.id).where(
+            models.Orders.recipient_phone_number.in_(possible_numbers)
+        ).limit(1)
+    )
+    if recipient_res.scalars().first() is not None:
+        return "recipient"
+
+    return "guest"
 
 
 async def get_active_order_for_customer_or_recipient(wa_number: str, db: AsyncSession):
@@ -1243,19 +1333,17 @@ async def schedule_rider_process_reminders(order_number: str, rider_wa_number: s
                 if order.delivery_progression_status == "package_delivered":
                     return
 
-                await send_custom_flow(
-                    wa_number=rider_wa_number,
-                    flow_token={"order_number": order_number},
+                recipient_phone_str = order.recipient_phone_number or "Not provided"
+                dropoff_loc = order.dropoff_location_name or "Drop-off location"
+                await send_custom_message(
+                    sender_wa_number=rider_wa_number,
                     message=(
-                        f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})*\n\n"
-                        f"Hi! Order *{order_number}* is currently in transit.\n\n"
-                        f"Have you dropped off the package to the recipient yet? "
-                        f"Click the button below when you have dropped off the package successfully."
+                        f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})* 🛵💨\n\n"
+                        f"Order: *{order_number}*\n\n"
+                        f"🏁 *Drop-off:* {dropoff_loc}\n"
+                        f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                        f"When you arrive at the drop-off location, ask the recipient for their *5-digit verification code* and reply with it directly in this chat (e.g. *12345*) to complete the delivery! 🤝✅"
                     ),
-                    header="Have you delivered the package yet?",
-                    flow_id="1549615230214062",
-                    flow_cta="Have you Delivered the Package?",
-                    screen_name="flow_to_ask_if_rider_has_dropped_off_package",
                     auth=auth,
                     graph_url=graph_url
                 )
@@ -2045,6 +2133,7 @@ async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
 async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
     """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
     lower_clean = text_body.strip().lower().strip(".,!?:;")
+    user_role = await get_user_role(sender_wa_number, db)
 
     # --- 0a. EXPLICIT ORDER CREATION TRIGGERS (ALWAYS take top priority) ---
     order_triggers = [
@@ -2302,14 +2391,23 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     # --- 3. INTENT HANDLING ---
     if intent == "CREATE_ORDER":
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        if user_role == "recipient":
+            # Recipient did not send an explicit order trigger phrase (caught in 0a).
+            # Do NOT treat their general chatter as an order creation request or push registration.
+            order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+            if order:
+                intent = "TRACK_ORDER"
+            else:
+                intent = "GENERAL_CHAT"
         else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
-        return
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+            else:
+                await send_registration_template(sender_wa_number, auth, graph_url)
+            return
 
-    elif intent == "DELETE_ACCOUNT":
+    if intent == "DELETE_ACCOUNT":
         registered = await is_user_registered(sender_wa_number, db)
         if registered:
             await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
@@ -2395,9 +2493,30 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         else:
             order_context = "No active delivery order."
 
+        if user_role == "recipient":
+            role_instructions = (
+                f"USER ROLE: Package Recipient (receiving an incoming package).\n"
+                f"- This user is a recipient receiving a delivery, NOT currently an ordering customer.\n"
+                f"- Do NOT tell them to complete registration or nag them to sign up.\n"
+                f"- Reassure them and answer any questions regarding their incoming delivery, rider arrival, and 5-digit verification code with warmth and clarity.\n"
+                f"- Only if they explicitly ask how to send packages themselves, let them know they can type *Send an Order* anytime."
+            )
+            rule_6 = "6. ROLE APPROPRIATENESS: Answer questions about their incoming delivery warmly and clearly. Never push registration or 'Send an Order' on a recipient unless they specifically ask."
+        elif user_role == "rider":
+            role_instructions = (
+                f"USER ROLE: Dispatch Rider.\n"
+                f"- This user is a registered dispatch rider for InTime.\n"
+                f"- Assist them with check-in, dispatch instructions, or support."
+            )
+            rule_6 = "6. ROLE APPROPRIATENESS: Address them as a rider. Guide them on check-in or delivery instructions."
+        else:
+            role_instructions = "USER ROLE: Customer / Prospect."
+            rule_6 = "6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!"
+
         system_prompt = (
             f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
             f"Customer Name: {username}.\n"
+            f"{role_instructions}\n"
             f"Current Context: {order_context}.\n"
             f"COMPANY KNOWLEDGE:\n"
             f"- Official Website: https://sendintime.com.ng\n"
@@ -2411,7 +2530,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             f"3. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
             f"4. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
             f"5. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!\n"
+            f"{rule_6}\n"
             f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
             f"8. REFERRAL NAME: Address the customer as {username}.\n"
             f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
@@ -2451,10 +2570,10 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
-            fallback_msg = get_dynamic_femi_welcome(username)
+            fallback_msg = get_dynamic_femi_welcome(username, is_recipient=(user_role == "recipient"))
             await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
 
     except Exception as e:
         print(f"Groq AI error: {e}")
-        fallback_msg = get_dynamic_femi_welcome(username)
+        fallback_msg = get_dynamic_femi_welcome(username, is_recipient=(user_role == "recipient"))
         await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)

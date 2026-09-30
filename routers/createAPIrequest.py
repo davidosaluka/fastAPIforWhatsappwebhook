@@ -1108,7 +1108,7 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
         f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
         f"📋 *Delivery Steps:*\n\n"
         f"1️⃣ Ask the recipient for their 5-digit verification code upon arrival. 🤝\n\n"
-        f"2️⃣ Reply with the code directly in this chat (e.g. *12345*) or tap the button below to verify! 💬📱\n\n"
+        f"2️⃣ Reply with the code directly in this chat (e.g. *12345*) to safely complete delivery! 💬📱\n\n"
         f"⚠️ *Note:* You have 3 trials to enter the correct code."
     )
     message_for_recipient = (
@@ -1141,18 +1141,6 @@ async def _delayed_pickup_arrival_notifications(sender_wa, rider_wa, recipient_p
             auth=auth, 
             graph_url=graph_url
         )
-
-    await replyhandler.send_custom_flow(
-        wa_number=rider_wa,
-        flow_token={"order_number": order_num},
-        message="Click the button below when you have dropped off the package successfully",
-        header="Have you delivered the package yet?\n\n",
-        flow_id="1549615230214062",
-        flow_cta="Have you Delivered the Package?",
-        screen_name="flow_to_ask_if_rider_has_dropped_off_package",
-        auth=auth,
-        graph_url=graph_url
-    )
 
 
 
