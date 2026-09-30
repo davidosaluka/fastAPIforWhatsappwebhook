@@ -382,7 +382,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             flow_token = raw_token
         else:
             flow_token = {}
-        order_number = flow_token.get("order_number")
+        order_number = flow_token.get("order_number") or json_response.get("order_number") or json_response.get("order_id")
         rider_wa_number = flow_token.get("rider_wa_number")
         
         name        = (
@@ -675,7 +675,12 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 .where(models.Orders.order_number == order_number)
             )    
             order_sla_details_result = order_sla_details.scalar_one_or_none()
-            order_still_valid = bool(order_sla_details_result and order_sla_details_result > datetime.now(UTC))
+            now_utc = datetime.now(UTC)
+            if order_sla_details_result:
+                sla_val = order_sla_details_result if getattr(order_sla_details_result, "tzinfo", None) else order_sla_details_result.replace(tzinfo=UTC)
+                order_still_valid = sla_val > now_utc
+            else:
+                order_still_valid = True
             if order_still_valid:
                 if rider_selected_option_for_current_ride == "0_Accept":
                     await replyhandler.handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db)

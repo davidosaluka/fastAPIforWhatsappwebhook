@@ -1596,96 +1596,111 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncS
 
 
 async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
-    order_result = await db.execute(
-    select(models.Orders)
-    .where(models.Orders.order_number == order_number)
-    )
-    order = order_result.scalars().first()
-    if not order:
-        return
-    order_status = order.status
-
-    rider_details_res = await db.execute(
-    select(models.Riders)
-    .where(models.Riders.rider_wa_number == sender_wa_number)
-        )
-    rider_details = rider_details_res.scalars().first()
-    rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
-    rider_phone = rider_details.rider_wa_number if rider_details else sender_wa_number
-
-    if order_status == "confirmed":
-        customer_wa_res = await db.execute(
-            select(models.Orders.sender_wa_number)
+    try:
+        order_result = await db.execute(
+            select(models.Orders)
             .where(models.Orders.order_number == order_number)
         )
-        customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
-        
-        sender_user_res = await db.execute(
-            select(models.User.name).where(
-                models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+        order = order_result.scalars().first()
+        if not order:
+            print(f"⚠️ [RIDER ACCEPT] Order {order_number} not found.")
+            return
+        order_status = order.status
+
+        rider_details_res = await db.execute(
+            select(models.Riders)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(sender_wa_number)))
+        )
+        rider_details = rider_details_res.scalars().first()
+        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
+        rider_phone = rider_details.rider_wa_number if rider_details else sender_wa_number
+
+        if order_status == "confirmed":
+            customer_wa_res = await db.execute(
+                select(models.Orders.sender_wa_number)
+                .where(models.Orders.order_number == order_number)
             )
-        )
-        recipient_phone_str = order.recipient_phone_number or "Not provided"
-        rider_message = (
-            f"🎉 *Ride Accepted!* 🏍️💨\n\n"
-            f"You have accepted Order *{order.order_number}*.\n\n"
-            f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
-            f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
-            f"👤 *Sender Phone:* *{customer_wa_number}*\n"
-            f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-            f"Please head to the pickup location now. Safe riding! 🌟"
-        )
-        recipient_message = (
-            f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
-            f"📦 Description: {order.package_description}\n\n"
-            f"📍 Pickup: {order.pickup_location_name}\n\n"
-            f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
-            f"🔖 Order No: {order.order_number}\n\n"
-            f"🧑‍✈️ Rider: {rider_name}\n"
-            f"📞 Rider's Phone: {rider_phone}"
-        )
-        recipient_wa_number = order.recipient_phone_number
+            customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
+            
+            sender_user_res = await db.execute(
+                select(models.User.name).where(
+                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+                )
+            )
+            sender_name = sender_user_res.scalars().first() or "Someone"
+            recipient_phone_str = order.recipient_phone_number or "Not provided"
+            rider_message = (
+                f"🎉 *Ride Accepted!* 🏍️💨\n\n"
+                f"You have accepted Order *{order.order_number}*.\n\n"
+                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please head to the pickup location now. Safe riding! 🌟"
+            )
+            recipient_message = (
+                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
+                f"📦 Description: {order.package_description}\n\n"
+                f"📍 Pickup: {order.pickup_location_name}\n\n"
+                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
+                f"🔖 Order No: {order.order_number}\n\n"
+                f"🧑‍✈️ Rider: {rider_name}\n"
+                f"📞 Rider's Phone: {rider_phone}"
+            )
+            recipient_wa_number = order.recipient_phone_number
 
-        # Save accepted state first so the order_number is valid when buttons are sent
-        await db.execute(
-           update(models.Orders)
-           .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted", rider_wa_number=sender_wa_number, final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider)
-        )
-        await db.commit()
+            # Save accepted state first so the order_number is valid when buttons are sent
+            await db.execute(
+               update(models.Orders)
+               .where(models.Orders.order_number == order_number)
+               .values(
+                   status="rider_accepted",
+                   rider_wa_number=sender_wa_number,
+                   final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider or order.customer_initial_offered_price
+               )
+            )
+            await db.commit()
 
-        # Notify rider
-        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
+            # Notify rider
+            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
 
-        # Get rider rating stats to display in customer confirmation
-        avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
-        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+            # Get rider rating stats to display in customer confirmation
+            avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
+            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
 
-        # Notify customer with action buttons & rider rating
-        await send_rider_accepted_with_options(
-            customer_wa_number=customer_wa_number,
-            rider_name=rider_name,
-            rider_phone=rider_phone,
-            order_number=order_number,
-            auth=AUTH,
-            graph_url=GRAPH_URL,
-            rating_display=rating_display
-        )
+            # Notify customer with action buttons & rider rating
+            await send_rider_accepted_with_options(
+                customer_wa_number=customer_wa_number,
+                rider_name=rider_name,
+                rider_phone=rider_phone,
+                order_number=order_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL,
+                rating_display=rating_display
+            )
 
-        # Notify recipient
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
+            # Notify recipient safely (so un-whitelisted recipient in dev mode doesn't break acceptance flow)
+            if recipient_wa_number:
+                try:
+                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
+                except Exception as recip_err:
+                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
 
-        # Start pickup & delivery reminder loop for the rider
-        asyncio.create_task(schedule_rider_process_reminders(
-            order_number=order_number,
-            rider_wa_number=sender_wa_number,
-            auth=AUTH,
-            graph_url=GRAPH_URL
-        ))
+            # Start pickup & delivery reminder loop for the rider
+            asyncio.create_task(schedule_rider_process_reminders(
+                order_number=order_number,
+                rider_wa_number=sender_wa_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL
+            ))
 
-    else:
-        rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
-        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+        else:
+            rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
+            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+    except Exception as accept_err:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in handle_case_where_rider_has_accepted_the_ride: {accept_err}")   
 
 
 
@@ -1799,79 +1814,89 @@ async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rid
     order_status = order.status
 
     print(f"riders number is: {rider_wa_number}")
-    rider_details_res = await db.execute(
-    select(models.Riders)
-    .where(models.Riders.rider_wa_number == rider_wa_number)
+    try:
+        rider_details_res = await db.execute(
+            select(models.Riders)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
         )
-    rider_details = rider_details_res.scalars().first()
-    rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
-    rider_phone = rider_details.rider_wa_number if rider_details else rider_wa_number
+        rider_details = rider_details_res.scalars().first()
+        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
+        rider_phone = rider_details.rider_wa_number if rider_details else rider_wa_number
 
-    if order_status == "confirmed":
-        customer_wa_number = sender_wa_number
+        if order_status == "confirmed":
+            customer_wa_number = sender_wa_number
 
-        sender_user_res = await db.execute(
-            select(models.User.name).where(
-                models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+            sender_user_res = await db.execute(
+                select(models.User.name).where(
+                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+                )
             )
-        )
-        recipient_phone_str = order.recipient_phone_number or "Not provided"
-        rider_message = (
-            f"🎉 *Ride Confirmed!* 🏍️💨\n\n"
-            f"Order *{order.order_number}* has been confirmed!\n\n"
-            f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
-            f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
-            f"👤 *Sender Phone:* *{customer_wa_number}*\n"
-            f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-            f"Please head to the pickup location now. Safe riding! 🌟"
-        )
-        recipient_message = (
-            f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
-            f"📦 Description: {order.package_description}\n\n"
-            f"📍 Pickup: {order.pickup_location_name}\n\n"
-            f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
-            f"🔖 Order No: {order.order_number}\n\n"
-            f"🧑‍✈️ Rider: {rider_name}\n"
-            f"📞 Rider's Phone: {rider_phone}"
-        )
-        recipient_wa_number = order.recipient_phone_number
+            sender_name = sender_user_res.scalars().first() or "Someone"
+            recipient_phone_str = order.recipient_phone_number or "Not provided"
+            rider_message = (
+                f"🎉 *Ride Confirmed!* 🏍️💨\n\n"
+                f"Order *{order.order_number}* has been confirmed!\n\n"
+                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please head to the pickup location now. Safe riding! 🌟"
+            )
+            recipient_message = (
+                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
+                f"📦 Description: {order.package_description}\n\n"
+                f"📍 Pickup: {order.pickup_location_name}\n\n"
+                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
+                f"🔖 Order No: {order.order_number}\n\n"
+                f"🧑‍✈️ Rider: {rider_name}\n"
+                f"📞 Rider's Phone: {rider_phone}"
+            )
+            recipient_wa_number = order.recipient_phone_number
 
-        final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
-        await db.execute(
-           update(models.Orders)
-           .where(models.Orders.order_number == order_number)
-           .values(status="rider_accepted", final_price_agreed_by_cust_and_rider=final_price, rider_wa_number=rider_wa_number)
-        )
-        await db.commit()
+            final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
+            await db.execute(
+               update(models.Orders)
+               .where(models.Orders.order_number == order_number)
+               .values(status="rider_accepted", final_price_agreed_by_cust_and_rider=final_price, rider_wa_number=rider_wa_number)
+            )
+            await db.commit()
 
-        # Notify rider
-        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
+            # Notify rider
+            await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
 
-        # Get rider rating stats to display in customer confirmation
-        avg_rating, total_reviews = await get_rider_rating_stats(rider_wa_number, db)
-        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+            # Get rider rating stats to display in customer confirmation
+            avg_rating, total_reviews = await get_rider_rating_stats(rider_wa_number, db)
+            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
 
-        # Notify customer with action buttons & rider rating
-        await send_rider_accepted_with_options(
-            customer_wa_number=customer_wa_number,
-            rider_name=rider_name,
-            rider_phone=rider_phone,
-            order_number=order_number,
-            auth=auth,
-            graph_url=graph_url,
-            rating_display=rating_display
-        )
+            # Notify customer with action buttons & rider rating
+            await send_rider_accepted_with_options(
+                customer_wa_number=customer_wa_number,
+                rider_name=rider_name,
+                rider_phone=rider_phone,
+                order_number=order_number,
+                auth=auth,
+                graph_url=graph_url,
+                rating_display=rating_display
+            )
 
-        # Notify recipient
-        await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
+            # Notify recipient safely
+            if recipient_wa_number:
+                try:
+                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
+                except Exception as recip_err:
+                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
 
-        # Start pickup & delivery reminder loop for the rider
-        asyncio.create_task(schedule_rider_process_reminders(
-            order_number=order_number,
-            rider_wa_number=rider_wa_number,
-            auth=auth,
-            graph_url=graph_url
-        ))
+            # Start pickup & delivery reminder loop for the rider
+            asyncio.create_task(schedule_rider_process_reminders(
+                order_number=order_number,
+                rider_wa_number=rider_wa_number,
+                auth=auth,
+                graph_url=graph_url
+            ))
+    except Exception as accept_err:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in handle_case_where_customer_has_accepted_the_ride: {accept_err}")
 
 
 
