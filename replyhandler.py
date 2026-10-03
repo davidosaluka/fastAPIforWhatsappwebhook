@@ -2032,9 +2032,9 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
             .values(
                 is_deleted=True,
                 name="Anonymized User",
-                wa_id=f"DELETED_{u.id}_{u.wa_id}",
-                display_phone_number=f"DELETED_{u.id}_{u.display_phone_number}",
-                phone_number_id=f"DELETED_{u.id}_{u.phone_number_id}"
+                wa_id=f"DELETED_{u.id}",
+                display_phone_number="DELETED",
+                phone_number_id="DELETED"
             )
         )
 
@@ -2048,6 +2048,8 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
     )
     user_orders = user_orders_res.scalars().all()
 
+    primary_anon_id = f"DELETED_{users[0].id}" if users else "DELETED"
+
     for ord_obj in user_orders:
         if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
             if ord_obj.delivery_progression_status != "package_delivered":
@@ -2059,7 +2061,7 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
                         f"Thank you for your time — new requests will come your way shortly! 🛵"
                     )
                     asyncio.create_task(send_custom_message(ord_obj.rider_wa_number, cancel_msg, os.getenv("AUTHORIZATION"), os.getenv("GRAPH_URL")))
-        ord_obj.sender_wa_number = f"DELETED_{ord_obj.sender_wa_number}"
+        ord_obj.sender_wa_number = primary_anon_id
 
     await db.commit()
 

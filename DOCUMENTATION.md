@@ -314,7 +314,7 @@ If no active orders exist, the system responds with an interactive confirmation 
 
 ### Execution
 When `CONFIRM_DELETE_ACCOUNT` is selected (and re-verified against active orders):
-1. `delete_user_data(sender_wa_number, db)` performs an NDPA-compliant soft delete across all matching phone variants by setting `is_deleted = True`, anonymizing PII (`name = "Anonymized User"`), and prefixing phone identifiers (`DELETED_<id>_<wa_id>`) to protect user privacy while maintaining transactional audit integrity for completed orders.
+1. `delete_user_data(sender_wa_number, db)` performs an NDPA/NDPR and Meta Data Privacy compliant erasure across all matching user records by setting `is_deleted = True`, anonymizing PII (`name = "Anonymized User"`), completely stripping raw phone numbers (`wa_id = f"DELETED_{user.id}"`, `display_phone_number = "DELETED"`, `phone_number_id = "DELETED"`), and updating past order records (`sender_wa_number = f"DELETED_{user.id}"`) to preserve transactional audit integrity and financial sums without retaining customer phone data.
 2. In-memory chat history (`_chat_memory`) is purged.
 3. The user receives a confirmation message informing them that their profile has been deleted and that they may re-register at any time by typing *Send an Order*.
 

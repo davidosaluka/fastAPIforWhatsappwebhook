@@ -804,8 +804,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                         select(models.User).where(
                             (models.User.display_phone_number.in_(possible_numbers)) |
                             (models.User.wa_id.in_(possible_numbers)) |
-                            (models.User.phone_number_id.in_(possible_numbers)) |
-                            (models.User.wa_id.like(f"DELETED_%_{sender_wa_number}"))
+                            (models.User.phone_number_id.in_(possible_numbers))
                         )
                     )
                     del_user = del_user_res.scalars().first()
@@ -942,14 +941,11 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         replyhandler.get_phone_variants(clean_phone_id)
     ))
 
-    # Search for ANY existing record matching these numbers, including soft-deleted and DELETED_ prefixed users
+    # Search for ANY existing record matching these numbers
     stmt = select(models.User).where(
         (models.User.phone_number_id.in_(possible_numbers)) |
         (models.User.wa_id.in_(possible_numbers)) |
-        (models.User.display_phone_number.in_(possible_numbers)) |
-        (models.User.wa_id.like(f"DELETED_%_{clean_wa_id}")) |
-        (models.User.display_phone_number.like(f"DELETED_%_{clean_display}")) |
-        (models.User.phone_number_id.like(f"DELETED_%_{clean_phone_id}"))
+        (models.User.display_phone_number.in_(possible_numbers))
     )
     result = await db.execute(stmt)
     existing_user = result.scalars().first()
@@ -983,7 +979,7 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
                 if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
                     if ord_obj.delivery_progression_status != "package_delivered":
                         ord_obj.status = "cancelled"
-                ord_obj.sender_wa_number = f"DELETED_{clean_wa_id}"
+                ord_obj.sender_wa_number = f"DELETED_{existing_user.id}"
             await db.commit()
 
         return existing_user
