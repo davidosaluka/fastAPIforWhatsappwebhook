@@ -98,6 +98,14 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
+        elif message["button"]["payload"] in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
+            food_msg = (
+                "🍔 *InTime Food Ordering*\n\n"
+                "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
+                "In the meantime, you can send packages anytime by tapping *Send an Order*!"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, food_msg, AUTH, GRAPH_URL)
+
         elif message["button"]["payload"] in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
             if is_existing_user:
@@ -121,6 +129,15 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
     if message["type"] == "interactive" and message["interactive"]["type"] == "button_reply":
         button_id = message["interactive"]["button_reply"].get("id", "")
         sender_wa_number = message["from"]
+
+        if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
+            food_msg = (
+                "🍔 *InTime Food Ordering*\n\n"
+                "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
+                "In the meantime, you can send packages anytime by tapping *Send an Order*!"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, food_msg, AUTH, GRAPH_URL)
+            return
 
         if button_id.startswith("FIND_ANOTHER_RIDER:"):
             order_number = button_id.split(":", 1)[1]

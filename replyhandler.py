@@ -259,39 +259,68 @@ async def show_typing_indicator(message_id: str, auth: str, graph_url):
 
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
-    
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "template",
-            "template": {
-                "name": "default_message",
-                "language": { "code": "en" },
-                   "components": [
-                    {
-                        "type": "header",
-                        "parameters": [
-                        {
-                            "type": "text",
-                            "text": username
-                        }
-                        ]
-                    }
-                    ]
-            }
-            }
+    """Sends the official default_message template with quick-reply / flow action buttons."""
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
+
     headers = {
         "Authorization": f"Bearer {auth}",
         "Content-Type": "application/json"
-
     }
-    
-    print(req_body)
+
+    # Attempt 1: Header parameter (standard Meta template configuration with {{1}} in header)
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "template",
+        "template": {
+            "name": "default_message",
+            "language": { "code": "en" },
+            "components": [
+                {
+                    "type": "header",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": display_name
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    print(f"📦 Dispatched default_message template to {target_number} (name: '{display_name}')...")
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-    return
+        print("Default template response:", response.status_code, response.text)
+
+        # Fallback 1: If parameter mismatch (#132000), try with body parameter instead of header
+        if response.status_code != 200 and "132000" in response.text:
+            print("Retrying default_message with body component parameter...")
+            req_body["template"]["components"] = [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": display_name
+                        }
+                    ]
+                }
+            ]
+            response = await client.post(graph_url, json=req_body, headers=headers)
+            print("Default template (body fallback) response:", response.status_code, response.text)
+
+            # Fallback 2: If still parameter mismatch (#132000), try with no components (fixed text template)
+            if response.status_code != 200 and "132000" in response.text:
+                print("Retrying default_message with no components (fixed text)...")
+                req_body["template"].pop("components", None)
+                response = await client.post(graph_url, json=req_body, headers=headers)
+                print("Default template (no components fallback) response:", response.status_code, response.text)
+
+    return response
 
 async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
     
@@ -2154,6 +2183,17 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             await send_registration_template(sender_wa_number, auth, graph_url)
         return
 
+    # --- 0a1. FOOD ORDER TRIGGER ---
+    food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal"]
+    if any(trigger in lower_clean for trigger in food_triggers):
+        food_msg = (
+            "🍔 *InTime Food Ordering*\n\n"
+            "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
+            "In the meantime, you can send packages anytime by tapping *Send an Order*!"
+        )
+        await send_custom_message(sender_wa_number, food_msg, auth, graph_url)
+        return
+
     # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
     rider_order = await get_active_rider_order(sender_wa_number, db)
     if not rider_order:
@@ -2364,6 +2404,20 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
                 )
                 return
 
+    # --- 1c. GREETINGS & WELCOME TRIGGERS (Fast-path: dispatch default_message template) ---
+    greeting_triggers = {
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+        "start", "menu", "help", "restart", "yo", "femi", "hi femi", "hello femi",
+        "greetings", "hey femi", "welcome", "howdy", "sup", "get started"
+    }
+    is_greeting = lower_clean in greeting_triggers or any(
+        lower_clean == g or lower_clean.startswith(f"{g} ")
+        for g in ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+    )
+    if is_greeting and user_role != "recipient":
+        await send_default_template(sender_wa_number, username, auth, graph_url)
+        return
+
     # Fast-path pre-check for generic courtesy acknowledgments
     generic_courtesies = {
         "ok", "okay", "thanks", "thank you", "alright", "got it", "noted", "cool", 
@@ -2541,6 +2595,11 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         )
 
         user_history = get_user_chat_memory(sender_wa_number)
+        if not user_history and user_role != "recipient":
+            # First turn from customer / prospect: dispatch default_message template to close lead in fewest messages
+            await send_default_template(sender_wa_number, username, auth, graph_url)
+            return
+
         messages_payload = [{"role": "system", "content": system_prompt}]
         for turn in user_history:
             messages_payload.append(turn)
@@ -2572,10 +2631,16 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
             add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
             await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
         else:
-            fallback_msg = get_dynamic_femi_welcome(username, is_recipient=(user_role == "recipient"))
-            await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
+            if user_role != "recipient":
+                await send_default_template(sender_wa_number, username, auth, graph_url)
+            else:
+                fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
+                await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
 
     except Exception as e:
         print(f"Groq AI error: {e}")
-        fallback_msg = get_dynamic_femi_welcome(username, is_recipient=(user_role == "recipient"))
-        await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
+        if user_role != "recipient":
+            await send_default_template(sender_wa_number, username, auth, graph_url)
+        else:
+            fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
+            await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
