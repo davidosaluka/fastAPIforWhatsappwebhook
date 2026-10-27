@@ -411,34 +411,43 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
                 "catalog_id": cat_id,
                 "sections": [
                     {
-                        "title": "🍚 Rice & Combos",
-                        "product_retailer_ids": [
-                            "mg_jollof",
-                            "mg_fried_rice",
-                            "mg_white_rice",
-                            "mg_rice_beans"
+                        "title": "🍚 Rice Meals & Combos",
+                        "product_items": [
+                            {"product_retailer_id": "mg_rice_beef_sm"},
+                            {"product_retailer_id": "mg_rice_beef_bg"},
+                            {"product_retailer_id": "mg_rice_beef_salad_sm"},
+                            {"product_retailer_id": "mg_rice_combo_sm"},
+                            {"product_retailer_id": "mg_rice_beans_sm"},
+                            {"product_retailer_id": "mg_rice_egg"}
                         ]
                     },
                     {
                         "title": "🥘 Swallow & Soups",
-                        "product_retailer_ids": [
-                            "mg_vegetable"
+                        "product_items": [
+                            {"product_retailer_id": "mg_semo_veg_sm"},
+                            {"product_retailer_id": "mg_semo_ogbono_sm"},
+                            {"product_retailer_id": "mg_fufu_veg_1w"},
+                            {"product_retailer_id": "mg_fufu_veg_2w"}
                         ]
                     },
                     {
-                        "title": "🍗 Proteins & Meat",
-                        "product_retailer_ids": [
-                            "mg_small_beef",
-                            "mg_big_beef"
+                        "title": "🍗 Fresh Proteins",
+                        "product_items": [
+                            {"product_retailer_id": "mg_chicken_sm"},
+                            {"product_retailer_id": "mg_chicken_med"},
+                            {"product_retailer_id": "mg_chicken_bg"},
+                            {"product_retailer_id": "mg_goat_meat"},
+                            {"product_retailer_id": "mg_cow_tail"}
                         ]
                     },
                     {
-                        "title": "➕ Sides & Drinks",
-                        "product_retailer_ids": [
-                            "mg_plantain",
-                            "mg_salad",
-                            "mg_water",
-                            "mg_moi_moi"
+                        "title": "➕ Extras & Sides",
+                        "product_items": [
+                            {"product_retailer_id": "mg_plantain"},
+                            {"product_retailer_id": "mg_moi_moi"},
+                            {"product_retailer_id": "mg_salad"},
+                            {"product_retailer_id": "mg_small_beef"},
+                            {"product_retailer_id": "mg_big_beef"}
                         ]
                     }
                 ]
@@ -451,7 +460,7 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         response = await client.post(graph_url, json=req_body_mpm, headers=headers)
         print("Food catalog MPM response:", response.status_code, response.text)
 
-        # Fallback: if product_list rejected, retry with native catalog_message (opens full catalog UI)
+        # Fallback 1: if product_list rejected, retry with native catalog_message (opens full catalog UI)
         if response.status_code != 200:
             print("Retrying with native catalog_message (full catalog view)...")
             req_body_catalog = {
@@ -478,6 +487,35 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
             }
             response = await client.post(graph_url, json=req_body_catalog, headers=headers)
             print("Food catalog_message fallback response:", response.status_code, response.text)
+
+        # Fallback 2: if catalog linking is pending in Meta Commerce Manager, send structured text menu
+        if response.status_code != 200:
+            print("Both catalog formats failed (likely pending catalog link in Meta WhatsApp settings). Sending formatted text menu fallback...")
+            fallback_menu = (
+                "🍽️ *Welcome to Madam G Kitchen on InTime!* 🍲✨\n"
+                "_Delicious, freshly prepared homemade meals_\n\n"
+                "🍚 *RICE MEALS* (Small | Big)\n"
+                "• Rice + 2 Beef: ₦1,700 | ₦2,300\n"
+                "• Rice + Beef + Salad: ₦2,000 | ₦2,600\n"
+                "• Rice Combo (Beef + Salad + Dodo): ₦2,500 | ₦3,100\n"
+                "• White Rice + Beans Combo: ₦2,200 | ₦2,600\n"
+                "• Rice + Boiled Egg: ₦1,600\n\n"
+                "🥘 *SWALLOW & SOUPS* (Small | Big)\n"
+                "• Semo (2 wraps) + Veg + Beef: ₦2,500 | ₦3,100\n"
+                "• Semo (2 wraps) + Ogbono/Egusi + Beef: ₦2,000 | ₦2,600\n"
+                "• Fufu (1 wrap) + Veg + Beef: ₦1,800\n"
+                "• Fufu (2 wraps) + Veg + Beef: ₦2,500 | ₦3,100\n\n"
+                "🍗 *PROTEINS & EXTRAS*\n"
+                "• Chicken: ₦3,000 (Sm) | ₦3,500 (Med) | ₦4,000 (Big)\n"
+                "• Goat Meat plate: ₦2,000\n"
+                "• Cow Tail plate: ₦2,000\n"
+                "• Extra Plantain (3 pcs): ₦500\n"
+                "• Moi Moi: ₦1,000 | Boiled Egg: ₦300\n\n"
+                "🛵 *Delivery Fee:* Flat ₦1,000\n\n"
+                "👉 *To place your order:*\n"
+                "Simply reply with your selected meal and delivery address (e.g. *1x Rice Combo Big to 15 Admiralty Way, Lekki*), and our riders will deliver it hot! 🍲💨"
+            )
+            response = await send_custom_message(sender_wa_number, fallback_menu, auth, graph_url)
 
     return response
 
