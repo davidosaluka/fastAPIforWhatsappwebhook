@@ -14,6 +14,13 @@ from groq import AsyncGroq
 
 load_dotenv()
 
+# Meta WhatsApp Flow IDs (configurable via environment variables for easy account migration)
+FLOW_PICKUP_ID = os.getenv("FLOW_PICKUP_ID", "1521319786323152")
+FLOW_INCREASE_FARE_ID = os.getenv("FLOW_INCREASE_FARE_ID", "950647507961316")
+FLOW_RIDER_ACCEPT_ID = os.getenv("FLOW_RIDER_ACCEPT_ID", "1513067607105184")
+FLOW_NEGOTIATE_ID = os.getenv("FLOW_NEGOTIATE_ID", "1448553113617488")
+FLOW_COUNTER_OFFER_ID = os.getenv("FLOW_COUNTER_OFFER_ID", "949497837687906")
+
 # ---------------------------------------------------------------------------
 # In-memory chat history store for Groq multi-turn conversations.
 # Maps sender_wa_number -> list of {"role": ..., "content": ...} dicts.
@@ -1438,7 +1445,7 @@ async def schedule_rider_process_reminders(order_number: str, rider_wa_number: s
                     flow_token={"order_number": order_number},
                     message=message,
                     header=header,
-                    flow_id="1521319786323152",
+                    flow_id=FLOW_PICKUP_ID,
                     flow_cta="Picked Up Package?",
                     screen_name="flow_to_ask_if_rider_has_picked_up_package",
                     auth=auth,
@@ -1550,7 +1557,7 @@ async def _delayed_send_pickup_flow(wa_number, order_number, auth, graph_url, de
         flow_token={"order_number": order_number},
         message="📦 Tap the button below once you've picked up the package.",
         header="Have you picked up the package?",
-        flow_id="1521319786323152",
+        flow_id=FLOW_PICKUP_ID,
         flow_cta="Picked Up Package?",
         screen_name="flow_to_ask_if_rider_has_picked_up_package",
         auth=auth,
@@ -1669,7 +1676,7 @@ async def schedule_order_followups(order_number: str, sender_wa_number: str, aut
                 flow_token={"order_number": order_number},
                 message=escalation_msg,
                 header="🔔 Need a rider faster?",
-                flow_id="950647507961316",
+                flow_id=FLOW_INCREASE_FARE_ID,
                 flow_cta="I want to increase my fare",
                 screen_name="CUST_INCREASE_FARE_SCREEN",
                 auth=auth,
@@ -1800,7 +1807,7 @@ async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncS
                 flow_token={"order_number": order_details['order_number']},
                 message=dispatch_msg,
                 header=header,
-                flow_id="1513067607105184",
+                flow_id=FLOW_RIDER_ACCEPT_ID,
                 flow_cta="Accept or Negotiate",
                 screen_name="RECOMMEND",
                 auth=auth,
@@ -1981,7 +1988,7 @@ async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, orde
             flow_token={"order_number": order_number},
             message=message,
             header="-",
-            flow_id="1448553113617488",
+            flow_id=FLOW_NEGOTIATE_ID,
             flow_cta="Input Price",
             screen_name="NEGOTIATE_SCREEN",
             auth=AUTH,
@@ -2037,7 +2044,7 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
             flow_token={"order_number": order_number, "rider_wa_number": sender_wa_number},
             message=customer_message,
             header="💸 A rider has made a counter offer",
-            flow_id="949497837687906",
+            flow_id=FLOW_COUNTER_OFFER_ID,
             flow_cta="Accept this offer",
             screen_name="customer_accept_or_reject_rider_offer",
             auth=AUTH,
@@ -2050,7 +2057,7 @@ async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number,
             flow_token={"order_number": order_number},
             message=asking_customer_to_increase_price_msg,
             header="🔔",
-            flow_id="950647507961316",
+            flow_id=FLOW_INCREASE_FARE_ID,
             flow_cta="I want to increase my fare",
             screen_name="CUST_INCREASE_FARE_SCREEN",
             auth=AUTH,
