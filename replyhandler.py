@@ -371,6 +371,117 @@ async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
     return
 
 
+async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: str, catalog_id: str = None):
+    """
+    Sends the interactive food catalog menu for Madam G.
+    Tries Multi-Product Message (product_list) first, and automatically falls back to Catalog Message
+    (full catalog view) if product SKUs differ in Meta Commerce Manager.
+    """
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    cat_id = catalog_id or os.getenv("META_CATALOG_ID", "1515700860395437")
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+
+    # Attempt 1: Multi-Product Message (product_list) with organized sections
+    req_body_mpm = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "product_list",
+            "header": {
+                "type": "text",
+                "text": "🍽️ Madam G Kitchen"
+            },
+            "body": {
+                "text": (
+                    "Welcome to *Madam G* on InTime! 🍲✨\n\n"
+                    "Explore our freshly cooked meals below. Add dishes and extras to your cart, "
+                    "tap *View Cart*, and tap *Send Cart* to place your order! 🛵💨"
+                )
+            },
+            "footer": {
+                "text": "Delivered hot & fast by InTime Riders ⚡"
+            },
+            "action": {
+                "catalog_id": cat_id,
+                "sections": [
+                    {
+                        "title": "🍚 Rice & Combos",
+                        "product_retailer_ids": [
+                            "mg_jollof",
+                            "mg_fried_rice",
+                            "mg_white_rice",
+                            "mg_rice_beans"
+                        ]
+                    },
+                    {
+                        "title": "🥘 Swallow & Soups",
+                        "product_retailer_ids": [
+                            "mg_vegetable"
+                        ]
+                    },
+                    {
+                        "title": "🍗 Proteins & Meat",
+                        "product_retailer_ids": [
+                            "mg_small_beef",
+                            "mg_big_beef"
+                        ]
+                    },
+                    {
+                        "title": "➕ Sides & Drinks",
+                        "product_retailer_ids": [
+                            "mg_plantain",
+                            "mg_salad",
+                            "mg_water",
+                            "mg_moi_moi"
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+    print(f"📦 Dispatching food catalog menu to {target_number} (Catalog: {cat_id})...")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body_mpm, headers=headers)
+        print("Food catalog MPM response:", response.status_code, response.text)
+
+        # Fallback: if product_list rejected, retry with native catalog_message (opens full catalog UI)
+        if response.status_code != 200:
+            print("Retrying with native catalog_message (full catalog view)...")
+            req_body_catalog = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": target_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "catalog_message",
+                    "body": {
+                        "text": (
+                            "🍽️ *Welcome to Madam G on InTime!*\n\n"
+                            "Tap *View catalog* below to browse all our fresh meals, drinks, and extras. "
+                            "Add items to your cart and send your order when ready! 🍲🛵💨"
+                        )
+                    },
+                    "footer": {
+                        "text": "Delivered hot & fast by InTime Riders ⚡"
+                    },
+                    "action": {
+                        "name": "catalog_message"
+                    }
+                }
+            }
+            response = await client.post(graph_url, json=req_body_catalog, headers=headers)
+            print("Food catalog_message fallback response:", response.status_code, response.text)
+
+    return response
+
+
 async def send_custom_message(sender_wa_number, message, auth, graph_url):
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     req_body = {
@@ -2184,14 +2295,9 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         return
 
     # --- 0a1. FOOD ORDER TRIGGER ---
-    food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal"]
+    food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal", "madam g", "menu", "food menu"]
     if any(trigger in lower_clean for trigger in food_triggers):
-        food_msg = (
-            "🍔 *InTime Food Ordering*\n\n"
-            "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
-            "In the meantime, you can send packages anytime by tapping *Send an Order*!"
-        )
-        await send_custom_message(sender_wa_number, food_msg, auth, graph_url)
+        await send_food_catalog_menu(sender_wa_number, auth, graph_url)
         return
 
     # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---

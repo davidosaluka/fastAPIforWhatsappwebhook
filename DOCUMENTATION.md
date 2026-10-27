@@ -228,6 +228,50 @@ When a rider has an active in-progress delivery (`rider_accepted`, `awaiting_pic
 - **En Route Check**: Negative responses (`no`, `not yet`) acknowledge safe riding and schedule a follow-up check.
 - **Contextual Status**: Unrecognized messages provide immediate situational context with quick options (`code`, `yes`, `no`).
 
+
+### 4.3 WhatsApp Commerce Food Ordering Workflow (Madam G Catalog Integration)
+
+The platform supports native WhatsApp Food Ordering via Meta Commerce Catalog integration (`META_CATALOG_ID=1515700860395437`):
+
+```
+Customer triggers "Order Food" / "Madam G"
+              │
+              ▼ [Message 1: Bot -> Customer]
+Send Interactive Catalog Menu
+(product_list Multi-Product Message, with fallback to catalog_message)
+              │
+              ▼ Customer adds items to cart & clicks "Send Cart"
+Cart Payload Received (message["type"] == "order")
+              │
+              ├──► Calculate Food Subtotal + ₦1,000 Flat Delivery Fee
+              ├──► Cancel any stale pending food orders
+              ├──► Create Order (status="awaiting_dropoff_address", package_image_id="FOOD_ORDER")
+              │
+              ▼ [Message 2: Bot -> Customer]
+Send Detailed Cart Receipt & Request Delivery Address
+              │
+              ▼ Customer sends address text or GPS location pin
+Address Captured (message["type"] in ["text", "location"])
+              │
+              ├──► Update dropoff_location_name (and dropoff_lat/lng if pin)
+              ├──► Transition Order status: "awaiting_dropoff_address" ──► "confirmed"
+              ├──► [Message 3: Bot -> Customer] Confirm address & announce rider search
+              │
+              ▼
+Dispatch to nearby available riders via get_rider()
+              │
+              ▼ Rider accepts order
+              │
+              ▼ [Message 4: Bot -> Customer]
+Customer receives Rider details, live rating, ETA, and 5-digit verification code
+```
+
+#### Key Architecture Principles:
+- **Strict 4-Message Close**: Optimized to complete ordering, fee computation, address capture, and rider dispatch within the 24-hour Meta service window in four customer touchpoints, keeping messaging overhead minimal.
+- **`FOOD_ORDER` Sentinel Marker**: Normal parcel deliveries require a package photo upload. Food orders bypass this requirement automatically by assigning `package_image_id="FOOD_ORDER"`.
+- **Dynamic Cart Parsing**: Intercepts Meta's native `message["type"] == "order"` payload, mapping `product_retailer_id` SKUs to friendly names, calculating item line totals, and appending customer notes (e.g. extra sauce requests).
+- **Graceful Catalog Fallback**: Dispatches organized Multi-Product Messages (`product_list` with category sections); if individual retailer IDs are unapproved or pending in Commerce Manager, immediately falls back to native `catalog_message` ensuring zero failed deliveries.
+
 ---
 
 ## 5. Rider Rating & Performance System

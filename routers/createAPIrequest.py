@@ -99,12 +99,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
         elif message["button"]["payload"] in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
-            food_msg = (
-                "🍔 *InTime Food Ordering*\n\n"
-                "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
-                "In the meantime, you can send packages anytime by tapping *Send an Order*!"
-            )
-            await replyhandler.send_custom_message(sender_wa_number, food_msg, AUTH, GRAPH_URL)
+            await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
 
         elif message["button"]["payload"] in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
@@ -131,12 +126,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         sender_wa_number = message["from"]
 
         if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
-            food_msg = (
-                "🍔 *InTime Food Ordering*\n\n"
-                "Our food ordering service is launching right here! Stay tuned while we connect top restaurants in your city. 🛵💨\n\n"
-                "In the meantime, you can send packages anytime by tapping *Send an Order*!"
-            )
-            await replyhandler.send_custom_message(sender_wa_number, food_msg, AUTH, GRAPH_URL)
+            await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
             return
 
         if button_id.startswith("FIND_ANOTHER_RIDER:"):
@@ -878,13 +868,195 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             case _:
                 print(f"Unknown template_id: {template_id}")
 
-    elif message["type"] == "text":
+    elif message["type"] == "order":
         sender_wa_number = message["from"]
-        text_body = message.get("text", {}).get("body", "")
+        order_data = message.get("order", {})
+        customer_note = order_data.get("text", "").strip()
+        product_items = order_data.get("product_items", [])
+
+        # Ensure customer account exists in database
         contacts = value.get("contacts", [{}])
         profile = contacts[0].get("profile", {}) if contacts else {}
-        username = profile.get("name", "User")
-        await replyhandler.handle_text_message(sender_wa_number, text_body, username, db, AUTH, GRAPH_URL)
+        cust_name = profile.get("name") or "Customer"
+        await createUser(
+            name=cust_name,
+            wa_id=sender_wa_number,
+            display_phone_number=sender_wa_number,
+            phone_number_id=sender_wa_number,
+            db=db
+        )
+
+        friendly_names = {
+            "mg_jollof": "Jollof Rice",
+            "mg_fried_rice": "Fried Rice",
+            "mg_white_rice": "White Rice",
+            "mg_rice_beans": "White Rice & Beans",
+            "mg_plantain": "Fried Plantain (Dodo)",
+            "mg_salad": "Salad with Mayonnaise",
+            "mg_small_beef": "Small Beef",
+            "mg_big_beef": "Big Beef",
+            "mg_water": "Bottle Water",
+            "mg_bottle_water": "Bottle Water",
+            "mg_moi_moi": "Moi Moi",
+            "mg_vegetable": "Vegetable with Kpomo",
+            "mg_rice_beef_sm": "Rice + 2 Beef (Small)",
+            "mg_rice_beef_bg": "Rice + 2 Beef (Big)",
+            "mg_rice_beef_salad_sm": "Rice + Beef + Salad (Small)",
+            "mg_rice_beef_salad_bg": "Rice + Beef + Salad (Big)",
+            "mg_rice_combo_sm": "Rice Combo + Salad + Dodo (Small)",
+            "mg_rice_combo_bg": "Rice Combo + Salad + Dodo (Big)",
+            "mg_rice_beans_sm": "White Rice + Beans Combo (Small)",
+            "mg_rice_beans_bg": "White Rice + Beans Combo (Big)",
+            "mg_rice_egg": "Rice + Boiled Egg",
+            "mg_semo_veg_sm": "Semo + Vegetable + Beef (Small)",
+            "mg_semo_veg_bg": "Semo + Vegetable + Beef (Big)",
+            "mg_semo_ogbono_sm": "Semo + Ogbono/Egusi + Beef (Small)",
+            "mg_semo_ogbono_bg": "Semo + Ogbono/Egusi + Beef (Big)",
+            "mg_fufu_veg_1w": "Fufu (1 wrap) + Vegetable + Beef",
+            "mg_fufu_veg_2w": "Fufu (2 wraps) + Vegetable + Beef",
+            "mg_chicken_sm": "Peppered/Fried Chicken (Small)",
+            "mg_chicken_med": "Peppered/Fried Chicken (Medium)",
+            "mg_chicken_bg": "Peppered/Fried Chicken (Big)",
+            "mg_goat_meat": "Goat Meat (Plate)",
+            "mg_cow_tail": "Cow Tail (Plate)",
+            "mg_boiled_egg": "Boiled Egg",
+            "mg_extra_semo": "Extra Semo",
+            "mg_extra_fufu": "Extra Fufu",
+            "mg_fried_egg": "Fried Egg",
+        }
+
+        total_food_amount = 0.0
+        item_lines = []
+        short_items_list = []
+        for item in product_items:
+            qty = item.get("quantity", 1)
+            raw_price = item.get("item_price", 0)
+            try:
+                price = float(raw_price)
+            except (ValueError, TypeError):
+                price = 0.0
+
+            line_total = price * qty
+            total_food_amount += line_total
+            sku = item.get("product_retailer_id", "")
+            item_name = friendly_names.get(sku, sku.replace("mg_", "").replace("_", " ").title())
+            item_lines.append(f"• {qty}x *{item_name}* (₦{int(line_total):,})")
+            short_items_list.append(f"{qty}x {item_name}")
+
+        delivery_fee = 1000.0
+        grand_total = total_food_amount + delivery_fee
+        package_desc = f"Food Order ({', '.join(short_items_list)})"
+        if customer_note:
+            package_desc += f" | Note: {customer_note}"
+
+        # Cancel any previous unfulfilled or pending food orders for this user
+        possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.sender_wa_number.in_(possible_numbers))
+            .where(models.Orders.status.in_(["confirmed", "awaiting_dropoff_address"]))
+            .where(models.Orders.delivery_progression_status != "package_delivered")
+            .values(status="cancelled")
+        )
+        await db.commit()
+
+        new_food_order = models.Orders(
+            status="awaiting_dropoff_address",
+            sender_wa_number=sender_wa_number,
+            recipient_phone_number=sender_wa_number,
+            pickup_location_name="Madam G Kitchen, Lagos",
+            dropoff_location_name=None,
+            package_description=package_desc,
+            customer_initial_offered_price=str(int(grand_total)),
+            final_price_agreed_by_cust_and_rider=str(int(grand_total)),
+            package_image_id="FOOD_ORDER",
+            is_drug=False,
+            is_urgent=True,
+            is_priority=True
+        )
+        db.add(new_food_order)
+        await db.commit()
+        await db.refresh(new_food_order)
+
+        receipt_items = "\n".join(item_lines) if item_lines else "• Fresh meals from Madam G"
+        note_display = f"\n📝 *Special Note:* _{customer_note}_" if customer_note else ""
+        cart_receipt_msg = (
+            f"🍽️ *Order Received from Madam G!* 🍲✨\n\n"
+            f"📋 *Your Selection:*\n{receipt_items}{note_display}\n\n"
+            f"💵 *Food Total:* ₦{int(total_food_amount):,}\n"
+            f"🛵 *Delivery Fee:* ₦{int(delivery_fee):,}\n"
+            f"💳 *Grand Total:* *₦{int(grand_total):,}*\n\n"
+            f"📍 *Where should we deliver your hot meal?*\n\n"
+            f"Please reply right here with your *delivery address* (e.g. *14 Admiralty Way, Lekki* or send your location pin 📍)."
+        )
+        await replyhandler.send_custom_message(sender_wa_number, cart_receipt_msg, AUTH, GRAPH_URL)
+
+    elif message["type"] in ["text", "location"]:
+        sender_wa_number = message["from"]
+
+        # Check if customer has a pending food order waiting for delivery address
+        possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
+        pending_food_res = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.sender_wa_number.in_(possible_numbers))
+            .where(models.Orders.status == "awaiting_dropoff_address")
+            .where(models.Orders.package_image_id == "FOOD_ORDER")
+            .where(models.Orders.sla_expires_by > datetime.now(UTC))
+            .order_by(models.Orders.created_at.desc())
+        )
+        pending_food_order = pending_food_res.scalars().first()
+
+        if pending_food_order:
+            if message["type"] == "location":
+                loc = message.get("location", {})
+                address_text = loc.get("address") or loc.get("name") or f"Location ({loc.get('latitude')}, {loc.get('longitude')})"
+                pending_food_order.dropoff_lat = loc.get("latitude")
+                pending_food_order.dropoff_lng = loc.get("longitude")
+            else:
+                address_text = message.get("text", {}).get("body", "").strip()
+
+            pending_food_order.dropoff_location_name = address_text or "Customer Address"
+            pending_food_order.status = "confirmed"
+            await db.commit()
+            await db.refresh(pending_food_order)
+
+            # Confirm address to customer and dispatch riders
+            order_price_disp = int(float(pending_food_order.customer_initial_offered_price or 0))
+            dispatch_confirm_msg = (
+                f"✅ *Delivery Address Saved!* 📍\n\n"
+                f"Order: *{pending_food_order.order_number}*\n"
+                f"🏁 Drop-off: *{address_text}*\n"
+                f"💳 Total to Pay: *₦{order_price_disp:,}*\n\n"
+                f"🛵 *Searching for nearby InTime riders...*\n"
+                f"Madam G is preparing your meal! We'll notify you as soon as a rider accepts. 🍲💨"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, dispatch_confirm_msg, AUTH, GRAPH_URL)
+
+            order_details = {
+                "package_description": pending_food_order.package_description,
+                "pick_up_location": pending_food_order.pickup_location_name,
+                "drop_off_location": pending_food_order.dropoff_location_name,
+                "offered_price": pending_food_order.customer_initial_offered_price,
+                "order_number": pending_food_order.order_number,
+                "image_id": pending_food_order.package_image_id,
+                "is_priority": pending_food_order.is_priority,
+                "is_drug": pending_food_order.is_drug,
+                "is_urgent": pending_food_order.is_urgent
+            }
+            await replyhandler.get_rider(
+                sender_wa_number=sender_wa_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL,
+                order_details=order_details,
+                db=db
+            )
+        else:
+            if message["type"] == "text":
+                text_body = message.get("text", {}).get("body", "")
+                contacts = value.get("contacts", [{}])
+                profile = contacts[0].get("profile", {}) if contacts else {}
+                username = profile.get("name", "User")
+                await replyhandler.handle_text_message(sender_wa_number, text_body, username, db, AUTH, GRAPH_URL)
 
     elif message["type"] == "image":
         sender_wa_number = message["from"]
