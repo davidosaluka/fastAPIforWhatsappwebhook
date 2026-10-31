@@ -327,6 +327,18 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
                 response = await client.post(graph_url, json=req_body, headers=headers)
                 print("Default template (no components fallback) response:", response.status_code, response.text)
 
+        # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
+        if response.status_code != 200:
+            print("Default template failed or not found on WABA, sending text welcome fallback...")
+            welcome_text = (
+                f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
+                f"How can we help you today?\n\n"
+                f"• Reply *Send an Order* to book a package delivery\n"
+                f"• Reply *Order Food* to view the Madam G food menu\n"
+                f"• Reply *Contact Support* if you need assistance"
+            )
+            await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
+
     return response
 
 async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
@@ -2344,6 +2356,21 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     if any(trigger in lower_clean for trigger in food_triggers):
         await send_food_catalog_menu(sender_wa_number, auth, graph_url)
         return
+
+    # --- 0a2. RIDER CHECK-IN TRIGGER ---
+    checkin_triggers = ["i'm available", "im available", "i am available", "available", "check in", "checking in", "check-in", "online", "ready for orders"]
+    if lower_clean in checkin_triggers or any(lower_clean == t for t in checkin_triggers):
+        possible_numbers = get_phone_variants(sender_wa_number)
+        rider_res = await db.execute(
+            select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
+        )
+        rider = rider_res.scalars().first()
+        if rider:
+            rider.availability_status = "available"
+            await db.commit()
+            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
+            await send_custom_message(sender_wa_number, custom_message, auth, graph_url)
+            return
 
     # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
     rider_order = await get_active_rider_order(sender_wa_number, db)

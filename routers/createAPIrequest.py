@@ -27,11 +27,32 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 router = APIRouter()
 VERIFY_TOKEN =  os.getenv("VERIFY_TOKEN")
-AUTH = os.getenv("AUTHORIZATION")
-GRAPH_URL = os.getenv("GRAPH_URL")
+def get_graph_url() -> str:
+    url = (os.getenv("GRAPH_URL") or "").strip()
+    if url.startswith("GRAPH_URL="):
+        url = url[len("GRAPH_URL="):].strip()
+    url = url.strip("\"'")
+    if not url:
+        phone_id = os.getenv("PHONE_NUMBER_ID", "1089747250880518")
+        return f"https://graph.facebook.com/v21.0/{phone_id}/messages"
+    if url.isdigit():
+        return f"https://graph.facebook.com/v21.0/{url}/messages"
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return f"https://{url}"
+    return url
+
+def get_auth_token() -> str:
+    auth = (os.getenv("AUTHORIZATION") or "").strip()
+    if auth.startswith("Bearer "):
+        auth = auth[len("Bearer "):].strip()
+    if auth.startswith("AUTHORIZATION="):
+        auth = auth[len("AUTHORIZATION="):].strip()
+    return auth.strip("\"'")
 
 @router.post("", status_code=status.HTTP_200_OK)
 async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSession, Depends(get_db)]):
+    AUTH = get_auth_token()
+    GRAPH_URL = get_graph_url()
     try:
         entry = apirequest.entry[0] if apirequest.entry else {}
         changes = entry.get("changes", [{}])[0]
@@ -54,6 +75,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
     message = _response[0]
     wamid = message.get("id")
+    sender_wa_number = message.get("from")
+    logger.info(f"📩 Webhook received: type={message.get('type')}, from={sender_wa_number}, wamid={wamid}")
 
     newAPIRequest = models.apiRequest(
         method="POST",
@@ -88,20 +111,24 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
     if message["type"] == "button":
         sender_wa_number = message["from"]
-        if message["button"]["payload"] == "Send an Order":
+        button_payload = (message.get("button", {}).get("payload") or "").strip()
+        button_text = (message.get("button", {}).get("text") or "").strip()
+        button_val = button_payload or button_text
+
+        if button_val == "Send an Order":
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
             if is_existing_user:
                 await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
             else:
                 await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
-        elif message["button"]["payload"] == "Contact Support":
+        elif button_val == "Contact Support":
             custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
-        elif message["button"]["payload"] in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
+        elif button_val in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
             await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
 
-        elif message["button"]["payload"] in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
+        elif button_val in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
             if is_existing_user:
                 await replyhandler.send_delete_account_confirmation(sender_wa_number, AUTH, GRAPH_URL, db)
@@ -109,7 +136,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 custom_message = "You currently do not have a registered account with InTime."
                 await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
-        elif message["button"]["payload"] == "I'm Available":
+        elif button_val.lower() in ["i'm available", "im available", "i am available", "available"]:
             rider_phoneno = message["from"]
             possible_numbers = replyhandler.get_phone_variants(rider_phoneno)
             await db.execute(
@@ -123,7 +150,20 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         
     if message["type"] == "interactive" and message["interactive"]["type"] == "button_reply":
         button_id = message["interactive"]["button_reply"].get("id", "")
+        button_title = message["interactive"]["button_reply"].get("title", "")
         sender_wa_number = message["from"]
+
+        if button_id.lower() in ["i'm available", "im available", "i am available", "available"] or button_title.lower() in ["i'm available", "im available", "i am available", "available"]:
+            possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
+            await db.execute(
+                update(models.Riders)
+                .where(models.Riders.rider_wa_number.in_(possible_numbers))
+                .values(availability_status="available")
+            )
+            await db.commit()
+            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
+            await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
+            return
 
         if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
             await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
