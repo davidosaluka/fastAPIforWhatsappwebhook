@@ -473,7 +473,11 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         "Content-Type": "application/json"
     }
 
-    # Attempt 1: Native Catalog Message (Renders interactive "View catalog" button)
+    # Real retailer IDs verified from Meta Commerce Manager catalog (1515700860395437):
+    # Standalone items: mg_white_rice_beans, mg_fried_jollof, mg_jollof, mg_fried_rice, mg_white_rice, mg_coke, mg_salad
+    thumbnail_id = "mg_white_rice_beans"
+
+    # Attempt 1: Native Catalog Message with valid thumbnail anchor
     req_body_catalog = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -492,17 +496,44 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
                 "text": "Delivered hot & fast by InTime Riders ⚡"
             },
             "action": {
-                "name": "catalog_message"
+                "name": "catalog_message",
+                "parameters": {
+                    "thumbnail_product_retailer_id": thumbnail_id
+                }
             }
         }
     }
 
-    print(f"📦 Dispatching native food catalog message to {target_number}...")
+    print(f"📦 Dispatching native food catalog message to {target_number} (thumbnail: {thumbnail_id})...")
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body_catalog, headers=headers)
         print("Native food catalog_message response:", response.status_code, response.text)
 
-        # Attempt 2: If catalog_message fails, try Multi-Product Message (product_list)
+        # Attempt 1b: If thumbnail parameter rejected, try catalog_message without parameters
+        if response.status_code != 200 and "thumbnail" in response.text.lower():
+            print("Retrying catalog_message without thumbnail parameter...")
+            req_body_catalog_plain = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": target_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "catalog_message",
+                    "body": {
+                        "text": (
+                            "🍽️ *Welcome to Madam G on InTime!*\n\n"
+                            "Tap *View catalog* below to browse our menu, add dishes to your cart, and place your order! 🍲🛵💨"
+                        )
+                    },
+                    "action": {
+                        "name": "catalog_message"
+                    }
+                }
+            }
+            response = await client.post(graph_url, json=req_body_catalog_plain, headers=headers)
+            print("Native food catalog_message (plain) response:", response.status_code, response.text)
+
+        # Attempt 2: If catalog_message fails, try Multi-Product Message (product_list) with real catalog SKUs
         if response.status_code != 200:
             print(f"Retrying with Multi-Product Message (Catalog ID: {cat_id})...")
             req_body_mpm = {
@@ -530,43 +561,37 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
                         "catalog_id": cat_id,
                         "sections": [
                             {
-                                "title": "🍚 Rice Meals & Combos",
+                                "title": "🍚 Rice Meals",
                                 "product_items": [
-                                    {"product_retailer_id": "mg_rice_beef_sm"},
-                                    {"product_retailer_id": "mg_rice_beef_bg"},
-                                    {"product_retailer_id": "mg_rice_beef_salad_sm"},
-                                    {"product_retailer_id": "mg_rice_combo_sm"},
-                                    {"product_retailer_id": "mg_rice_beans_sm"},
-                                    {"product_retailer_id": "mg_rice_egg"}
+                                    {"product_retailer_id": "mg_jollof"},
+                                    {"product_retailer_id": "mg_fried_rice"},
+                                    {"product_retailer_id": "mg_fried_jollof"},
+                                    {"product_retailer_id": "mg_white_rice"},
+                                    {"product_retailer_id": "mg_white_rice_beans"}
                                 ]
                             },
                             {
                                 "title": "🥘 Swallow & Soups",
                                 "product_items": [
-                                    {"product_retailer_id": "mg_semo_veg_sm"},
-                                    {"product_retailer_id": "mg_semo_ogbono_sm"},
-                                    {"product_retailer_id": "mg_fufu_veg_1w"},
-                                    {"product_retailer_id": "mg_fufu_veg_2w"}
+                                    {"product_retailer_id": "mg_semo"},
+                                    {"product_retailer_id": "mg_fufu"},
+                                    {"product_retailer_id": "mg_veggies_efo"},
+                                    {"product_retailer_id": "mg_egusi"},
+                                    {"product_retailer_id": "mg_ogbono"}
                                 ]
                             },
                             {
-                                "title": "🍗 Fresh Proteins",
+                                "title": "🍗 Proteins & Drinks",
                                 "product_items": [
-                                    {"product_retailer_id": "mg_chicken_sm"},
-                                    {"product_retailer_id": "mg_chicken_med"},
-                                    {"product_retailer_id": "mg_chicken_bg"},
+                                    {"product_retailer_id": "mg_chicken_small"},
+                                    {"product_retailer_id": "mg_chicken_medium"},
+                                    {"product_retailer_id": "mg_chicken_big"},
+                                    {"product_retailer_id": "mg_beef_one"},
+                                    {"product_retailer_id": "mg_small_beef_two"},
+                                    {"product_retailer_id": "mg_big_beef_two"},
                                     {"product_retailer_id": "mg_goat_meat"},
-                                    {"product_retailer_id": "mg_cow_tail"}
-                                ]
-                            },
-                            {
-                                "title": "➕ Extras & Sides",
-                                "product_items": [
                                     {"product_retailer_id": "mg_plantain"},
-                                    {"product_retailer_id": "mg_moi_moi"},
-                                    {"product_retailer_id": "mg_salad"},
-                                    {"product_retailer_id": "mg_small_beef"},
-                                    {"product_retailer_id": "mg_big_beef"}
+                                    {"product_retailer_id": "mg_coke"}
                                 ]
                             }
                         ]
