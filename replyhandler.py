@@ -281,9 +281,31 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
     flow_token_data = json.dumps({"action": "food_order_address", "sender_wa_number": target_number})
 
     # Permutations of components to match Meta template configurations:
-    # default_message_ has {{1}} in the body (Welcome Back {{1}}!) and may have a Flow button
+    # default_message_ has {{1}} in the HEADER (Welcome Back {{1}}!) and the 3rd button (index 2) is a Flow button:
     component_variations = [
-        # Variation 1: Body parameter + Flow button parameter
+        # Variation 1 (Exact match for screenshot): Header variable + Flow button at index 2
+        [
+            {
+                "type": "header",
+                "parameters": [{"type": "text", "text": display_name}]
+            },
+            {
+                "type": "button",
+                "sub_type": "flow",
+                "index": "2",
+                "parameters": [
+                    {"type": "action", "action": {"flow_token": flow_token_data}}
+                ]
+            }
+        ],
+        # Variation 2: Header variable only (if Meta template has static flow definition)
+        [
+            {
+                "type": "header",
+                "parameters": [{"type": "text", "text": display_name}]
+            }
+        ],
+        # Variation 3: Body variable + Flow button at index 0 (legacy templates)
         [
             {
                 "type": "body",
@@ -298,21 +320,14 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
                 ]
             }
         ],
-        # Variation 2: Body parameter only
+        # Variation 4: Body variable only (legacy templates)
         [
             {
                 "type": "body",
                 "parameters": [{"type": "text", "text": display_name}]
             }
         ],
-        # Variation 3: Header parameter
-        [
-            {
-                "type": "header",
-                "parameters": [{"type": "text", "text": display_name}]
-            }
-        ],
-        # Variation 4: No components
+        # Variation 5: No components
         []
     ]
 
