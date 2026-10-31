@@ -20,6 +20,7 @@ FLOW_INCREASE_FARE_ID = os.getenv("FLOW_INCREASE_FARE_ID", "950647507961316")
 FLOW_RIDER_ACCEPT_ID = os.getenv("FLOW_RIDER_ACCEPT_ID", "1513067607105184")
 FLOW_NEGOTIATE_ID = os.getenv("FLOW_NEGOTIATE_ID", "1448553113617488")
 FLOW_COUNTER_OFFER_ID = os.getenv("FLOW_COUNTER_OFFER_ID", "949497837687906")
+FLOW_FOOD_ORDER_ID = os.getenv("FLOW_FOOD_ORDER_ID", "")
 
 # ---------------------------------------------------------------------------
 # In-memory chat history store for Groq multi-turn conversations.
@@ -276,76 +277,93 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
         "Content-Type": "application/json"
     }
 
-    # Attempt 1: Header parameter (standard Meta template configuration with {{1}} in header)
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "template",
-        "template": {
-            "name": template_name,
-            "language": { "code": "en" },
-            "components": [
-                {
-                    "type": "header",
-                    "parameters": [
-                        {
-                            "type": "text",
-                            "text": display_name
-                        }
-                    ]
-                }
-            ]
-        }
-    }
+    # Flow token payload for templates with Flow buttons
+    flow_token_data = json.dumps({"action": "food_order_address", "sender_wa_number": target_number})
 
-    print(f"📦 Dispatched {template_name} template to {target_number} (name: '{display_name}')...")
+    # Permutations of components to match Meta template configurations:
+    # default_message_ has {{1}} in the body (Welcome Back {{1}}!) and may have a Flow button
+    component_variations = [
+        # Variation 1: Body parameter + Flow button parameter
+        [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": display_name}]
+            },
+            {
+                "type": "button",
+                "sub_type": "flow",
+                "index": "0",
+                "parameters": [
+                    {"type": "action", "action": {"flow_token": flow_token_data}}
+                ]
+            }
+        ],
+        # Variation 2: Body parameter only
+        [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": display_name}]
+            }
+        ],
+        # Variation 3: Header parameter
+        [
+            {
+                "type": "header",
+                "parameters": [{"type": "text", "text": display_name}]
+            }
+        ],
+        # Variation 4: No components
+        []
+    ]
+
+    names_to_try = [template_name]
+    if template_name != "default_message":
+        names_to_try.append("default_message")
+
+    languages_to_try = ["en_US", "en"]
+
+    response = None
     async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(f"Default template ({template_name}) response:", response.status_code, response.text)
-
-        # Fallback 1: If parameter mismatch (#132000), try with body parameter instead of header
-        if response.status_code != 200 and "132000" in response.text:
-            print(f"Retrying {template_name} with body component parameter...")
-            req_body["template"]["components"] = [
-                {
-                    "type": "body",
-                    "parameters": [
-                        {
-                            "type": "text",
-                            "text": display_name
+        for t_name in names_to_try:
+            for lang in languages_to_try:
+                for comp in component_variations:
+                    req_body = {
+                        "messaging_product": "whatsapp",
+                        "recipient_type": "individual",
+                        "to": target_number,
+                        "type": "template",
+                        "template": {
+                            "name": t_name,
+                            "language": {"code": lang}
                         }
-                    ]
-                }
-            ]
-            response = await client.post(graph_url, json=req_body, headers=headers)
-            print(f"Default template ({template_name} body fallback) response:", response.status_code, response.text)
+                    }
+                    if comp:
+                        req_body["template"]["components"] = comp
 
-            # Fallback 2: If still parameter mismatch (#132000), try with no components (fixed text template)
-            if response.status_code != 200 and "132000" in response.text:
-                print(f"Retrying {template_name} with no components (fixed text)...")
-                req_body["template"].pop("components", None)
-                response = await client.post(graph_url, json=req_body, headers=headers)
-                print(f"Default template ({template_name} no components fallback) response:", response.status_code, response.text)
-
-        # Fallback 2b: If template name not found (#132001) and we used default_message_, try default_message
-        if response.status_code != 200 and ("132001" in response.text or "does not exist" in response.text.lower()) and template_name != "default_message":
-            print("Trying fallback template 'default_message'...")
-            req_body["template"]["name"] = "default_message"
-            response = await client.post(graph_url, json=req_body, headers=headers)
-            print("Fallback template (default_message) response:", response.status_code, response.text)
+                    try:
+                        res = await client.post(graph_url, json=req_body, headers=headers)
+                        print(f"Template attempt ({t_name}, {lang}, comp_len={len(comp)}) -> {res.status_code}: {res.text}")
+                        if res.status_code == 200:
+                            print(f"✅ Dispatched template '{t_name}' ({lang}) successfully: 200 OK")
+                            return res
+                        else:
+                            if "132001" in res.text or "does not exist" in res.text.lower():
+                                # Template does not exist under this name or language code, skip remaining component tries
+                                break
+                    except Exception as e:
+                        print(f"Error trying template {t_name}: {e}")
+                        continue
 
         # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
-        if response.status_code != 200:
-            print("Default template failed or not found on WABA, sending text welcome fallback...")
-            welcome_text = (
-                f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
-                f"How can we help you today?\n\n"
-                f"• Reply *Send an Order* to book a package delivery\n"
-                f"• Reply *Order Food* to view the Madam G food menu\n"
-                f"• Reply *Contact Support* if you need assistance"
-            )
-            await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
+        print("Default template failed or not found on WABA, sending text welcome fallback...")
+        welcome_text = (
+            f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
+            f"How can we help you today?\n\n"
+            f"• Reply *Send an Order* to book a package delivery\n"
+            f"• Reply *Order Food* to view the Madam G food menu\n"
+            f"• Reply *Contact Support* if you need assistance"
+        )
+        await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
 
     return response
 
@@ -396,6 +414,34 @@ async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
         response = await client.post(graph_url, json=req_body, headers=headers)
         print("Rider check-in template dispatched:", response.status_code, response.text)
     return
+
+
+async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Dispatches the food_order_address WhatsApp Flow to let customer pick restaurant & enter delivery address.
+    Falls back to food catalog menu if flow ID is not configured yet.
+    """
+    flow_id = os.getenv("FLOW_FOOD_ORDER_ID", "").strip()
+    if not flow_id:
+        print("ℹ️ FLOW_FOOD_ORDER_ID is not configured yet. Falling back to food catalog menu...")
+        await send_food_catalog_menu(sender_wa_number, auth, graph_url)
+        return
+
+    flow_token = {
+        "action": "food_order_address",
+        "sender_wa_number": sender_wa_number
+    }
+    await send_custom_flow(
+        wa_number=sender_wa_number,
+        flow_token=flow_token,
+        message="Please select your restaurant and confirm your delivery address to browse the menu and order 🍲🛵💨",
+        header="Order Food 🍲",
+        flow_id=flow_id,
+        flow_cta="Select Address",
+        screen_name="Your Address",
+        auth=auth,
+        graph_url=graph_url
+    )
 
 
 async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: str, catalog_id: str = None):
@@ -2362,7 +2408,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
     # --- 0a1. FOOD ORDER TRIGGER ---
     food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal", "madam g", "menu", "food menu"]
     if any(trigger in lower_clean for trigger in food_triggers):
-        await send_food_catalog_menu(sender_wa_number, auth, graph_url)
+        await send_food_order_flow(sender_wa_number, auth, graph_url)
         return
 
     # --- 0a2. RIDER CHECK-IN TRIGGER ---

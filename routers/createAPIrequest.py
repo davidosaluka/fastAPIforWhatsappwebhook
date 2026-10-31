@@ -126,7 +126,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
         elif button_val in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
-            await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
+            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL)
 
         elif button_val in ["Delete my Account", "Delete My Account", "Delete Account", "Delete my data", "Delete Data"]:
             is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
@@ -166,7 +166,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             return
 
         if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
-            await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
+            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL)
             return
 
         if button_id.startswith("FIND_ANOTHER_RIDER:"):
@@ -429,6 +429,74 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             flow_token = raw_token
         else:
             flow_token = {}
+
+        # --- FOOD FLOW SUBMISSION INTERCEPTOR (food_order_address) ---
+        food_action = flow_token.get("action") if isinstance(flow_token, dict) else ""
+        is_food_flow = (
+            food_action == "food_order_address" or
+            json_response.get("flow_name") == "food_order_address" or
+            "restaurant" in str(json_response).lower() or
+            json_response.get("screen_name") == "Your Address" or
+            "Your Address" in json_response or
+            (any("address" in str(k).lower() for k in json_response.keys()) and not json_response.get("pickup_address") and not json_response.get("screen_for_pickup_location_prompt"))
+        )
+        if is_food_flow:
+            raw_address = (
+                json_response.get("address") or 
+                json_response.get("delivery_address") or 
+                json_response.get("dropoff_address") or 
+                json_response.get("street_address") or 
+                json_response.get("Your Address") or 
+                json_response.get("your_address") or
+                next((str(v) for k, v in json_response.items() if "address" in str(k).lower() and v), "Customer Address")
+            )
+            selected_restaurant = (
+                json_response.get("restaurant") or 
+                json_response.get("selected_restaurant") or 
+                "Madam G Kitchen"
+            )
+
+            sender_wa_number = message["from"]
+            possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
+            pending_food_res = await db.execute(
+                select(models.Orders)
+                .where(models.Orders.sender_wa_number.in_(possible_numbers))
+                .where(models.Orders.package_image_id == "FOOD_ORDER")
+                .where(models.Orders.status == "awaiting_cart_selection")
+                .order_by(models.Orders.created_at.desc())
+            )
+            pending_order = pending_food_res.scalars().first()
+
+            if not pending_order:
+                pending_order = models.Orders(
+                    sender_wa_number=sender_wa_number,
+                    recipient_phone_number=sender_wa_number,
+                    pickup_location_name=selected_restaurant,
+                    dropoff_location_name=raw_address,
+                    package_description=f"Food Order from {selected_restaurant}",
+                    package_image_id="FOOD_ORDER",
+                    status="awaiting_cart_selection",
+                    customer_initial_offered_price="1000",
+                    is_urgent=True,
+                    sla_expires_by=datetime.now(UTC) + timedelta(minutes=45)
+                )
+                db.add(pending_order)
+            else:
+                pending_order.dropoff_location_name = raw_address
+                pending_order.pickup_location_name = selected_restaurant
+
+            await db.commit()
+
+            confirm_msg = (
+                f"✅ *Restaurant & Delivery Address Saved!* 📍\n\n"
+                f"🍽️ Restaurant: *{selected_restaurant}*\n"
+                f"🏁 Drop-off: *{raw_address}*\n\n"
+                f"Explore our menu below, add dishes to your cart, and tap *Send Cart* to place your order! 🍲🛵💨"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, confirm_msg, AUTH, GRAPH_URL)
+            await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
+            return {"status": "food_order_address_saved"}
+
         order_number = flow_token.get("order_number") or json_response.get("order_number") or json_response.get("order_id")
         rider_wa_number = flow_token.get("rider_wa_number")
         
@@ -1000,12 +1068,27 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         )
         await db.commit()
 
+        # Check if customer already provided their delivery address via food_order_address flow
+        flow_addr_res = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.sender_wa_number.in_(possible_numbers))
+            .where(models.Orders.package_image_id == "FOOD_ORDER")
+            .where(models.Orders.status == "awaiting_cart_selection")
+            .where(models.Orders.dropoff_location_name.is_not(None))
+            .order_by(models.Orders.created_at.desc())
+        )
+        flow_addr_order = flow_addr_res.scalars().first()
+        prefilled_address = flow_addr_order.dropoff_location_name if flow_addr_order else None
+        prefilled_pickup = flow_addr_order.pickup_location_name if flow_addr_order else "Madam G Kitchen, Lagos"
+
+        initial_status = "confirmed" if prefilled_address else "awaiting_dropoff_address"
+
         new_food_order = models.Orders(
-            status="awaiting_dropoff_address",
+            status=initial_status,
             sender_wa_number=sender_wa_number,
             recipient_phone_number=sender_wa_number,
-            pickup_location_name="Madam G Kitchen, Lagos",
-            dropoff_location_name=None,
+            pickup_location_name=prefilled_pickup,
+            dropoff_location_name=prefilled_address,
             package_description=package_desc,
             customer_initial_offered_price=str(int(grand_total)),
             final_price_agreed_by_cust_and_rider=str(int(grand_total)),
@@ -1020,16 +1103,50 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         receipt_items = "\n".join(item_lines) if item_lines else "• Fresh meals from Madam G"
         note_display = f"\n📝 *Special Note:* _{customer_note}_" if customer_note else ""
-        cart_receipt_msg = (
-            f"🍽️ *Order Received from Madam G!* 🍲✨\n\n"
-            f"📋 *Your Selection:*\n{receipt_items}{note_display}\n\n"
-            f"💵 *Food Total:* ₦{int(total_food_amount):,}\n"
-            f"🛵 *Delivery Fee:* ₦{int(delivery_fee):,}\n"
-            f"💳 *Grand Total:* *₦{int(grand_total):,}*\n\n"
-            f"📍 *Where should we deliver your hot meal?*\n\n"
-            f"Please reply right here with your *delivery address* (e.g. *14 Admiralty Way, Lekki* or send your location pin 📍)."
-        )
-        await replyhandler.send_custom_message(sender_wa_number, cart_receipt_msg, AUTH, GRAPH_URL)
+
+        if prefilled_address:
+            # Address already provided via Flow! Confirm order and immediately dispatch riders
+            cart_receipt_msg = (
+                f"🍽️ *Order Confirmed from Madam G!* 🍲✨\n\n"
+                f"📋 *Your Selection:*\n{receipt_items}{note_display}\n\n"
+                f"🏁 *Delivery Address:* *{prefilled_address}*\n"
+                f"💵 *Food Total:* ₦{int(total_food_amount):,}\n"
+                f"🛵 *Delivery Fee:* ₦{int(delivery_fee):,}\n"
+                f"💳 *Grand Total:* *₦{int(grand_total):,}*\n\n"
+                f"🛵 *Searching for nearby InTime riders...*\n"
+                f"Madam G is preparing your meal! We'll notify you as soon as a rider accepts. 🍲💨"
+            )
+            await replyhandler.send_custom_message(sender_wa_number, cart_receipt_msg, AUTH, GRAPH_URL)
+
+            order_details = {
+                "package_description": new_food_order.package_description,
+                "pick_up_location": new_food_order.pickup_location_name,
+                "drop_off_location": new_food_order.dropoff_location_name,
+                "offered_price": new_food_order.customer_initial_offered_price,
+                "order_number": new_food_order.order_number,
+                "image_id": new_food_order.package_image_id,
+                "is_priority": new_food_order.is_priority,
+                "is_drug": new_food_order.is_drug,
+                "is_urgent": new_food_order.is_urgent
+            }
+            await replyhandler.get_rider(
+                sender_wa_number=sender_wa_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL,
+                order_details=order_details,
+                db=db
+            )
+        else:
+            cart_receipt_msg = (
+                f"🍽️ *Order Received from Madam G!* 🍲✨\n\n"
+                f"📋 *Your Selection:*\n{receipt_items}{note_display}\n\n"
+                f"💵 *Food Total:* ₦{int(total_food_amount):,}\n"
+                f"🛵 *Delivery Fee:* ₦{int(delivery_fee):,}\n"
+                f"💳 *Grand Total:* *₦{int(grand_total):,}*\n\n"
+                f"📍 *Where should we deliver your hot meal?*\n\n"
+                f"Please reply right here with your *delivery address* (e.g. *14 Admiralty Way, Lekki* or send your location pin 📍)."
+            )
+            await replyhandler.send_custom_message(sender_wa_number, cart_receipt_msg, AUTH, GRAPH_URL)
 
     elif message["type"] in ["text", "location"]:
         sender_wa_number = message["from"]
