@@ -2286,7 +2286,7 @@ async def classify_message_intent(message_text: str) -> str:
         'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
     )
     allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "DELETE_ACCOUNT", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
-    models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"]
+    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
     
     try:
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
@@ -2784,7 +2784,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
         messages_payload.append({"role": "user", "content": text_body})
 
         groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-        models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"]
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
         ai_reply = None
         for model_name in models_to_try:
