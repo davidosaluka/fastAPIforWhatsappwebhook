@@ -266,9 +266,10 @@ async def show_typing_indicator(message_id: str, auth: str, graph_url):
 
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
-    """Sends the official default_message template with quick-reply / flow action buttons."""
+    """Sends the official default_message_ template with quick-reply / flow action buttons."""
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
+    template_name = os.getenv("DEFAULT_MESSAGE_TEMPLATE", "default_message_").strip()
 
     headers = {
         "Authorization": f"Bearer {auth}",
@@ -282,7 +283,7 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
         "to": target_number,
         "type": "template",
         "template": {
-            "name": "default_message",
+            "name": template_name,
             "language": { "code": "en" },
             "components": [
                 {
@@ -298,14 +299,14 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
         }
     }
 
-    print(f"📦 Dispatched default_message template to {target_number} (name: '{display_name}')...")
+    print(f"📦 Dispatched {template_name} template to {target_number} (name: '{display_name}')...")
     async with httpx.AsyncClient() as client:
         response = await client.post(graph_url, json=req_body, headers=headers)
-        print("Default template response:", response.status_code, response.text)
+        print(f"Default template ({template_name}) response:", response.status_code, response.text)
 
         # Fallback 1: If parameter mismatch (#132000), try with body parameter instead of header
         if response.status_code != 200 and "132000" in response.text:
-            print("Retrying default_message with body component parameter...")
+            print(f"Retrying {template_name} with body component parameter...")
             req_body["template"]["components"] = [
                 {
                     "type": "body",
@@ -318,14 +319,21 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
                 }
             ]
             response = await client.post(graph_url, json=req_body, headers=headers)
-            print("Default template (body fallback) response:", response.status_code, response.text)
+            print(f"Default template ({template_name} body fallback) response:", response.status_code, response.text)
 
             # Fallback 2: If still parameter mismatch (#132000), try with no components (fixed text template)
             if response.status_code != 200 and "132000" in response.text:
-                print("Retrying default_message with no components (fixed text)...")
+                print(f"Retrying {template_name} with no components (fixed text)...")
                 req_body["template"].pop("components", None)
                 response = await client.post(graph_url, json=req_body, headers=headers)
-                print("Default template (no components fallback) response:", response.status_code, response.text)
+                print(f"Default template ({template_name} no components fallback) response:", response.status_code, response.text)
+
+        # Fallback 2b: If template name not found (#132001) and we used default_message_, try default_message
+        if response.status_code != 200 and ("132001" in response.text or "does not exist" in response.text.lower()) and template_name != "default_message":
+            print("Trying fallback template 'default_message'...")
+            req_body["template"]["name"] = "default_message"
+            response = await client.post(graph_url, json=req_body, headers=headers)
+            print("Fallback template (default_message) response:", response.status_code, response.text)
 
         # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
         if response.status_code != 200:
