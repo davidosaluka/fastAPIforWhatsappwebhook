@@ -473,46 +473,53 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         "Content-Type": "application/json"
     }
 
-    # Real retailer IDs verified from Meta Commerce Manager catalog (1515700860395437):
-    # Standalone items: mg_white_rice_beans, mg_fried_jollof, mg_jollof, mg_fried_rice, mg_white_rice, mg_coke, mg_salad
-    thumbnail_id = "mg_white_rice_beans"
+    # Ensure WhatsApp Commerce Settings & Catalog linkage on Meta
+    async with httpx.AsyncClient() as client:
+        try:
+            phone_number_id = graph_url.split("/v21.0/")[1].split("/")[0] if "/v21.0/" in graph_url else ""
+            waba_id = os.getenv("WABA_ID", "793614220010952")
+            if phone_number_id:
+                comm_url = f"https://graph.facebook.com/v21.0/{phone_number_id}/whatsapp_commerce_settings"
+                comm_res = await client.post(comm_url, params={"is_catalog_visible": "true", "is_cart_enabled": "true"}, headers=headers)
+                print("whatsapp_commerce_settings sync:", comm_res.status_code, comm_res.text)
+            if waba_id:
+                cat_url = f"https://graph.facebook.com/v21.0/{waba_id}/product_catalogs"
+                cat_res = await client.post(cat_url, data={"catalog_id": cat_id}, headers={"Authorization": f"Bearer {auth}"})
+                print("waba product_catalogs sync:", cat_res.status_code, cat_res.text)
+        except Exception as e:
+            print("Catalog auto-sync notice:", e)
 
-    # Attempt 1: Native Catalog Message with valid thumbnail anchor
-    req_body_catalog = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "catalog_message",
-            "body": {
-                "text": (
-                    "🍽️ *Welcome to Madam G on InTime!*\n\n"
-                    "Tap *View catalog* below to browse all our fresh meals, drinks, and extras. "
-                    "Add items to your cart and send your order when ready! 🍲🛵💨"
-                )
-            },
-            "footer": {
-                "text": "Delivered hot & fast by InTime Riders ⚡"
-            },
-            "action": {
-                "name": "catalog_message",
-                "parameters": {
-                    "thumbnail_product_retailer_id": thumbnail_id
+        # Real retailer IDs verified from Meta Commerce Manager catalog (1515700860395437):
+        thumbnail_id = "mg_white_rice_beans"
+
+        # Attempt 1: Native Catalog Message (no thumbnail parameter — standard view catalog button)
+        req_body_catalog = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": target_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "catalog_message",
+                "body": {
+                    "text": "Please pick what you would like to order from the catalog below 🍲✨"
+                },
+                "footer": {
+                    "text": "InTime Food Delivery ⚡"
+                },
+                "action": {
+                    "name": "catalog_message"
                 }
             }
         }
-    }
 
-    print(f"📦 Dispatching native food catalog message to {target_number} (thumbnail: {thumbnail_id})...")
-    async with httpx.AsyncClient() as client:
+        print(f"📦 Dispatching native food catalog message to {target_number}...")
         response = await client.post(graph_url, json=req_body_catalog, headers=headers)
         print("Native food catalog_message response:", response.status_code, response.text)
 
-        # Attempt 1b: If thumbnail parameter rejected, try catalog_message without parameters
-        if response.status_code != 200 and "thumbnail" in response.text.lower():
-            print("Retrying catalog_message without thumbnail parameter...")
-            req_body_catalog_plain = {
+        # Attempt 1b: If plain catalog_message fails, try with thumbnail parameter
+        if response.status_code != 200:
+            print(f"Retrying catalog_message with thumbnail anchor ({thumbnail_id})...")
+            req_body_catalog_thumb = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
                 "to": target_number,
@@ -520,18 +527,18 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
                 "interactive": {
                     "type": "catalog_message",
                     "body": {
-                        "text": (
-                            "🍽️ *Welcome to Madam G on InTime!*\n\n"
-                            "Tap *View catalog* below to browse our menu, add dishes to your cart, and place your order! 🍲🛵💨"
-                        )
+                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
                     },
                     "action": {
-                        "name": "catalog_message"
+                        "name": "catalog_message",
+                        "parameters": {
+                            "thumbnail_product_retailer_id": thumbnail_id
+                        }
                     }
                 }
             }
-            response = await client.post(graph_url, json=req_body_catalog_plain, headers=headers)
-            print("Native food catalog_message (plain) response:", response.status_code, response.text)
+            response = await client.post(graph_url, json=req_body_catalog_thumb, headers=headers)
+            print("Native food catalog_message (thumbnail) response:", response.status_code, response.text)
 
         # Attempt 2: If catalog_message fails, try Multi-Product Message (product_list) with real catalog SKUs
         if response.status_code != 200:

@@ -487,13 +487,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
             await db.commit()
 
-            confirm_msg = (
-                f"✅ *Restaurant & Delivery Address Saved!* 📍\n\n"
-                f"🍽️ Restaurant: *{selected_restaurant}*\n"
-                f"🏁 Drop-off: *{raw_address}*\n\n"
-                f"Explore our menu below, add dishes to your cart, and tap *Send Cart* to place your order! 🍲🛵💨"
-            )
-            await replyhandler.send_custom_message(sender_wa_number, confirm_msg, AUTH, GRAPH_URL)
+            # User requested: Skip the text confirmation message and directly display the catalog prompt
             await replyhandler.send_food_catalog_menu(sender_wa_number, AUTH, GRAPH_URL)
             return {"status": "food_order_address_saved"}
 
