@@ -462,8 +462,8 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str)
 async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: str, catalog_id: str = None):
     """
     Sends the interactive food catalog menu for Madam G.
-    Tries Multi-Product Message (product_list) first, and automatically falls back to Catalog Message
-    (full catalog view) if product SKUs differ in Meta Commerce Manager.
+    Uses native WhatsApp Catalog Message (view catalog button) connected to the WhatsApp Business Account.
+    Does NOT display any plain text menu.
     """
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     cat_id = catalog_id or os.getenv("META_CATALOG_ID", "1515700860395437")
@@ -473,137 +473,111 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         "Content-Type": "application/json"
     }
 
-    # Attempt 1: Multi-Product Message (product_list) with organized sections
-    req_body_mpm = {
+    # Attempt 1: Native Catalog Message (Renders interactive "View catalog" button)
+    req_body_catalog = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": target_number,
         "type": "interactive",
         "interactive": {
-            "type": "product_list",
-            "header": {
-                "type": "text",
-                "text": "🍽️ Madam G Kitchen"
-            },
+            "type": "catalog_message",
             "body": {
                 "text": (
-                    "Welcome to *Madam G* on InTime! 🍲✨\n\n"
-                    "Explore our freshly cooked meals below. Add dishes and extras to your cart, "
-                    "tap *View Cart*, and tap *Send Cart* to place your order! 🛵💨"
+                    "🍽️ *Welcome to Madam G on InTime!*\n\n"
+                    "Tap *View catalog* below to browse all our fresh meals, drinks, and extras. "
+                    "Add items to your cart and send your order when ready! 🍲🛵💨"
                 )
             },
             "footer": {
                 "text": "Delivered hot & fast by InTime Riders ⚡"
             },
             "action": {
-                "catalog_id": cat_id,
-                "sections": [
-                    {
-                        "title": "🍚 Rice Meals & Combos",
-                        "product_items": [
-                            {"product_retailer_id": "mg_rice_beef_sm"},
-                            {"product_retailer_id": "mg_rice_beef_bg"},
-                            {"product_retailer_id": "mg_rice_beef_salad_sm"},
-                            {"product_retailer_id": "mg_rice_combo_sm"},
-                            {"product_retailer_id": "mg_rice_beans_sm"},
-                            {"product_retailer_id": "mg_rice_egg"}
-                        ]
-                    },
-                    {
-                        "title": "🥘 Swallow & Soups",
-                        "product_items": [
-                            {"product_retailer_id": "mg_semo_veg_sm"},
-                            {"product_retailer_id": "mg_semo_ogbono_sm"},
-                            {"product_retailer_id": "mg_fufu_veg_1w"},
-                            {"product_retailer_id": "mg_fufu_veg_2w"}
-                        ]
-                    },
-                    {
-                        "title": "🍗 Fresh Proteins",
-                        "product_items": [
-                            {"product_retailer_id": "mg_chicken_sm"},
-                            {"product_retailer_id": "mg_chicken_med"},
-                            {"product_retailer_id": "mg_chicken_bg"},
-                            {"product_retailer_id": "mg_goat_meat"},
-                            {"product_retailer_id": "mg_cow_tail"}
-                        ]
-                    },
-                    {
-                        "title": "➕ Extras & Sides",
-                        "product_items": [
-                            {"product_retailer_id": "mg_plantain"},
-                            {"product_retailer_id": "mg_moi_moi"},
-                            {"product_retailer_id": "mg_salad"},
-                            {"product_retailer_id": "mg_small_beef"},
-                            {"product_retailer_id": "mg_big_beef"}
-                        ]
-                    }
-                ]
+                "name": "catalog_message"
             }
         }
     }
 
-    print(f"📦 Dispatching food catalog menu to {target_number} (Catalog: {cat_id})...")
+    print(f"📦 Dispatching native food catalog message to {target_number}...")
     async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body_mpm, headers=headers)
-        print("Food catalog MPM response:", response.status_code, response.text)
+        response = await client.post(graph_url, json=req_body_catalog, headers=headers)
+        print("Native food catalog_message response:", response.status_code, response.text)
 
-        # Fallback 1: if product_list rejected, retry with native catalog_message (opens full catalog UI)
+        # Attempt 2: If catalog_message fails, try Multi-Product Message (product_list)
         if response.status_code != 200:
-            print("Retrying with native catalog_message (full catalog view)...")
-            req_body_catalog = {
+            print(f"Retrying with Multi-Product Message (Catalog ID: {cat_id})...")
+            req_body_mpm = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
                 "to": target_number,
                 "type": "interactive",
                 "interactive": {
-                    "type": "catalog_message",
+                    "type": "product_list",
+                    "header": {
+                        "type": "text",
+                        "text": "🍽️ Madam G Kitchen"
+                    },
                     "body": {
                         "text": (
-                            "🍽️ *Welcome to Madam G on InTime!*\n\n"
-                            "Tap *View catalog* below to browse all our fresh meals, drinks, and extras. "
-                            "Add items to your cart and send your order when ready! 🍲🛵💨"
+                            "Welcome to *Madam G* on InTime! 🍲✨\n\n"
+                            "Explore our freshly cooked meals below. Add dishes and extras to your cart, "
+                            "tap *View Cart*, and tap *Send Cart* to place your order! 🛵💨"
                         )
                     },
                     "footer": {
                         "text": "Delivered hot & fast by InTime Riders ⚡"
                     },
                     "action": {
-                        "name": "catalog_message"
+                        "catalog_id": cat_id,
+                        "sections": [
+                            {
+                                "title": "🍚 Rice Meals & Combos",
+                                "product_items": [
+                                    {"product_retailer_id": "mg_rice_beef_sm"},
+                                    {"product_retailer_id": "mg_rice_beef_bg"},
+                                    {"product_retailer_id": "mg_rice_beef_salad_sm"},
+                                    {"product_retailer_id": "mg_rice_combo_sm"},
+                                    {"product_retailer_id": "mg_rice_beans_sm"},
+                                    {"product_retailer_id": "mg_rice_egg"}
+                                ]
+                            },
+                            {
+                                "title": "🥘 Swallow & Soups",
+                                "product_items": [
+                                    {"product_retailer_id": "mg_semo_veg_sm"},
+                                    {"product_retailer_id": "mg_semo_ogbono_sm"},
+                                    {"product_retailer_id": "mg_fufu_veg_1w"},
+                                    {"product_retailer_id": "mg_fufu_veg_2w"}
+                                ]
+                            },
+                            {
+                                "title": "🍗 Fresh Proteins",
+                                "product_items": [
+                                    {"product_retailer_id": "mg_chicken_sm"},
+                                    {"product_retailer_id": "mg_chicken_med"},
+                                    {"product_retailer_id": "mg_chicken_bg"},
+                                    {"product_retailer_id": "mg_goat_meat"},
+                                    {"product_retailer_id": "mg_cow_tail"}
+                                ]
+                            },
+                            {
+                                "title": "➕ Extras & Sides",
+                                "product_items": [
+                                    {"product_retailer_id": "mg_plantain"},
+                                    {"product_retailer_id": "mg_moi_moi"},
+                                    {"product_retailer_id": "mg_salad"},
+                                    {"product_retailer_id": "mg_small_beef"},
+                                    {"product_retailer_id": "mg_big_beef"}
+                                ]
+                            }
+                        ]
                     }
                 }
             }
-            response = await client.post(graph_url, json=req_body_catalog, headers=headers)
-            print("Food catalog_message fallback response:", response.status_code, response.text)
+            response = await client.post(graph_url, json=req_body_mpm, headers=headers)
+            print("Food catalog MPM fallback response:", response.status_code, response.text)
 
-        # Fallback 2: if catalog linking is pending in Meta Commerce Manager, send structured text menu
         if response.status_code != 200:
-            print("Both catalog formats failed (likely pending catalog link in Meta WhatsApp settings). Sending formatted text menu fallback...")
-            fallback_menu = (
-                "🍽️ *Welcome to Madam G Kitchen on InTime!* 🍲✨\n"
-                "_Delicious, freshly prepared homemade meals_\n\n"
-                "🍚 *RICE MEALS* (Small | Big)\n"
-                "• Rice + 2 Beef: ₦1,700 | ₦2,300\n"
-                "• Rice + Beef + Salad: ₦2,000 | ₦2,600\n"
-                "• Rice Combo (Beef + Salad + Dodo): ₦2,500 | ₦3,100\n"
-                "• White Rice + Beans Combo: ₦2,200 | ₦2,600\n"
-                "• Rice + Boiled Egg: ₦1,600\n\n"
-                "🥘 *SWALLOW & SOUPS* (Small | Big)\n"
-                "• Semo (2 wraps) + Veg + Beef: ₦2,500 | ₦3,100\n"
-                "• Semo (2 wraps) + Ogbono/Egusi + Beef: ₦2,000 | ₦2,600\n"
-                "• Fufu (1 wrap) + Veg + Beef: ₦1,800\n"
-                "• Fufu (2 wraps) + Veg + Beef: ₦2,500 | ₦3,100\n\n"
-                "🍗 *PROTEINS & EXTRAS*\n"
-                "• Chicken: ₦3,000 (Sm) | ₦3,500 (Med) | ₦4,000 (Big)\n"
-                "• Goat Meat plate: ₦2,000\n"
-                "• Cow Tail plate: ₦2,000\n"
-                "• Extra Plantain (3 pcs): ₦500\n"
-                "• Moi Moi: ₦1,000 | Boiled Egg: ₦300\n\n"
-                "🛵 *Delivery Fee:* Flat ₦1,000\n\n"
-                "👉 *To place your order:*\n"
-                "Simply reply with your selected meal and delivery address (e.g. *1x Rice Combo Big to 15 Admiralty Way, Lekki*), and our riders will deliver it hot! 🍲💨"
-            )
-            response = await send_custom_message(sender_wa_number, fallback_menu, auth, graph_url)
+            print(f"⚠️ Food catalog dispatch was not delivered (status {response.status_code}). No text menu will be sent.")
 
     return response
 
