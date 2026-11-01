@@ -608,8 +608,42 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
             response = await client.post(graph_url, json=req_body_mpm, headers=headers)
             print("Food catalog MPM fallback response:", response.status_code, response.text)
 
+        # Attempt 3: Interactive CTA URL 'View Catalog' button
+        # If Meta's native catalog_message is temporarily propagating, this reliably delivers the interactive "View Catalog" button!
         if response.status_code != 200:
-            print(f"⚠️ Food catalog dispatch was not delivered (status {response.status_code}). No text menu will be sent.")
+            print("Retrying with interactive cta_url 'View Catalog' button...")
+            business_phone = os.getenv("PRODUCTION_PHONE_NUMBER", "2348151033428").strip()
+            req_body_cta = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": target_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "cta_url",
+                    "header": {
+                        "type": "text",
+                        "text": "🍽️ Madam G Kitchen"
+                    },
+                    "body": {
+                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
+                    },
+                    "footer": {
+                        "text": "InTime Food Delivery ⚡"
+                    },
+                    "action": {
+                        "name": "cta_url",
+                        "parameters": {
+                            "display_text": "View Catalog",
+                            "url": f"https://wa.me/c/{business_phone}"
+                        }
+                    }
+                }
+            }
+            response = await client.post(graph_url, json=req_body_cta, headers=headers)
+            print("Food catalog cta_url response:", response.status_code, response.text)
+
+        if response.status_code != 200:
+            print(f"⚠️ Food catalog dispatch was not delivered (status {response.status_code}).")
 
     return response
 
