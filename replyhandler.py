@@ -489,10 +489,10 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         except Exception as e:
             print("Catalog auto-sync notice:", e)
 
-        # Real retailer IDs verified from Meta Commerce Manager catalog (1515700860395437):
         thumbnail_id = "mg_white_rice_beans"
+        business_phone = os.getenv("PRODUCTION_PHONE_NUMBER", "2348151033428").strip()
 
-        # Attempt 1: Native Catalog Message (no thumbnail parameter — standard view catalog button)
+        # Attempt 1: Native Catalog Message (standard view catalog button)
         req_body_catalog = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -516,9 +516,9 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
         response = await client.post(graph_url, json=req_body_catalog, headers=headers)
         print("Native food catalog_message response:", response.status_code, response.text)
 
-        # Attempt 1b: If plain catalog_message fails, try with thumbnail parameter
+        # Attempt 2: catalog_message with thumbnail anchor
         if response.status_code != 200:
-            print(f"Retrying catalog_message with thumbnail anchor ({thumbnail_id})...")
+            print(f"Retrying catalog_message with thumbnail ({thumbnail_id})...")
             req_body_catalog_thumb = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -540,79 +540,10 @@ async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: st
             response = await client.post(graph_url, json=req_body_catalog_thumb, headers=headers)
             print("Native food catalog_message (thumbnail) response:", response.status_code, response.text)
 
-        # Attempt 2: If catalog_message fails, try Multi-Product Message (product_list) with real catalog SKUs
+        # Attempt 3: Interactive CTA URL 'View Catalog' button (most reliable — opens native WhatsApp catalog)
+        # Used as primary delivery mechanism when native catalog_message API is blocked pending permission sync
         if response.status_code != 200:
-            print(f"Retrying with Multi-Product Message (Catalog ID: {cat_id})...")
-            req_body_mpm = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": target_number,
-                "type": "interactive",
-                "interactive": {
-                    "type": "product_list",
-                    "header": {
-                        "type": "text",
-                        "text": "🍽️ Madam G Kitchen"
-                    },
-                    "body": {
-                        "text": (
-                            "Welcome to *Madam G* on InTime! 🍲✨\n\n"
-                            "Explore our freshly cooked meals below. Add dishes and extras to your cart, "
-                            "tap *View Cart*, and tap *Send Cart* to place your order! 🛵💨"
-                        )
-                    },
-                    "footer": {
-                        "text": "Delivered hot & fast by InTime Riders ⚡"
-                    },
-                    "action": {
-                        "catalog_id": cat_id,
-                        "sections": [
-                            {
-                                "title": "🍚 Rice Meals",
-                                "product_items": [
-                                    {"product_retailer_id": "mg_jollof"},
-                                    {"product_retailer_id": "mg_fried_rice"},
-                                    {"product_retailer_id": "mg_fried_jollof"},
-                                    {"product_retailer_id": "mg_white_rice"},
-                                    {"product_retailer_id": "mg_white_rice_beans"}
-                                ]
-                            },
-                            {
-                                "title": "🥘 Swallow & Soups",
-                                "product_items": [
-                                    {"product_retailer_id": "mg_semo"},
-                                    {"product_retailer_id": "mg_fufu"},
-                                    {"product_retailer_id": "mg_veggies_efo"},
-                                    {"product_retailer_id": "mg_egusi"},
-                                    {"product_retailer_id": "mg_ogbono"}
-                                ]
-                            },
-                            {
-                                "title": "🍗 Proteins & Drinks",
-                                "product_items": [
-                                    {"product_retailer_id": "mg_chicken_small"},
-                                    {"product_retailer_id": "mg_chicken_medium"},
-                                    {"product_retailer_id": "mg_chicken_big"},
-                                    {"product_retailer_id": "mg_beef_one"},
-                                    {"product_retailer_id": "mg_small_beef_two"},
-                                    {"product_retailer_id": "mg_big_beef_two"},
-                                    {"product_retailer_id": "mg_goat_meat"},
-                                    {"product_retailer_id": "mg_plantain"},
-                                    {"product_retailer_id": "mg_coke"}
-                                ]
-                            }
-                        ]
-                    }
-                }
-            }
-            response = await client.post(graph_url, json=req_body_mpm, headers=headers)
-            print("Food catalog MPM fallback response:", response.status_code, response.text)
-
-        # Attempt 3: Interactive CTA URL 'View Catalog' button
-        # If Meta's native catalog_message is temporarily propagating, this reliably delivers the interactive "View Catalog" button!
-        if response.status_code != 200:
-            print("Retrying with interactive cta_url 'View Catalog' button...")
-            business_phone = os.getenv("PRODUCTION_PHONE_NUMBER", "2348151033428").strip()
+            print("Delivering interactive cta_url 'View Catalog' button (reliable fallback)...")
             req_body_cta = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
