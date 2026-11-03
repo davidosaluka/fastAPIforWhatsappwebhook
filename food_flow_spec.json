@@ -50,16 +50,16 @@
               {
                 "type": "RadioButtonsGroup",
                 "name": "use_previous",
-                "label": "Deliver to this address?",
+                "label": "Use this address?",
                 "required": true,
                 "data-source": [
                   {
                     "id": "yes",
-                    "title": "Yes, use this address & contact"
+                    "title": "Yes, use this address"
                   },
                   {
                     "id": "no",
-                    "title": "No, enter a new delivery address"
+                    "title": "No, enter new address"
                   }
                 ]
               },
@@ -179,7 +179,7 @@
               {
                 "type": "CheckboxGroup",
                 "name": "Restaurants_e39410",
-                "label": "Restaurants",
+                "label": "Select Restaurant",
                 "required": true,
                 "data-source": [
                   {
@@ -308,9 +308,10 @@
               {
                 "type": "TextInput",
                 "name": "pack_note",
-                "label": "Pack instructions / notes (optional)",
+                "label": "Pack Note",
                 "required": false,
-                "input-type": "text"
+                "input-type": "text",
+                "helper-text": "e.g. extra sauce, separate pack"
               },
               {
                 "type": "Footer",
@@ -383,7 +384,7 @@
               {
                 "type": "Dropdown",
                 "name": "base_meal",
-                "label": "1. Base Meal (Rice or Swallow)",
+                "label": "1. Base Meal",
                 "required": true,
                 "data-source": [
                   { "id": "rice_jollof", "title": "Jollof Rice (₦1,300)" },
@@ -399,7 +400,7 @@
               {
                 "type": "Dropdown",
                 "name": "soup",
-                "label": "2. Soup (For swallows or extra)",
+                "label": "2. Soup Choice",
                 "required": true,
                 "data-source": [
                   { "id": "soup_none", "title": "No Soup (₦0)" },
@@ -412,7 +413,7 @@
               {
                 "type": "Dropdown",
                 "name": "protein",
-                "label": "3. Protein / Meat / Fish",
+                "label": "3. Protein / Meat",
                 "required": true,
                 "data-source": [
                   { "id": "protein_none", "title": "No Protein (₦0)" },
@@ -431,20 +432,20 @@
               {
                 "type": "CheckboxGroup",
                 "name": "extras",
-                "label": "4. Sides & Extras (Optional)",
+                "label": "4. Sides & Extras",
                 "required": false,
                 "data-source": [
-                  { "id": "extra_plantain_1", "title": "Fried Plantain - 1 serving (₦500)" },
-                  { "id": "extra_plantain_2", "title": "Fried Plantain - 2 servings (₦1,000)" },
-                  { "id": "extra_moimoi_1", "title": "Moi Moi - 1 wrap (₦1,000)" },
-                  { "id": "extra_moimoi_2", "title": "Moi Moi - 2 wraps (₦2,000)" },
+                  { "id": "extra_plantain_1", "title": "Plantain 1 serv (₦500)" },
+                  { "id": "extra_plantain_2", "title": "Plantain 2 serv (₦1,000)" },
+                  { "id": "extra_moimoi_1", "title": "Moi Moi 1 wrap (₦1,000)" },
+                  { "id": "extra_moimoi_2", "title": "Moi Moi 2 wraps (₦2,000)" },
                   { "id": "extra_salad", "title": "Salad (₦500)" }
                 ]
               },
               {
                 "type": "Dropdown",
                 "name": "drink",
-                "label": "5. Drink (Optional)",
+                "label": "5. Drink Choice",
                 "required": false,
                 "data-source": [
                   { "id": "drink_none", "title": "No Drink (₦0)" },
@@ -468,9 +469,10 @@
               {
                 "type": "TextInput",
                 "name": "pack_note",
-                "label": "Kitchen note (e.g. separate soup, extra pepper)",
+                "label": "Kitchen Note",
                 "required": false,
-                "input-type": "text"
+                "input-type": "text",
+                "helper-text": "e.g. separate soup, extra pepper"
               },
               {
                 "type": "Footer",
