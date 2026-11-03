@@ -1,2864 +1,2867 @@
-import asyncio
-from datetime import UTC, datetime, timedelta
-from sqlalchemy import select, update, delete, func
-from sqlalchemy.ext.asyncio import AsyncSession
-import json
-import requests
-import models
-import httpx
-import os
-import re
-import random
-from dotenv import load_dotenv
-from groq import AsyncGroq
-
-load_dotenv()
-
-# Meta WhatsApp Flow IDs (configurable via environment variables for easy account migration)
-FLOW_PICKUP_ID = os.getenv("FLOW_PICKUP_ID", "1521319786323152")
-FLOW_INCREASE_FARE_ID = os.getenv("FLOW_INCREASE_FARE_ID", "950647507961316")
-FLOW_RIDER_ACCEPT_ID = os.getenv("FLOW_RIDER_ACCEPT_ID", "1513067607105184")
-FLOW_NEGOTIATE_ID = os.getenv("FLOW_NEGOTIATE_ID", "1448553113617488")
-FLOW_COUNTER_OFFER_ID = os.getenv("FLOW_COUNTER_OFFER_ID", "949497837687906")
-FLOW_FOOD_ORDER_ID = os.getenv("FLOW_FOOD_ORDER_ID", "")
-
-# ---------------------------------------------------------------------------
-# In-memory chat history store for Groq multi-turn conversations.
-# Maps sender_wa_number -> list of {"role": ..., "content": ...} dicts.
-# Capped at MAX_HISTORY turns per user to avoid token bloat.
-# ---------------------------------------------------------------------------
-_chat_memory: dict[str, list[dict]] = {}
-MAX_HISTORY = 10  # number of message turns (user + assistant) to keep
-
-
-def get_user_chat_memory(sender_wa_number: str) -> list[dict]:
-    """Return the stored conversation history for a given WhatsApp number."""
-    return list(_chat_memory.get(sender_wa_number, []))
-
-
-def add_user_chat_memory(sender_wa_number: str, role: str, content: str) -> None:
-    """Append a new turn to the user's conversation history, trimming if over MAX_HISTORY."""
-    history = _chat_memory.setdefault(sender_wa_number, [])
-    history.append({"role": role, "content": content})
-    # Keep only the most recent MAX_HISTORY messages
-    if len(history) > MAX_HISTORY:
-        _chat_memory[sender_wa_number] = history[-MAX_HISTORY:]
-
-
-def get_dynamic_femi_welcome(username: str, is_recipient: bool = False) -> str:
-    """Generates dynamic, spacious introductory messages for Femi avatar."""
-    name = username if username and username.lower() not in ["user", "customer"] else ""
-    name_str = f" {name}" if name else ""
-
-    if is_recipient:
-        recipient_templates = [
-            (
-                f"Hello{name_str} 👋! I'm Femi from *InTime* 🛵✨.\n\n"
-                f"I'm here to assist you with your incoming package delivery 📦.\n\n"
-                f"If you need any information about your delivery status or verification code, just let me know!"
-            ),
-            (
-                f"Hi{name_str} 👋, I'm Femi from *InTime*!\n\n"
-                f"I can help you check on your incoming package or provide your delivery verification code.\n\n"
-                f"How can I help you today? 😊"
-            ),
-            (
-                f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
-                f"I'm Femi, your delivery assistant. I'm here to support you with your incoming package.\n\n"
-                f"Feel free to ask about your rider's arrival or your 5-digit delivery code!"
-            )
-        ]
-        return random.choice(recipient_templates)
-
-    templates = [
-        (
-            f"Hi 👋, I'm Femi!\n\n"
-            f"Welcome to *InTime*{name_str}.\n\n"
-            f"How can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨"
-        ),
-        (
-            f"Hey{name_str} 👋! Femi here from *InTime*.\n\n"
-            f"Need to ship a quick package or dispatch across Nigeria?\n\n"
-            f"Whenever you're ready, just type *Send an Order* right here to get rolling! 🛵💨✨"
-        ),
-        (
-            f"Hello{name_str} ✨! I'm Femi, your *InTime* delivery assistant.\n\n"
-            f"Ready to deliver something fast and safe today?\n\n"
-            f"Just type *Send an Order* in this chat and we'll connect you with top-rated riders! 📦🚀"
-        ),
-        (
-            f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
-            f"I'm Femi, your personal dispatch assistant.\n\n"
-            f"How can I assist you today? Type *Send an Order* anytime to create a package request!"
-        )
-    ]
-    return random.choice(templates)
-
-
-async def send_rider_accepted_with_options(
-    customer_wa_number: str,
-    rider_name: str,
-    rider_phone: str,
-    order_number: str,
-    auth: str,
-    graph_url: str,
-    rating_display: str = None
-):
-    """Sends the rider-accepted confirmation to the customer with Find Another Rider and Cancel Order quick-reply buttons."""
-    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
-    rating_line = f"⭐ Rating: *{rating_display}*\n" if rating_display else ""
-    body_text = (
-        f"🎉 *Great news!* Your rider has been confirmed for Order *{order_number}*.\n\n"
-        f"🧑‍✈️ Rider: *{rider_name}*\n"
-        f"📞 Phone: *{rider_phone}*\n"
-        f"{rating_line}\n"
-        f"Your rider is heading to the pickup location now. Tap below if you need to make a change."
-    )
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {
-                "text": body_text
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": f"FIND_ANOTHER_RIDER:{order_number}",
-                            "title": "🔄 Find Another Rider"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": f"CANCEL_ORDER:{order_number}",
-                            "title": "❌ Cancel Order"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print("rider accepted options sent:", response.status_code, response.text)
-    return
-
-
-async def check_active_user_order(customer_wa_number: str, db: AsyncSession):
-    """Returns the most recent active in-progress order for a customer, if any."""
-    possible_numbers = get_phone_variants(customer_wa_number)
-    active_order_res = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.sender_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
-        .order_by(models.Orders.created_at.desc())
-    )
-    return active_order_res.scalars().first()
-
-
-async def send_delete_account_confirmation(
-    customer_wa_number: str,
-    auth: str,
-    graph_url: str,
-    db: AsyncSession
-):
-    """
-    Checks if customer has an active order before allowing account deletion.
-    - If package in transit (picked up): informs customer delivery must complete first.
-    - If active (not picked up yet): instructs customer to cancel active order first.
-    - If no active order: sends confirmation prompt with interactive Yes/No buttons.
-    """
-    active_order = await check_active_user_order(customer_wa_number, db)
-
-    if active_order:
-        if active_order.delivery_progression_status == "package_picked_up":
-            in_transit_msg = (
-                f"⚠️ *Account Deletion Blocked*\n\n"
-                f"Your package for Order *{active_order.order_number}* is currently in transit with your dispatch rider.\n\n"
-                f"For safety and security of goods in transit, your active delivery must be completed before your account can be deleted. "
-                f"Once your package has been delivered to the recipient, you can proceed with deleting your account!"
-            )
-            await send_custom_message(customer_wa_number, in_transit_msg, auth, graph_url)
-            return
-        else:
-            active_msg = (
-                f"⚠️ *Account Deletion Blocked*\n\n"
-                f"You currently have an active order (**Order *{active_order.order_number}***) in progress.\n\n"
-                f"Account deletion cannot be processed while an order is active. "
-                f"Please cancel your active order first (or wait for it to complete) before deleting your account.\n\n"
-                f"ℹ️ *To cancel your active order, simply type 'Cancel Order' or tap the cancel button on your order details.*"
-            )
-            await send_custom_message(customer_wa_number, active_msg, auth, graph_url)
-            return
-
-    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
-    body_text = (
-        "⚠️ *Account Deletion Request*\n\n"
-        "Are you sure you want to delete your account?\n\n"
-        "This action will permanently remove your user profile from InTime."
-    )
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {
-                "text": body_text
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "CONFIRM_DELETE_ACCOUNT",
-                            "title": "🗑️ Yes, Delete"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "CANCEL_DELETE_ACCOUNT",
-                            "title": "❌ Cancel"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print("Delete account confirmation prompt sent:", response.status_code, response.text)
-    return
-
-
-async def show_typing_indicator(message_id: str, auth: str, graph_url):
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "status": "read",
-        "message_id": message_id,
-        "typing_indicator": {
-            "type": "text"
-        }
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-
-async def send_default_template(sender_wa_number, username, auth, graph_url):
-    """Sends the official default_message_ template with quick-reply / flow action buttons."""
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
-    template_name = os.getenv("DEFAULT_MESSAGE_TEMPLATE", "default_message_").strip()
-
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-
-    # Flow token payload for templates with Flow buttons
-    flow_token_data = json.dumps({"action": "food_order_address", "sender_wa_number": target_number})
-
-    # Permutations of components to match Meta template configurations:
-    # default_message_ has {{1}} in the HEADER (Welcome Back {{1}}!) and the 3rd button (index 2) is a Flow button:
-    component_variations = [
-        # Variation 1 (Exact match for screenshot): Header variable + Flow button at index 2
-        [
-            {
-                "type": "header",
-                "parameters": [{"type": "text", "text": display_name}]
-            },
-            {
-                "type": "button",
-                "sub_type": "flow",
-                "index": "2",
-                "parameters": [
-                    {"type": "action", "action": {"flow_token": flow_token_data}}
-                ]
-            }
-        ],
-        # Variation 2: Header variable only (if Meta template has static flow definition)
-        [
-            {
-                "type": "header",
-                "parameters": [{"type": "text", "text": display_name}]
-            }
-        ],
-        # Variation 3: Body variable + Flow button at index 0 (legacy templates)
-        [
-            {
-                "type": "body",
-                "parameters": [{"type": "text", "text": display_name}]
-            },
-            {
-                "type": "button",
-                "sub_type": "flow",
-                "index": "0",
-                "parameters": [
-                    {"type": "action", "action": {"flow_token": flow_token_data}}
-                ]
-            }
-        ],
-        # Variation 4: Body variable only (legacy templates)
-        [
-            {
-                "type": "body",
-                "parameters": [{"type": "text", "text": display_name}]
-            }
-        ],
-        # Variation 5: No components
-        []
-    ]
-
-    names_to_try = [template_name]
-    if template_name != "default_message":
-        names_to_try.append("default_message")
-
-    languages_to_try = ["en_US", "en"]
-
-    response = None
-    async with httpx.AsyncClient() as client:
-        for t_name in names_to_try:
-            for lang in languages_to_try:
-                for comp in component_variations:
-                    req_body = {
-                        "messaging_product": "whatsapp",
-                        "recipient_type": "individual",
-                        "to": target_number,
-                        "type": "template",
-                        "template": {
-                            "name": t_name,
-                            "language": {"code": lang}
-                        }
-                    }
-                    if comp:
-                        req_body["template"]["components"] = comp
-
-                    try:
-                        res = await client.post(graph_url, json=req_body, headers=headers)
-                        print(f"Template attempt ({t_name}, {lang}, comp_len={len(comp)}) -> {res.status_code}: {res.text}")
-                        if res.status_code == 200:
-                            print(f"✅ Dispatched template '{t_name}' ({lang}) successfully: 200 OK")
-                            return res
-                        else:
-                            if "132001" in res.text or "does not exist" in res.text.lower():
-                                # Template does not exist under this name or language code, skip remaining component tries
-                                break
-                    except Exception as e:
-                        print(f"Error trying template {t_name}: {e}")
-                        continue
-
-        # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
-        print("Default template failed or not found on WABA, sending text welcome fallback...")
-        welcome_text = (
-            f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
-            f"How can we help you today?\n\n"
-            f"• Reply *Send an Order* to book a package delivery\n"
-            f"• Reply *Order Food* to view the Madam G food menu\n"
-            f"• Reply *Contact Support* if you need assistance"
-        )
-        await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
-
-    return response
-
-async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
-    
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "template",
-            "template": {
-                "name": "start_over_template",
-                "language": { "code": "en" }      
-            }
-            }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-    }
-    
-    print(req_body)
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-    return
-
-
-async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
-    """Dispatches daily 8:00 AM WhatsApp check-in template to riders."""
-    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "template",
-        "template": {
-            "name": "rider_checkin",
-            "language": { "code": "en" }      
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print("Rider check-in template dispatched:", response.status_code, response.text)
-    return
-
-
-async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str):
-    """
-    Dispatches the food_order_address WhatsApp Flow to let customer pick restaurant & enter delivery address.
-    Falls back to food catalog menu if flow ID is not configured yet.
-    """
-    flow_id = os.getenv("FLOW_FOOD_ORDER_ID", "").strip()
-    if not flow_id:
-        print("ℹ️ FLOW_FOOD_ORDER_ID is not configured yet. Falling back to food catalog menu...")
-        await send_food_catalog_menu(sender_wa_number, auth, graph_url)
-        return
-
-    flow_token = {
-        "action": "food_order_address",
-        "sender_wa_number": sender_wa_number
-    }
-    await send_custom_flow(
-        wa_number=sender_wa_number,
-        flow_token=flow_token,
-        message="Please select your restaurant and confirm your delivery address to browse the menu and order 🍲🛵💨",
-        header="Order Food 🍲",
-        flow_id=flow_id,
-        flow_cta="Select Address",
-        screen_name="Your Address",
-        auth=auth,
-        graph_url=graph_url
-    )
-
-
-async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: str, catalog_id: str = None):
-    """
-    Sends the interactive food catalog menu for Madam G.
-    Uses native WhatsApp Catalog Message (view catalog button) connected to the WhatsApp Business Account.
-    Does NOT display any plain text menu.
-    """
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    cat_id = catalog_id or os.getenv("META_CATALOG_ID", "1515700860395437")
-
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-
-    # Ensure WhatsApp Commerce Settings & Catalog linkage on Meta
-    async with httpx.AsyncClient() as client:
-        try:
-            phone_number_id = graph_url.split("/v21.0/")[1].split("/")[0] if "/v21.0/" in graph_url else ""
-            waba_id = os.getenv("WABA_ID", "793614220010952")
-            if phone_number_id:
-                comm_url = f"https://graph.facebook.com/v21.0/{phone_number_id}/whatsapp_commerce_settings"
-                comm_res = await client.post(comm_url, params={"is_catalog_visible": "true", "is_cart_enabled": "true"}, headers=headers)
-                print("whatsapp_commerce_settings sync:", comm_res.status_code, comm_res.text)
-            if waba_id:
-                cat_url = f"https://graph.facebook.com/v21.0/{waba_id}/product_catalogs"
-                cat_res = await client.post(cat_url, data={"catalog_id": cat_id}, headers={"Authorization": f"Bearer {auth}"})
-                print("waba product_catalogs sync:", cat_res.status_code, cat_res.text)
-        except Exception as e:
-            print("Catalog auto-sync notice:", e)
-
-        thumbnail_id = "mg_white_rice_beans"
-        business_phone = os.getenv("PRODUCTION_PHONE_NUMBER", "2348151033428").strip()
-
-        # Attempt 1: Native Catalog Message (standard view catalog button)
-        req_body_catalog = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": target_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "catalog_message",
-                "body": {
-                    "text": "Please pick what you would like to order from the catalog below 🍲✨"
-                },
-                "footer": {
-                    "text": "InTime Food Delivery ⚡"
-                },
-                "action": {
-                    "name": "catalog_message"
-                }
-            }
-        }
-
-        print(f"📦 Dispatching native food catalog message to {target_number}...")
-        response = await client.post(graph_url, json=req_body_catalog, headers=headers)
-        print("Native food catalog_message response:", response.status_code, response.text)
-
-        # Attempt 2: catalog_message with thumbnail anchor
-        if response.status_code != 200:
-            print(f"Retrying catalog_message with thumbnail ({thumbnail_id})...")
-            req_body_catalog_thumb = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": target_number,
-                "type": "interactive",
-                "interactive": {
-                    "type": "catalog_message",
-                    "body": {
-                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
-                    },
-                    "action": {
-                        "name": "catalog_message",
-                        "parameters": {
-                            "thumbnail_product_retailer_id": thumbnail_id
-                        }
-                    }
-                }
-            }
-            response = await client.post(graph_url, json=req_body_catalog_thumb, headers=headers)
-            print("Native food catalog_message (thumbnail) response:", response.status_code, response.text)
-
-        # Attempt 3: Interactive CTA URL 'View Catalog' button (most reliable — opens native WhatsApp catalog)
-        # Used as primary delivery mechanism when native catalog_message API is blocked pending permission sync
-        if response.status_code != 200:
-            print("Delivering interactive cta_url 'View Catalog' button (reliable fallback)...")
-            req_body_cta = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": target_number,
-                "type": "interactive",
-                "interactive": {
-                    "type": "cta_url",
-                    "header": {
-                        "type": "text",
-                        "text": "🍽️ Madam G Kitchen"
-                    },
-                    "body": {
-                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
-                    },
-                    "footer": {
-                        "text": "InTime Food Delivery ⚡"
-                    },
-                    "action": {
-                        "name": "cta_url",
-                        "parameters": {
-                            "display_text": "View Catalog",
-                            "url": f"https://wa.me/c/{business_phone}"
-                        }
-                    }
-                }
-            }
-            response = await client.post(graph_url, json=req_body_cta, headers=headers)
-            print("Food catalog cta_url response:", response.status_code, response.text)
-
-        if response.status_code != 200:
-            print(f"⚠️ Food catalog dispatch was not delivered (status {response.status_code}).")
-
-    return response
-
-
-async def send_custom_message(sender_wa_number, message, auth, graph_url):
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "text",
-        "text": {
-            "body": message
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-      
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(graph_url, json=req_body, headers=headers)
-            print("custom message sent", response.status_code, response.text)
-        except Exception as e:
-            print("send_custom_message error:", e)
-    return
-
-async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
-    """Sends delivery notifications specifically to package recipients, ensuring phone format normalization."""
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    print(f"[RECIPIENT NOTIFY] Sending message to recipient: {target_number} (raw input: {sender_wa_number})")
-    await send_custom_message(sender_wa_number=target_number, message=message, auth=auth, graph_url=graph_url)
-
-async def send_image(sender_wa_number, auth, graph_url, image_id):
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "image",
-        "image": {
-            "id": image_id
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-      
-    async with httpx.AsyncClient() as client:
-        await client.post(graph_url, json=req_body, headers=headers)
-
-    return
-
-
-async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url):
-    target_number = normalize_phone_number(wa_number) or wa_number
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-            "type": "interactive",
-            "interactive": {
-                "type": "flow",
-                "header": { "type": "text", "text": header },
-                "body": { "text": message },
-                "action": {
-                "name": "flow",
-                "parameters": {
-                    "flow_message_version": "3",
-                    "flow_token": json.dumps(flow_token), 
-                    "flow_id": flow_id,
-                    "flow_cta": flow_cta,
-                    "flow_action": "navigate",
-                    "flow_action_payload": {
-                    "screen": screen_name
-                    }
-                }
-                }
-            }
-        }
-    
-    print("req_body")
-    print(req_body)
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-         }
-      
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-
-
-    return
-
-
-async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph_url: str):
-    """
-    Monitors user registration inactivity.
-    Sends a friendly reminder after 5 minutes if user hasn't completed registration or placed an order.
-    Never sends reminders to riders or package recipients.
-    """
-    try:
-        await asyncio.sleep(300)
-
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            role = await get_user_role(sender_wa_number, db)
-            if role in ["rider", "recipient"]:
-                print(f"[REGISTRATION REMINDER] Aborting reminder for {sender_wa_number} (role: '{role}')")
-                return
-
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                return  # Stop if user already registered!
-
-            possible_numbers = get_phone_variants(sender_wa_number)
-            has_order = await db.execute(
-                select(models.Orders.id).where(models.Orders.sender_wa_number.in_(possible_numbers)).limit(1)
-            )
-            if has_order.scalars().first() is not None:
-                return
-
-            # Extra safeguard: check if this number is a recipient of ANY order
-            is_recipient = await db.execute(
-                select(models.Orders.id).where(models.Orders.recipient_phone_number.in_(possible_numbers)).limit(1)
-            )
-            if is_recipient.scalars().first() is not None:
-                print(f"[REGISTRATION REMINDER] Aborting reminder for recipient {sender_wa_number}")
-                return
-
-            reminder_msg = (
-                "⏰ *Registration Reminder*\n\n"
-                "We noticed you haven't completed your registration yet.\n\n"
-                "Please type 'Send an Order' in this chat to complete your sign-up so you can start sending packages!"
-            )
-            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
-    except Exception as e:
-        print(f"schedule_registration_reminder background task error: {e}")
-
-
-async def send_registration_template(sender_wa_number, auth, graph_url):
-    
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "template",
-            "template": {
-                "name": "w",
-                "language": { "code": "en" },
-                "components": [
-                {
-                    "type": "button",
-                    "sub_type": "flow",
-                    "index": "0"
-                    
-                }
-                ]
-            }
-            }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-    }
-    
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
-
-    asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
-    return
-
-
-async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url):
-    
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "template",
-            "template": {
-                "name": "other_details",
-                "language": { "code": "en" },
-                "components": [
-                {
-                    "type": "button",
-                    "sub_type": "flow",
-                    "index": "0"
-                    
-                }
-                ]
-            }
-            }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-    }
-    
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
-    return
-
-'''async def request_package_image (sender_wa_number, auth, graph_url):
-    req_body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_wa_number,
-            "type": "image",
-            "image": {
-                "id": "1474439550701963"
-            }
-        }'''
-
-async def request_pickup_location (sender_wa_number, auth, graph_url):
-    req_body = {
-  "messaging_product": "whatsapp",
-  "recipient_type": "individual",
-  "type": "interactive",
-  "to": sender_wa_number,
-  "interactive": {
-    "type": "location_request_message",
-    "body": {
-      "text": "📍 Please share your *PICKUP LOCATION* so we can get things moving!"
-    },
-    "action": {
-      "name": "send_location"
-    }
-  }
-}
-
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(graph_url, json=req_body, headers=headers)
-        print(response.status_code, response.text)
-        #print(response.text[0]["messages"][0]["id"])
-    return
-
-# async def request_dropoff_location (sender_wa_number, auth, graph_url):
-#     req_body = {
-#   "messaging_product": "whatsapp",
-#   "recipient_type": "individual",
-#   "type": "interactive",
-#   "to": sender_wa_number,
-#   "interactive": {
-#     "type": "location_request_message",
-#     "body": {
-#       "text": "Please select your DROP-OFF location "
-#     },
-#     "action": {
-#       "name": "send_location"
-#     }
-#   }
-# }
-
-#     headers = {
-#         "Authorization": f"Bearer {auth}",
-#         "Content-Type": "application/json"
-
-#     }
-#     async with httpx.AsyncClient() as client:
-#         response = await client.post(graph_url, json=req_body, headers=headers)
-#         print(response.status_code, response.text)
-#         #print(response.text[0]["messages"][0]["id"])
-#     return
-
-
-def normalize_phone_number(phone: str) -> str:
-    """
-    Converts any Nigerian phone number into canonical WhatsApp format (2348151033428).
-    Handles 080..., 081..., 090..., 070..., 091..., +234..., 234...
-    """
-    if not phone:
-        return ""
-    clean = re.sub(r'[^\d]', '', str(phone))
-    if clean.startswith("0") and len(clean) == 11:
-        return "234" + clean[1:]
-    if len(clean) == 10 and clean[0] in ['7', '8', '9']:
-        return "234" + clean
-    return clean
-
-
-def get_phone_variants(phone: str) -> list[str]:
-    """
-    Generates all equivalent representations of a phone number (e.g. 081..., 23481..., +23481..., 81..., +1...).
-    Handles raw digits and country prefix variations across international and local formats.
-    """
-    if not phone:
-        return []
-    raw_str = str(phone)
-    clean_digits = re.sub(r'[^\d]', '', raw_str)
-    variants = set([phone, raw_str, clean_digits])
-    if clean_digits:
-        variants.add(f"+{clean_digits}")
-
-    canonical = normalize_phone_number(phone)
-    if len(canonical) == 13 and canonical.startswith("234"):
-        local_fmt = "0" + canonical[3:]
-        plus_fmt = "+" + canonical
-        raw_fmt = canonical[3:]
-        variants.update([canonical, local_fmt, plus_fmt, raw_fmt])
-    return [v for v in variants if v]
-
-
-async def get_user_role(wa_number: str, db: AsyncSession) -> str:
-    """
-    Categorizes a WhatsApp phone number into one of four roles:
-    - 'rider': Number is registered as a dispatch rider in models.Riders.
-    - 'customer': Number is registered in models.User (not deleted) or has created orders as sender_wa_number.
-    - 'recipient': Number is listed as recipient_phone_number on any active or historical order, and has not registered as a customer.
-    - 'guest': Unregistered user with no rider, customer, or recipient history.
-    """
-    if not wa_number:
-        return "guest"
-
-    possible_numbers = get_phone_variants(wa_number)
-
-    # 1. Check Rider
-    rider_res = await db.execute(
-        select(models.Riders.id).where(
-            (models.Riders.rider_wa_number.in_(possible_numbers)) |
-            (models.Riders.rider_phonenumber_2.in_(possible_numbers))
-        ).limit(1)
-    )
-    if rider_res.scalars().first() is not None:
-        return "rider"
-
-    # 2. Check Registered Customer (models.User)
-    user_res = await db.execute(
-        select(models.User.id).where(
-            ((models.User.display_phone_number.in_(possible_numbers)) |
-             (models.User.wa_id.in_(possible_numbers)) |
-             (models.User.phone_number_id.in_(possible_numbers))) &
-            (models.User.is_deleted == False)
-        ).limit(1)
-    )
-    if user_res.scalars().first() is not None:
-        return "customer"
-
-    # Check Customer who sent an order
-    sender_res = await db.execute(
-        select(models.Orders.id).where(
-            models.Orders.sender_wa_number.in_(possible_numbers)
-        ).limit(1)
-    )
-    if sender_res.scalars().first() is not None:
-        return "customer"
-
-    # 3. Check Recipient
-    recipient_res = await db.execute(
-        select(models.Orders.id).where(
-            models.Orders.recipient_phone_number.in_(possible_numbers)
-        ).limit(1)
-    )
-    if recipient_res.scalars().first() is not None:
-        return "recipient"
-
-    return "guest"
-
-
-async def get_active_order_for_customer_or_recipient(wa_number: str, db: AsyncSession):
-    """
-    Retrieves the most recent active order where the user is either the sender or the recipient.
-    Used for OTP inquiries and tracking where either party may request status or verification codes.
-    """
-    possible_numbers = get_phone_variants(wa_number)
-    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
-    result = await db.execute(
-        select(models.Orders)
-        .where(
-            (models.Orders.sender_wa_number.in_(possible_numbers)) |
-            (models.Orders.recipient_phone_number.in_(possible_numbers))
-        )
-        .where(models.Orders.status.in_(active_statuses))
-        .where(models.Orders.status != "completed")
-        .where(
-            (models.Orders.delivery_progression_status.is_(None)) |
-            (models.Orders.delivery_progression_status != "package_delivered")
-        )
-        .order_by(models.Orders.created_at.desc())
-    )
-    order = result.scalars().first()
-    if order:
-        if order.status == "confirmed" and order.sla_expires_by:
-            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
-            if sla_dt <= datetime.now(UTC):
-                return None
-        return order
-    return None
-
-
-async def get_active_ride(sender_wa_number: str, db: AsyncSession):
-    possible_numbers = get_phone_variants(sender_wa_number)
-    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
-    result = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.sender_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.in_(active_statuses))
-        .where(models.Orders.status != "completed")
-        .where(
-            (models.Orders.delivery_progression_status.is_(None)) |
-            (models.Orders.delivery_progression_status != "package_delivered")
-        )
-        .order_by(models.Orders.created_at.desc())
-    )
-    order = result.scalars().first()
-    if order:
-        if order.status == "confirmed" and order.sla_expires_by:
-            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
-            if sla_dt <= datetime.now(UTC):
-                return None
-        return order
-    return None
-
-async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: AsyncSession):
-    """Updates status in RiderOffer table for rider receipts (delivered, read)."""
-    possible_numbers = get_phone_variants(rider_wa_number)
-
-    await db.execute(
-        update(models.RiderOffer)
-        .where(models.RiderOffer.rider_wa_number.in_(possible_numbers))
-        .where(models.RiderOffer.status != "accepted")
-        .values(status=status_val, updated_at=datetime.now(UTC))
-    )
-    await db.commit()
-
-
-async def get_rider_rating_stats(rider_wa_number: str, db: AsyncSession) -> tuple[float | None, int]:
-    """Calculate the average star rating and total review count for a rider across all their phone variants."""
-    possible_numbers = get_phone_variants(rider_wa_number)
-    result = await db.execute(
-        select(func.avg(models.RiderRating.rating), func.count(models.RiderRating.id))
-        .where(models.RiderRating.rider_wa_number.in_(possible_numbers))
-    )
-    row = result.first()
-    if row and row[0] is not None:
-        return round(float(row[0]), 1), int(row[1])
-    return None, 0
-
-
-async def send_rider_rating_prompt(
-    customer_wa_number: str,
-    rider_name: str,
-    order_number: str,
-    auth: str,
-    graph_url: str
-):
-    """Sends an interactive WhatsApp list message allowing the customer to rate the rider from 5 to 1 stars."""
-    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
-    safe_rider_name = (rider_name or "your rider")[:20]
-
-    body_text = (
-        f"⭐ *Rate Your Delivery*\n\n"
-        f"How would you rate *{rider_name}* for Order *{order_number}*?\n\n"
-        f"Tap *Rate Rider* below to submit your rating — 5 stars for excellent service! 🌟"
-    )
-
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "list",
-            "header": {
-                "type": "text",
-                "text": "⭐ Rate Your Rider"
-            },
-            "body": {
-                "text": body_text
-            },
-            "footer": {
-                "text": "InTime Service Quality"
-            },
-            "action": {
-                "button": "Rate Rider",
-                "sections": [
-                    {
-                        "title": f"Rate {safe_rider_name}"[:24],
-                        "rows": [
-                            {
-                                "id": f"rate_rider:{order_number}:5",
-                                "title": "⭐⭐⭐⭐⭐ 5 Stars",
-                                "description": "Excellent service!"
-                            },
-                            {
-                                "id": f"rate_rider:{order_number}:4",
-                                "title": "⭐⭐⭐⭐ 4 Stars",
-                                "description": "Very good service"
-                            },
-                            {
-                                "id": f"rate_rider:{order_number}:3",
-                                "title": "⭐⭐⭐ 3 Stars",
-                                "description": "Good service"
-                            },
-                            {
-                                "id": f"rate_rider:{order_number}:2",
-                                "title": "⭐⭐ 2 Stars",
-                                "description": "Fair / Needs improvement"
-                            },
-                            {
-                                "id": f"rate_rider:{order_number}:1",
-                                "title": "⭐ 1 Star",
-                                "description": "Poor service"
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-    }
-
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.post(graph_url, json=req_body, headers=headers)
-        print("rating prompt sent:", res.status_code, res.text)
-        if res.status_code >= 400:
-            fallback_msg = (
-                f"⭐ *Rate Your Experience with {rider_name}*\n\n"
-                f"How would you rate your delivery for Order *{order_number}*?\n\n"
-                f"Reply with a number:\n"
-                f"5️⃣ - ⭐⭐⭐⭐⭐ (5 Stars - Excellent service!)\n"
-                f"4️⃣ - ⭐⭐⭐⭐ (4 Stars - Very good)\n"
-                f"3️⃣ - ⭐⭐⭐ (3 Stars - Good)\n"
-                f"2️⃣ - ⭐⭐ (2 Stars - Fair)\n"
-                f"1️⃣ - ⭐ (1 Star - Poor)"
-            )
-            await send_custom_message(customer_wa_number, fallback_msg, auth, graph_url)
-
-
-async def send_rider_eta_prompt(
-    rider_wa_number: str,
-    order_number: str,
-    auth: str,
-    graph_url: str
-):
-    """Sends an interactive WhatsApp button prompt to the rider asking if they are 10 minutes away from drop-off."""
-    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
-    body_text = (
-        f"📍 *ETA Check*\n\n"
-        f"Are you about 10 minutes away from the drop-off location for Order *{order_number}*?"
-    )
-    req_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "body": {
-                "text": body_text
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": f"ETA_YES_10MINS:{order_number}",
-                            "title": "🛵 Yes, ~10 Mins"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": f"ETA_NO_STILL_FAR:{order_number}",
-                            "title": "⏳ Still On Way"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(graph_url, json=req_body, headers=headers)
-            print("rider ETA prompt sent:", res.status_code, res.text)
-            if res.status_code >= 400:
-                # Fallback to plain text if interactive button is rejected
-                await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
-    except Exception as e:
-        print(f"Error sending interactive ETA buttons to rider: {e}")
-        await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
-
-
-async def save_rider_rating(
-    order_number: str,
-    rating_val: int,
-    customer_wa: str,
-    db: AsyncSession,
-    auth: str,
-    graph_url: str
-):
-    """Saves a rider star rating (1–5) and notifies both customer and rider with updated stats."""
-    rating_val = max(1, min(5, rating_val))
-
-    order_res = await db.execute(
-        select(models.Orders).where(models.Orders.order_number == order_number)
-    )
-    order = order_res.scalars().first()
-    if not order:
-        return
-
-    rider_wa = order.rider_wa_number
-    customer_number = customer_wa or order.sender_wa_number
-
-    # Check if this order was already rated
-    existing_rating = await db.execute(
-        select(models.RiderRating).where(models.RiderRating.order_number == order_number)
-    )
-    if existing_rating.scalars().first():
-        msg = f"🙏 You have already submitted a rating for Order *{order_number}*. Thank you for your feedback!"
-        await send_custom_message(customer_number, msg, auth, graph_url)
-        return
-
-    # Find rider's name
-    rider_name = "your rider"
-    if rider_wa:
-        r_res = await db.execute(
-            select(models.Riders.first_name, models.Riders.last_name)
-            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa)))
-        )
-        r_row = r_res.first()
-        if r_row:
-            rider_name = f"{r_row[0]} {r_row[1]}"
-
-    # Insert into rider_ratings
-    new_rating = models.RiderRating(
-        rider_wa_number=rider_wa or "unknown",
-        order_number=order_number,
-        rating=rating_val
-    )
-    db.add(new_rating)
-    await db.commit()
-
-    # Fetch updated average rating and count
-    avg_rating, total_count = await get_rider_rating_stats(rider_wa, db) if rider_wa else (None, 0)
-    avg_str = f"{avg_rating:.1f} ★" if avg_rating is not None else f"{rating_val}.0 ★"
-    reviews_str = f"{total_count} {'review' if total_count == 1 else 'reviews'}"
-
-    stars_display = "⭐" * rating_val
-    rating_labels = {
-        5: "Excellent service!",
-        4: "Very good service!",
-        3: "Good service!",
-        2: "Fair service.",
-        1: "Poor service."
-    }
-    label = rating_labels.get(rating_val, "")
-
-    # Send energetic thank you to customer
-    customer_msg = (
-        f"🌟 *Thank you for rating {rider_name}!* 🌟\n\n"
-        f"You gave: {stars_display} (*{rating_val}/5 stars* — {label})\n\n"
-        f"Your feedback helps us reward great riders and keep InTime fast, reliable, and delightful! 🛵💨\n\n"
-        f"Ready for your next dispatch? Just type *Send an Order* anytime! 📦🚀"
-    )
-    await send_custom_message(customer_number, customer_msg, auth, graph_url)
-
-    # Notify rider of the rating they received
-    if rider_wa:
-        rider_msg = (
-            f"🎉 *New Customer Rating!* {stars_display}\n\n"
-            f"A customer just rated you *{rating_val}/5 stars* for Order *{order_number}*! 🌟\n\n"
-            f"📊 Your overall average rating is now: *{avg_str}* ({reviews_str})\n\n"
-            f"Keep up the great work! More orders coming soon! 🏍️💨"
-        )
-        await send_custom_message(rider_wa, rider_msg, auth, graph_url)
-
-
-async def verify_delivery_code(
-    order: models.Orders,
-    submitted_code: str,
-    rider_wa_number: str,
-    db: AsyncSession,
-    auth: str,
-    graph_url: str
-) -> bool:
-    """
-    Validates the 5-digit delivery verification code submitted by the rider.
-    Enforces a strict 3-trial limit.
-    On success: marks order as completed/delivered, sends completion notifications, and prompts customer for rating.
-    On failure: increments attempts, warns rider of remaining trials, and alerts sender on lockout (3 failed attempts).
-    """
-    clean_submitted = re.sub(r'[^\d]', '', str(submitted_code or "")).strip()
-    clean_expected = re.sub(r'[^\d]', '', str(order.verification_code or "")).strip()
-
-    # 1. Check if maximum attempts already exhausted
-    if (order.verification_attempts or 0) >= 3:
-        locked_msg = (
-            f"🚫 *Verification Locked*\n\n"
-            f"The maximum limit of 3 verification attempts has already been reached for Order *{order.order_number}*.\n\n"
-            f"For security reasons, code entry is disabled. Please contact InTime support at *+234 815 103 3428* or have the sender confirm the handover."
-        )
-        await send_custom_message(rider_wa_number, locked_msg, auth, graph_url)
-        return False
-
-    # 2. Check for match
-    if clean_expected and clean_submitted == clean_expected:
-        # SUCCESS! Update order status to completed and delivered
-        await db.execute(
-            update(models.Orders)
-            .where(models.Orders.order_number == order.order_number)
-            .values(
-                delivery_progression_status="package_delivered",
-                status="completed"
-            )
-        )
-        await db.commit()
-
-        # Fetch rider's display name
-        r_res = await db.execute(
-            select(models.Riders.first_name, models.Riders.last_name)
-            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
-        )
-        r_row = r_res.first()
-        rider_display_name = f"{r_row[0]} {r_row[1]}" if r_row else "your rider"
-
-        rider_success_msg = (
-            f"✅ *Verification Successful!* 🎉\n\n"
-            f"Code *{clean_submitted}* verified successfully! Order *{order.order_number}* is now completed.\n\n"
-            f"Thank you for your fantastic hustle! 🛵💨 More dispatch requests coming your way soon! 💪✨"
-        )
-        recipient_msg = (
-            f"✅🎉 *Your Package Has Arrived!*\n\n"
-            f"Your delivery for Order *{order.order_number}* has been verified with your verification code and completed! 📦✨\n\n"
-            f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
-        )
-        sender_msg = (
-            f"🎉🥳 *Delivery Complete & Verified!* 📦✨\n\n"
-            f"Woohoo! Your package for Order *{order.order_number}* was safely verified with your recipient's code and delivered! 🎊🛵💨\n\n"
-            f"Thank you so much for choosing *InTime* — we loved delivering for you today! 🚀💫\n"
-            f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
-        )
-
-        # Send notifications
-        await send_custom_message(rider_wa_number, rider_success_msg, auth, graph_url)
-        if order.sender_wa_number:
-            await send_custom_message(order.sender_wa_number, sender_msg, auth, graph_url)
-        if order.recipient_phone_number:
-            await send_details_to_recipients(order.recipient_phone_number, recipient_msg, auth, graph_url)
-
-        # Send rating prompt to customer
-        if order.sender_wa_number:
-            await send_rider_rating_prompt(
-                customer_wa_number=order.sender_wa_number,
-                rider_name=rider_display_name,
-                order_number=order.order_number,
-                auth=auth,
-                graph_url=graph_url
-            )
-
-        print(f"🟢 [CODE VERIFIED] Order {order.order_number} verified with code {clean_submitted} by rider {rider_wa_number}.")
-        return True
-
-    else:
-        # INCORRECT CODE
-        new_attempts = (order.verification_attempts or 0) + 1
-        await db.execute(
-            update(models.Orders)
-            .where(models.Orders.order_number == order.order_number)
-            .values(verification_attempts=new_attempts)
-        )
-        await db.commit()
-
-        remaining_trials = max(0, 3 - new_attempts)
-
-        if remaining_trials > 0:
-            trial_str = f"*{remaining_trials}* trial{'s' if remaining_trials > 1 else ''}"
-            fail_msg = (
-                f"❌ *Incorrect Verification Code!*\n\n"
-                f"The code *{clean_submitted or submitted_code}* does not match.\n\n"
-                f"⚠️ You have {trial_str} remaining (Attempt {new_attempts}/3).\n\n"
-                f"Please ask the recipient for their 5-digit verification code and try again."
-            )
-            await send_custom_message(rider_wa_number, fail_msg, auth, graph_url)
-            print(f"⚠️ [CODE FAILED] Order {order.order_number}: attempt {new_attempts}/3 failed (entered: '{clean_submitted}').")
-        else:
-            # 3 ATTEMPTS EXHAUSTED - LOCKOUT
-            lockout_rider_msg = (
-                f"🚫 *Verification Limit Exceeded*\n\n"
-                f"You have failed 3 verification attempts for Order *{order.order_number}*.\n\n"
-                f"For security reasons, code entry is now locked. Please contact InTime support at *+234 815 103 3428* or ask the sender to verify the delivery."
-            )
-            await send_custom_message(rider_wa_number, lockout_rider_msg, auth, graph_url)
-
-            # Alert sender
-            if order.sender_wa_number:
-                alert_sender_msg = (
-                    f"⚠️ *Security Alert: Verification Attempts Failed*\n\n"
-                    f"Your rider entered an incorrect verification code 3 times for Order *{order.order_number}*.\n\n"
-                    f"Please contact your recipient or call InTime support at *+234 815 103 3428* to confirm package handover."
-                )
-                await send_custom_message(order.sender_wa_number, alert_sender_msg, auth, graph_url)
-
-            print(f"🚨 [CODE LOCKOUT] Order {order.order_number}: 3 verification attempts exhausted by rider {rider_wa_number}.")
-
-        return False
-
-
-async def get_active_ride_by_number(order_number: str, db: AsyncSession):
-    result = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.order_number == order_number)
-    )
-    return result.scalars().first()
-
-
-async def schedule_user_session_timeout(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
-    """
-    Monitors user input inactivity during order initialization (e.g. pending package image upload).
-    Sends a friendly reminder after 5 minutes, and auto-expires the session after 15 minutes.
-    """
-    try:
-        # 1. First reminder after 5 minutes (300 seconds)
-        await asyncio.sleep(300)
-
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            # If user already uploaded image or order state changed, exit immediately
-            if not order or order.status != "confirmed" or order.package_image_id is not None:
-                return
-
-            reminder_msg = (
-                f"⏰ *Pending Order Reminder*\n\n"
-                f"We're still waiting for a photo of your package to complete Order *{order_number}* and alert nearby riders.\n\n"
-                f"Please snap and upload the photo whenever you're ready!"
-            )
-            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
-
-        # 2. Session timeout / expiry after another 10 minutes (600 seconds -> 15 minutes total)
-        await asyncio.sleep(600)
-
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if not order or order.status != "confirmed" or order.package_image_id is not None:
-                return
-
-            # Mark order as expired in DB
-            await db.execute(
-                update(models.Orders)
-                .where(models.Orders.order_number == order_number)
-                .values(status="expired")
-            )
-            await db.commit()
-
-            timeout_msg = (
-                f"⌛ *Session Expired*\n\n"
-                f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
-                f"Whenever you're ready to send a package, just reply 'Hi' or type 'Send an Order'!"
-            )
-            await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
-    except Exception as e:
-        print(f"schedule_user_session_timeout background task error: {e}")
-
-
-async def schedule_rider_process_reminders(order_number: str, rider_wa_number: str, auth: str, graph_url: str):
-    """
-    Monitors an active order after rider acceptance.
-    Phase 1 — Pickup: sends "Have you picked up the package?" after 5 min, then up to 2 reminders every 5 min.
-    If rider doesn't respond after all reminders: unassigns rider, re-routes order to other riders.
-    Phase 2 — Dropoff: after pickup confirmed, sends dropoff reminders.
-    """
-    try:
-        # ---------------------------------------------------------------
-        # PHASE 1: PICKUP PROMPT & REMINDERS (Initial + 2 follow-ups max)
-        # ---------------------------------------------------------------
-        await asyncio.sleep(300)  # 5 minutes after acceptance before first prompt
-
-        pickup_reminder_count = 0
-        max_reminders_after_initial = 2
-
-        while pickup_reminder_count <= max_reminders_after_initial:
-            from database import AsyncSessionLocal
-            async with AsyncSessionLocal() as db:
-                order = await get_active_ride_by_number(order_number, db)
-
-                # Exit if order cancelled, completed, or expired
-                if not order or order.status in ["cancelled", "completed", "expired"]:
-                    return
-
-                # If rider already marked package picked up, advance to Phase 2
-                if order.delivery_progression_status in ["package_picked_up", "package_delivered"]:
-                    break
-
-                # Send initial prompt or reminder
-                if pickup_reminder_count == 0:
-                    header = "Have you picked up the package?"
-                    message = "📦 Tap the button below once you've picked up the package."
-                else:
-                    header = "⏰ Pickup Reminder"
-                    message = (
-                        f"⏰ *Pickup Reminder ({pickup_reminder_count}/{max_reminders_after_initial})*\n\n"
-                        f"Hi! You have an ongoing pickup for Order *{order_number}*.\n\n"
-                        f"Please tap the button below once you've picked up the package from the sender."
-                    )
-
-                await send_custom_flow(
-                    wa_number=rider_wa_number,
-                    flow_token={"order_number": order_number},
-                    message=message,
-                    header=header,
-                    flow_id=FLOW_PICKUP_ID,
-                    flow_cta="Picked Up Package?",
-                    screen_name="flow_to_ask_if_rider_has_picked_up_package",
-                    auth=auth,
-                    graph_url=graph_url
-                )
-
-            pickup_reminder_count += 1
-            await asyncio.sleep(300)  # 5 minutes between each reminder
-
-        # ---------------------------------------------------------------
-        # CHECK IF RIDER FAILED TO RESPOND TO ALL PICKUP REMINDERS
-        # ---------------------------------------------------------------
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if order and order.status == "rider_accepted" and order.delivery_progression_status not in ["package_picked_up", "package_delivered"]:
-                print(f"[RIDER TIMEOUT] Rider ({rider_wa_number}) did not respond to pickup reminders for order {order_number}. Re-routing...")
-
-                # 1. Unassign rider, reset order to 'confirmed'
-                await db.execute(
-                    update(models.Orders)
-                    .where(models.Orders.order_number == order_number)
-                    .values(status="confirmed", rider_wa_number=None)
-                )
-                await db.commit()
-
-                # 2. Notify unresponsive rider
-                await send_custom_message(rider_wa_number, (
-                    f"⏰ *Order Re-assigned*\n\n"
-                    f"Due to inactivity, Order *{order_number}* has been unassigned from you and returned to dispatch."
-                ), auth, graph_url)
-
-                # 3. Notify customer
-                await send_custom_message(order.sender_wa_number, (
-                    f"🔄 *Re-routing Order*\n\n"
-                    f"Your assigned rider was unresponsive for Order *{order_number}*.\n\n"
-                    f"We are re-routing your delivery to other nearby riders right now!"
-                ), auth, graph_url)
-
-                # 4. Re-broadcast to available riders
-                order_details = {
-                    "package_description": order.package_description,
-                    "pick_up_location": order.pickup_location_name,
-                    "drop_off_location": order.dropoff_location_name,
-                    "offered_price": order.customer_initial_offered_price or order.final_price_agreed_by_cust_and_rider or "1000",
-                    "order_number": order.order_number,
-                    "image_id": order.package_image_id
-                }
-                await get_rider(
-                    sender_wa_number=order.sender_wa_number,
-                    auth=auth,
-                    graph_url=graph_url,
-                    order_details=order_details,
-                    db=db
-                )
-                return
-
-        # ---------------------------------------------------------------
-        # PHASE 2: DROPOFF / DELIVERY REMINDERS (up to 2 reminders)
-        # ---------------------------------------------------------------
-        await asyncio.sleep(600)  # 10 min after pickup before first dropoff reminder
-
-        dropoff_reminder_count = 0
-        while dropoff_reminder_count < max_reminders_after_initial:
-            async with AsyncSessionLocal() as db:
-                order = await get_active_ride_by_number(order_number, db)
-
-                if not order or order.status in ["cancelled", "completed", "expired"]:
-                    return
-                if order.delivery_progression_status == "package_delivered":
-                    return
-
-                recipient_phone_str = order.recipient_phone_number or "Not provided"
-                dropoff_loc = order.dropoff_location_name or "Drop-off location"
-                await send_custom_message(
-                    sender_wa_number=rider_wa_number,
-                    message=(
-                        f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})* 🛵💨\n\n"
-                        f"Order: *{order_number}*\n\n"
-                        f"🏁 *Drop-off:* {dropoff_loc}\n"
-                        f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                        f"When you arrive at the drop-off location, ask the recipient for their *5-digit verification code* and reply with it directly in this chat (e.g. *12345*) to complete the delivery! 🤝✅"
-                    ),
-                    auth=auth,
-                    graph_url=graph_url
-                )
-
-            dropoff_reminder_count += 1
-            await asyncio.sleep(300)
-
-        # Final check: if still in transit after all reminders, nudge the customer
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if order and order.delivery_progression_status == "package_picked_up":
-                await send_custom_message(order.sender_wa_number, (
-                    f"📦 *Delivery Status Check*\n\n"
-                    f"Order *{order_number}* is currently in transit.\n"
-                    f"If you need an update, you can call your rider directly at *{rider_wa_number}*."
-                ), auth, graph_url)
-
-    except Exception as e:
-        print(f"schedule_rider_process_reminders background task error: {e}")
-
-
-async def _delayed_send_pickup_flow(wa_number, order_number, auth, graph_url, delay=300):
-    await asyncio.sleep(delay)
-    await send_custom_flow(
-        wa_number=wa_number,
-        flow_token={"order_number": order_number},
-        message="📦 Tap the button below once you've picked up the package.",
-        header="Have you picked up the package?",
-        flow_id=FLOW_PICKUP_ID,
-        flow_cta="Picked Up Package?",
-        screen_name="flow_to_ask_if_rider_has_picked_up_package",
-        auth=auth,
-        graph_url=graph_url
-    )
-
-
-async def schedule_customer_offer_timeout(order_number: str, customer_wa_number: str, rider_name: str, proposed_amount: str, auth: str, graph_url: str):
-    """
-    Monitors customer inactivity when a rider sends a counter-offer.
-    Sends a friendly reminder after 4 minutes if customer hasn't accepted.
-    """
-    try:
-        await asyncio.sleep(240)
-
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if not order or order.status != "confirmed":
-                return  # Stop if customer accepted, cancelled, or rider assigned
-
-            reminder_msg = (
-                f"⏰ *Counter Offer Reminder*\n\n"
-                f"Rider *{rider_name}* proposed an offer of *{proposed_amount}* for Order *{order_number}*.\n\n"
-                f"Please accept the offer or adjust your fare to confirm your rider!"
-            )
-            await send_custom_message(customer_wa_number, reminder_msg, auth, graph_url)
-    except Exception as e:
-        print(f"schedule_customer_offer_timeout background task error: {e}")
-
-
-async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
-    """
-    State-aware background task that monitors order search progress.
-    Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
-    Timeline:
-      - 2 minutes (120s): If riders have viewed the order, notifies customer:
-        "Good news 👀 *{read_count}* rider(s) have viewed your delivery offer! We're waiting for one to accept."
-        (Silent if 0 views).
-      - 5 minutes (300s total, +180s): If riders viewed, sends updated view count.
-        If no riders viewed yet but order was delivered:
-        "Good news 👀 We have delivered your order to *{delivered_count}* rider(s) and they are yet to view it. We'll update you as soon as they open it!"
-      - 7 minutes (420s total, +120s): If still no rider accepted, prompts customer with fare escalation:
-        "🔔 Need a rider faster?" flow.
-    """
-    try:
-        notified_views = 0
-
-        # --- CHECKPOINT 1: 2 Minutes (120 seconds) ---
-        await asyncio.sleep(120)
-
-        from database import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if not order or order.status != "confirmed":
-                return  # Stop immediately if rider accepted, cancelled, or completed!
-
-            offers_res = await db.execute(
-                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
-            )
-            offers = offers_res.scalars().all()
-            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
-
-            # Only notify at 2 mins if riders have actively viewed the order
-            if read_count > 0:
-                verb_phrase = "s have" if read_count > 1 else " has"
-                msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
-                await send_custom_message(sender_wa_number, msg, auth, graph_url)
-                notified_views = read_count
-
-        # --- CHECKPOINT 2: 5 Minutes (300 seconds total, +180 seconds) ---
-        await asyncio.sleep(180)
-
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if not order or order.status != "confirmed":
-                return
-
-            offers_res = await db.execute(
-                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
-            )
-            offers = offers_res.scalars().all()
-            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
-            delivered_count = sum(1 for o in offers if o.status in ["delivered", "read", "viewed"])
-            total_notified = len(offers)
-            effective_delivered = delivered_count if delivered_count > 0 else total_notified
-
-            if read_count > 0:
-                if read_count != notified_views:
-                    verb_phrase = "s have" if read_count > 1 else " has"
-                    msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
-                    await send_custom_message(sender_wa_number, msg, auth, graph_url)
-                    notified_views = read_count
-            elif effective_delivered > 0:
-                plural_del = "s" if effective_delivered > 1 else ""
-                msg = f"Good news 👀 We have delivered your order to *{effective_delivered}* rider{plural_del} and they are yet to view it. We'll update you as soon as they open it!"
-                await send_custom_message(sender_wa_number, msg, auth, graph_url)
-            else:
-                msg = "Stay locked in 👀 We're searching for available riders nearby for your package. We'll update you as soon as one accepts."
-                await send_custom_message(sender_wa_number, msg, auth, graph_url)
-
-        # --- CHECKPOINT 3: 7 Minutes (420 seconds total, +120 seconds) ---
-        await asyncio.sleep(120)
-
-        async with AsyncSessionLocal() as db:
-            order = await get_active_ride_by_number(order_number, db)
-            if not order or order.status != "confirmed":
-                return
-
-            escalation_msg = (
-                "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"
-                "Increasing your fare slightly can help attract a rider quickly."
-            )
-            await send_custom_flow(
-                wa_number=sender_wa_number,
-                flow_token={"order_number": order_number},
-                message=escalation_msg,
-                header="🔔 Need a rider faster?",
-                flow_id=FLOW_INCREASE_FARE_ID,
-                flow_cta="I want to increase my fare",
-                screen_name="CUST_INCREASE_FARE_SCREEN",
-                auth=auth,
-                graph_url=graph_url
-            )
-    except Exception as e:
-        print(f"schedule_order_followups background task error: {e}")
-
-
-async def mark_rider_available_if_rider(sender_wa_number: str, db: AsyncSession):
-    """
-    Automatically marks a rider as 'available' whenever they send a message to InTime.
-    This registers the rider for daily dispatch within Meta's free 24-hour customer service window.
-    """
-    if not sender_wa_number:
-        return
-    possible_numbers = get_phone_variants(sender_wa_number)
-    rider_result = await db.execute(
-        select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
-    )
-    rider = rider_result.scalars().first()
-    if rider:
-        if rider.availability_status != "available":
-            rider.availability_status = "available"
-            await db.commit()
-            print(f"🟢 [RIDER CHECK-IN] Marked rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) as AVAILABLE for 24h window.")
-        else:
-            print(f"ℹ️ [RIDER CHECK-IN] Rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) is already ACTIVE.")
-
-
-async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncSession, reset_offers: bool = False):
-    """
-    Dispatches the order to all available riders.
-    When reset_offers=True (used during re-routing), previous RiderOffer records for this order
-    are deleted first so the view count restarts from zero for the new round.
-    """
-    search_msg = f"🔍 Searching for available riders nearby, please hold on..."
-    await send_custom_message(sender_wa_number, search_msg, auth, graph_url)
-
-    # --- Reset rider offer records when re-routing to avoid inflated view counts ---
-    if reset_offers:
-        await db.execute(
-            delete(models.RiderOffer).where(
-                models.RiderOffer.order_number == order_details['order_number']
-            )
-        )
-        await db.commit()
-        print(f"[REROUTE] Cleared previous RiderOffer records for order {order_details['order_number']}")
-
-    sender_variants = get_phone_variants(sender_wa_number)
-    riders_res = await db.execute(
-        select(models.Riders)
-        .where(models.Riders.availability_status == "available")
-        .where(models.Riders.kyc_status == "verified")
-        .where(models.Riders.rider_wa_number.not_in(sender_variants))
-    )
-    riders = list(riders_res.scalars().all())
-
-    # --- TENTATIVE TEST-RIDER FALLBACK FOR META APP REVIEW ---
-    enable_test_fallback = os.getenv("ENABLE_REVIEW_TEST_FALLBACK", "true").strip().lower() in ("true", "1", "yes", "t")
-    test_rider_wa = os.getenv("TEST_RIDER_WA_NUMBER", "2348122319750").strip()
-
-    if not riders and enable_test_fallback and test_rider_wa:
-        test_rider_variants = get_phone_variants(test_rider_wa)
-        fallback_res = await db.execute(
-            select(models.Riders).where(models.Riders.rider_wa_number.in_(test_rider_variants))
-        )
-        fallback_rider = fallback_res.scalars().first()
-        if not fallback_rider:
-            fallback_rider = models.Riders(
-                first_name="Test",
-                last_name="Rider",
-                rider_wa_number=test_rider_wa,
-                rider_phonenumber_2=test_rider_wa,
-                availability_status="available",
-                kyc_status="verified"
-            )
-            db.add(fallback_rider)
-            await db.commit()
-            await db.refresh(fallback_rider)
-        elif fallback_rider.availability_status != "available" or fallback_rider.kyc_status != "verified":
-            fallback_rider.availability_status = "available"
-            fallback_rider.kyc_status = "verified"
-            await db.commit()
-            await db.refresh(fallback_rider)
-
-        riders = [fallback_rider]
-        print(f"[REVIEW TEST MODE ACTIVE] Production rider pool empty. Dispatched order {order_details['order_number']} to fallback test rider {test_rider_wa}.")
-
-    print(f"[DISPATCH SEARCH] Order {order_details['order_number']} dispatched by ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
-    if not riders:
-        print(f"[DISPATCH SEARCH] No active 'available' riders found for order {order_details['order_number']}.")
-
-    is_priority = bool(order_details.get('is_priority') or (order_details.get('is_drug') and order_details.get('is_urgent')))
-
-    for rider in riders:
-        try:
-            if is_priority:
-                header = f"🚨 URGENT MEDICATION DISPATCH! 🚨\n"
-                dispatch_msg = (
-                    f"💊 *PRIORITY DELIVERY - URGENT MEDICATION* 💊\n\n"
-                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
-                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
-                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
-                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
-                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
-                    f"⚡ *PRIORITY*: Medical supply needed ASAP! Please accept immediately if available."
-                )
-            else:
-                header = f"DISPATCH REQUEST!\n"
-                dispatch_msg = (
-                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
-                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
-                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
-                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
-                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
-                )
-
-            new_offer = models.RiderOffer(
-                order_number=order_details['order_number'],
-                rider_wa_number=rider.rider_wa_number,
-                status="sent"
-            )
-            db.add(new_offer)
-
-            await send_custom_flow(
-                wa_number=rider.rider_wa_number,
-                flow_token={"order_number": order_details['order_number']},
-                message=dispatch_msg,
-                header=header,
-                flow_id=FLOW_RIDER_ACCEPT_ID,
-                flow_cta="Accept or Negotiate",
-                screen_name="RECOMMEND",
-                auth=auth,
-                graph_url=graph_url
-            )
-            if order_details.get('image_id'):
-                await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
-        except Exception as e:
-            print(f"Error dispatching offer to rider {rider.rider_wa_number}: {e}")
-
-    await db.commit()
-
-    asyncio.create_task(schedule_order_followups(order_details['order_number'], sender_wa_number, auth, graph_url))
-    return
-
-
-
-
-# async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, db):
-#     ride = await get_active_ride(sender_wa_number, db)
-    
-#     if not ride:
-#         # no active ride, something went wrong
-#         message = "Something went wrong, please start again."
-#         await send_custom_message(sender_wa_number, message , auth, graph_url)
-#         return
-
-#     match ride.status:
-#         case "awaiting_pickup":
-#             ride.pickup_lat = lat
-#             ride.pickup_lng = lng
-#             ride.pickup_location_name = address
-#             ride.status = "awaiting_dropoff"
-#             await db.commit()
-#             await request_dropoff_location(sender_wa_number, auth, graph_url)
-
-#         case "awaiting_dropoff":
-#             ride.dropoff_lat = lat
-#             ride.dropoff_lng = lng
-#             ride.dropoff_location_name = address
-#             ride.status = "confirmed"
-#             await db.commit()
-            
-#             order_details = {
-#                 "package_description": ride.package_description,
-#                 "pick_up_location": ride.pickup_location_name,
-#                 "drop_off_location": ride.dropoff_location_name,
-#                 "offered_price": ride.customer_intital_offered_price,
-#                 "order_id": ride.order_number
-
-#             }
-#             print("order_details is: ")
-#             print(order_details)
-#             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
-
-
-
-
-
-
-async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
-    try:
-        order_result = await db.execute(
-            select(models.Orders)
-            .where(models.Orders.order_number == order_number)
-        )
-        order = order_result.scalars().first()
-        if not order:
-            print(f"⚠️ [RIDER ACCEPT] Order {order_number} not found.")
-            return
-        order_status = order.status
-
-        rider_details_res = await db.execute(
-            select(models.Riders)
-            .where(models.Riders.rider_wa_number.in_(get_phone_variants(sender_wa_number)))
-        )
-        rider_details = rider_details_res.scalars().first()
-        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
-        rider_phone = rider_details.rider_wa_number if rider_details else sender_wa_number
-
-        if order_status == "confirmed":
-            customer_wa_res = await db.execute(
-                select(models.Orders.sender_wa_number)
-                .where(models.Orders.order_number == order_number)
-            )
-            customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
-            
-            sender_user_res = await db.execute(
-                select(models.User.name).where(
-                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
-                )
-            )
-            sender_name = sender_user_res.scalars().first() or "Someone"
-            recipient_phone_str = order.recipient_phone_number or "Not provided"
-            rider_message = (
-                f"🎉 *Ride Accepted!* 🏍️💨\n\n"
-                f"You have accepted Order *{order.order_number}*.\n\n"
-                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
-                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
-                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
-                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                f"Please head to the pickup location now. Safe riding! 🌟"
-            )
-            recipient_message = (
-                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
-                f"📦 Description: {order.package_description}\n\n"
-                f"📍 Pickup: {order.pickup_location_name}\n\n"
-                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
-                f"🔖 Order No: {order.order_number}\n\n"
-                f"🧑‍✈️ Rider: {rider_name}\n"
-                f"📞 Rider's Phone: {rider_phone}"
-            )
-            recipient_wa_number = order.recipient_phone_number
-
-            # Save accepted state first so the order_number is valid when buttons are sent
-            await db.execute(
-               update(models.Orders)
-               .where(models.Orders.order_number == order_number)
-               .values(
-                   status="rider_accepted",
-                   rider_wa_number=sender_wa_number,
-                   final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider or order.customer_initial_offered_price
-               )
-            )
-            await db.commit()
-
-            # Notify rider
-            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
-
-            # Get rider rating stats to display in customer confirmation
-            avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
-            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
-
-            # Notify customer with action buttons & rider rating
-            await send_rider_accepted_with_options(
-                customer_wa_number=customer_wa_number,
-                rider_name=rider_name,
-                rider_phone=rider_phone,
-                order_number=order_number,
-                auth=AUTH,
-                graph_url=GRAPH_URL,
-                rating_display=rating_display
-            )
-
-            # Notify recipient safely (so un-whitelisted recipient in dev mode doesn't break acceptance flow)
-            if recipient_wa_number:
-                try:
-                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
-                except Exception as recip_err:
-                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
-
-            # Start pickup & delivery reminder loop for the rider
-            asyncio.create_task(schedule_rider_process_reminders(
-                order_number=order_number,
-                rider_wa_number=sender_wa_number,
-                auth=AUTH,
-                graph_url=GRAPH_URL
-            ))
-
-        else:
-            rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
-            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
-    except Exception as accept_err:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Error in handle_case_where_rider_has_accepted_the_ride: {accept_err}")   
-
-
-
-
-async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
-    message = (
-        "💬 Not happy with the price? Tap below to send your counter offer."
-        )
-
-    await send_custom_flow(
-            wa_number=sender_wa_number,
-            flow_token={"order_number": order_number},
-            message=message,
-            header="-",
-            flow_id=FLOW_NEGOTIATE_ID,
-            flow_cta="Input Price",
-            screen_name="NEGOTIATE_SCREEN",
-            auth=AUTH,
-            graph_url=GRAPH_URL
-        )
-
-
-async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db:AsyncSession):
-    order_result = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.order_number == order_number)
-    )
-
-    order = order_result.scalars().first()
-
-    rider_result = await db.execute(
-        select(models.Riders)
-        .where(models.Riders.rider_wa_number == sender_wa_number)
-    )
-
-    rider_details = rider_result.scalars().first()
-
-    if order and order.status == "confirmed":
-        customer_wa_res = await db.execute(
-            select(models.Orders.sender_wa_number)
-            .where(models.Orders.order_number == order_number)
-        )
-        customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
-        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
-
-        # Fetch actual average rating for rider
-        avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
-        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
-
-        customer_message = (
-            f"🧑‍✈️ Rider: *{rider_name}*\n\n"
-            f"💰 Offered Price: *{rider_proposed_amount}*\n\n"
-            f"🔖 Order No: {order.order_number}\n\n"
-            f"⭐ Rating: *{rating_display}*"
-            )
-        
-        asking_customer_to_increase_price_msg = (
-            f"Not satisfied with any of the offers? "
-            f"You can increase your fare using the button below "
-            "and we'll search for more riders. 🔄"
-        )
-        
-        
-        
-        #sending a message to the customer about the riders offering the prices
-        await send_custom_flow(
-            wa_number=customer_wa_number,
-            flow_token={"order_number": order_number, "rider_wa_number": sender_wa_number},
-            message=customer_message,
-            header="💸 A rider has made a counter offer",
-            flow_id=FLOW_COUNTER_OFFER_ID,
-            flow_cta="Accept this offer",
-            screen_name="customer_accept_or_reject_rider_offer",
-            auth=AUTH,
-            graph_url=GRAPH_URL
-        )
-
-         #sending a message to the customer asking if they want to increase fare. This should be outside the loop
-        await send_custom_flow(
-            wa_number=customer_wa_number,
-            flow_token={"order_number": order_number},
-            message=asking_customer_to_increase_price_msg,
-            header="🔔",
-            flow_id=FLOW_INCREASE_FARE_ID,
-            flow_cta="I want to increase my fare",
-            screen_name="CUST_INCREASE_FARE_SCREEN",
-            auth=AUTH,
-            graph_url=GRAPH_URL
-        )
-
-        asyncio.create_task(schedule_customer_offer_timeout(order_number, customer_wa_number, rider_name, rider_proposed_amount, AUTH, GRAPH_URL))
-
-        
-
-    else:
-        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
-        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
-
-
-
-
-
-async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rider_wa_number, order_number, auth, graph_url, db:AsyncSession, agreed_price=None):
-    order_result = await db.execute(
-    select(models.Orders)
-    .where(models.Orders.order_number == order_number)
-    )
-    order = order_result.scalars().first()
-    if not order:
-        return
-    order_status = order.status
-
-    print(f"riders number is: {rider_wa_number}")
-    try:
-        rider_details_res = await db.execute(
-            select(models.Riders)
-            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
-        )
-        rider_details = rider_details_res.scalars().first()
-        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
-        rider_phone = rider_details.rider_wa_number if rider_details else rider_wa_number
-
-        if order_status == "confirmed":
-            customer_wa_number = sender_wa_number
-
-            sender_user_res = await db.execute(
-                select(models.User.name).where(
-                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
-                )
-            )
-            sender_name = sender_user_res.scalars().first() or "Someone"
-            recipient_phone_str = order.recipient_phone_number or "Not provided"
-            rider_message = (
-                f"🎉 *Ride Confirmed!* 🏍️💨\n\n"
-                f"Order *{order.order_number}* has been confirmed!\n\n"
-                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
-                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
-                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
-                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                f"Please head to the pickup location now. Safe riding! 🌟"
-            )
-            recipient_message = (
-                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
-                f"📦 Description: {order.package_description}\n\n"
-                f"📍 Pickup: {order.pickup_location_name}\n\n"
-                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
-                f"🔖 Order No: {order.order_number}\n\n"
-                f"🧑‍✈️ Rider: {rider_name}\n"
-                f"📞 Rider's Phone: {rider_phone}"
-            )
-            recipient_wa_number = order.recipient_phone_number
-
-            final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
-            await db.execute(
-               update(models.Orders)
-               .where(models.Orders.order_number == order_number)
-               .values(status="rider_accepted", final_price_agreed_by_cust_and_rider=final_price, rider_wa_number=rider_wa_number)
-            )
-            await db.commit()
-
-            # Notify rider
-            await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
-
-            # Get rider rating stats to display in customer confirmation
-            avg_rating, total_reviews = await get_rider_rating_stats(rider_wa_number, db)
-            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
-
-            # Notify customer with action buttons & rider rating
-            await send_rider_accepted_with_options(
-                customer_wa_number=customer_wa_number,
-                rider_name=rider_name,
-                rider_phone=rider_phone,
-                order_number=order_number,
-                auth=auth,
-                graph_url=graph_url,
-                rating_display=rating_display
-            )
-
-            # Notify recipient safely
-            if recipient_wa_number:
-                try:
-                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
-                except Exception as recip_err:
-                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
-
-            # Start pickup & delivery reminder loop for the rider
-            asyncio.create_task(schedule_rider_process_reminders(
-                order_number=order_number,
-                rider_wa_number=rider_wa_number,
-                auth=auth,
-                graph_url=graph_url
-            ))
-    except Exception as accept_err:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Error in handle_case_where_customer_has_accepted_the_ride: {accept_err}")
-
-
-
-    else:
-        rider_message = f"⏰ Sorry, this order has already been assigned to another rider."
-        cust_message = f"✅ Your package is already on the way! The rider's details have been sent to you."
-        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)   
-        await send_custom_message(sender_wa_number=customer_wa_number, message=cust_message, auth=auth, graph_url=graph_url)   
-
-        
-
-async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Checks if an active user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants."""
-    possible_numbers = get_phone_variants(sender_wa_number)
-
-    result = await db.execute(
-        select(models.User).where(
-            ((models.User.display_phone_number.in_(possible_numbers)) |
-             (models.User.wa_id.in_(possible_numbers)) |
-             (models.User.phone_number_id.in_(possible_numbers))) &
-            (models.User.is_deleted == False)
-        )
-    )
-    return result.scalars().first() is not None
-
-
-async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
-    """Soft deletes and anonymizes a user's account record while clearing their chat memory."""
-    possible_numbers = get_phone_variants(sender_wa_number)
-
-    # 1. Fetch user records and soft delete / anonymize PII
-    user_res = await db.execute(
-        select(models.User).where(
-            (models.User.display_phone_number.in_(possible_numbers)) |
-            (models.User.wa_id.in_(possible_numbers)) |
-            (models.User.phone_number_id.in_(possible_numbers))
-        )
-    )
-    users = user_res.scalars().all()
-
-    for u in users:
-        await db.execute(
-            update(models.User)
-            .where(models.User.id == u.id)
-            .values(
-                is_deleted=True,
-                name="Anonymized User",
-                wa_id=f"DELETED_{u.id}",
-                display_phone_number="DELETED",
-                phone_number_id="DELETED"
-            )
-        )
-
-    await db.commit()
-
-    # 2. Cancel and anonymize all orders for this user so old records do not block future sign-ups
-    user_orders_res = await db.execute(
-        select(models.Orders).where(
-            models.Orders.sender_wa_number.in_(possible_numbers)
-        )
-    )
-    user_orders = user_orders_res.scalars().all()
-
-    primary_anon_id = f"DELETED_{users[0].id}" if users else "DELETED"
-
-    for ord_obj in user_orders:
-        if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
-            if ord_obj.delivery_progression_status != "package_delivered":
-                ord_obj.status = "cancelled"
-                if ord_obj.rider_wa_number:
-                    cancel_msg = (
-                        f"❌ *Order Cancelled*\n\n"
-                        f"Order *{ord_obj.order_number}* has been cancelled because the customer deleted their account.\n\n"
-                        f"Thank you for your time — new requests will come your way shortly! 🛵"
-                    )
-                    asyncio.create_task(send_custom_message(ord_obj.rider_wa_number, cancel_msg, os.getenv("AUTHORIZATION"), os.getenv("GRAPH_URL")))
-        ord_obj.sender_wa_number = primary_anon_id
-
-    await db.commit()
-
-    # Clear chat history memory
-    _chat_memory.pop(sender_wa_number, None)
-    for variant in possible_numbers:
-        _chat_memory.pop(variant, None)
-
-    print(f"🗑️ [USER SOFT-DELETED] Account associated with {sender_wa_number} has been anonymized and marked as deleted.")
-    return True
-
-
-async def classify_message_intent(message_text: str) -> str:
-    """Classifies user intent semantically using Groq JSON mode."""
-    system_prompt = (
-        'You are an intent classification engine for InTime delivery platform.\n'
-        'Classify the user\'s message into exactly ONE of the following intents:\n'
-        '- \'CREATE_ORDER\': ONLY if user explicitly requests to send a package, book a delivery, or place a new order (e.g. "send an order", "book a ride").\n'
-        '- \'CANCEL_ORDER\': ONLY if user wants to cancel an active order.\n'
-        '- \'DELETE_ACCOUNT\': ONLY if user explicitly asks to delete their account, delete their data, remove their information, or unregister (e.g. "delete my account", "delete my data", "remove my account", "unregister me").\n'
-        '- \'TRACK_ORDER\': ONLY if user asks for status, ETA, or tracking of an order.\n'
-        '- \'MODIFY_ORDER\': ONLY if user asks to change order details or fare.\n'
-        '- \'SUPPORT\': ONLY if user asks for support email, human agent, or help desk.\n'
-        '- \'GENERAL_CHAT\': All thank-yous, acknowledgments ("alright thank you", "thanks", "okay", "cool"), small talk, general questions, or small chatter.\n\n'
-        'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
-    )
-    allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "DELETE_ACCOUNT", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
-    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-    
-    try:
-        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-        for model_name in models_to_try:
-            try:
-                response = await groq_client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message_text}
-                    ],
-                    model=model_name,
-                    response_format={"type": "json_object"},
-                    temperature=0.0,
-                    max_tokens=50,
-                    timeout=3.0
-                )
-                raw_content = response.choices[0].message.content.strip()
-                parsed = json.loads(raw_content)
-                intent = parsed.get("intent", "").upper().strip()
-                if intent in allowed_intents:
-                    return intent
-            except Exception as inner_e:
-                continue
-    except Exception as e:
-        print(f"Intent classification error: {e}")
-    return "GENERAL_CHAT"
-
-
-async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
-    """Finds active transit order assigned to the rider."""
-    possible_numbers = get_phone_variants(rider_wa_number)
-
-    result = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.rider_wa_number.in_(possible_numbers))
-        .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
-        .where(models.Orders.delivery_progression_status != "package_delivered")
-        .order_by(models.Orders.created_at.desc())
-    )
-    return result.scalars().first()
-
-
-async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
-    """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
-    lower_clean = text_body.strip().lower().strip(".,!?:;")
-    user_role = await get_user_role(sender_wa_number, db)
-
-    # --- 0a. EXPLICIT ORDER CREATION TRIGGERS (ALWAYS take top priority) ---
-    order_triggers = [
-        "send an order", "send order", "create order", "book order",
-        "send a package", "ship a package", "book a delivery", "dispatch a package",
-        "send package", "ship package", "book delivery", "dispatch package",
-        "need to send an order", "like to send an order", "want to send an order",
-        "need to send order", "like to send order", "want to send order",
-        "i want to send", "i need to send", "i would like to send", "i will like to send"
-    ]
-    if any(trigger in lower_clean for trigger in order_triggers):
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-        else:
-            await send_registration_template(sender_wa_number, auth, graph_url)
-        return
-
-    # --- 0a1. FOOD ORDER TRIGGER ---
-    food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal", "madam g", "menu", "food menu"]
-    if any(trigger in lower_clean for trigger in food_triggers):
-        await send_food_order_flow(sender_wa_number, auth, graph_url)
-        return
-
-    # --- 0a2. RIDER CHECK-IN TRIGGER ---
-    checkin_triggers = ["i'm available", "im available", "i am available", "available", "check in", "checking in", "check-in", "online", "ready for orders"]
-    if lower_clean in checkin_triggers or any(lower_clean == t for t in checkin_triggers):
-        possible_numbers = get_phone_variants(sender_wa_number)
-        rider_res = await db.execute(
-            select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
-        )
-        rider = rider_res.scalars().first()
-        if rider:
-            rider.availability_status = "available"
-            await db.commit()
-            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
-            await send_custom_message(sender_wa_number, custom_message, auth, graph_url)
-            return
-
-    # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
-    rider_order = await get_active_rider_order(sender_wa_number, db)
-    if not rider_order:
-        # Fallback: check if sender sent a 4-6 digit verification code for an in-transit pickup order
-        code_match_fallback = re.search(r'\b\d{4,6}\b', text_body)
-        if code_match_fallback:
-            possible_numbers = get_phone_variants(sender_wa_number)
-            fallback_res = await db.execute(
-                select(models.Orders)
-                .where(
-                    (models.Orders.rider_wa_number.in_(possible_numbers)) |
-                    (models.Orders.rider_wa_number.is_(None))
-                )
-                .where(models.Orders.delivery_progression_status == "package_picked_up")
-                .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
-                .order_by(models.Orders.created_at.desc())
-            )
-            rider_order = fallback_res.scalars().first()
-
-    if rider_order:
-        lower_text = text_body.strip().lower()
-
-        # 1. Check if rider entered / replied with the 5-digit verification code
-        code_match = re.search(r'\b\d{4,6}\b', text_body)
-        if code_match:
-            submitted_code = code_match.group(0)
-            await verify_delivery_code(
-                order=rider_order,
-                submitted_code=submitted_code,
-                rider_wa_number=sender_wa_number,
-                db=db,
-                auth=auth,
-                graph_url=graph_url
-            )
-            return
-
-        # 2. Rider asking for the verification code instructions
-        code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
-        if any(kw in lower_text for kw in code_keywords):
-            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
-            await send_custom_message(sender_wa_number, (
-                f"🔐 *Delivery Verification Code Help* 🛵💨\n\n"
-                f"Order: *{rider_order.order_number}*\n\n"
-                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
-                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                f"📋 *What to do:*\n\n"
-                f"• Ask the **recipient** at *{recipient_phone_str}* for their *5-digit verification code* upon arrival. 🤝📦\n\n"
-                f"• The recipient received their unique code directly via WhatsApp. 📱✨\n\n"
-                f"• Reply with the 5-digit code directly in this chat (e.g. *12345*) to complete delivery! ✅💪\n\n"
-                f"⚠️ *Note:* You have 3 trials to enter the correct code."
-            ), auth, graph_url)
-            return
-
-        positive_eta_triggers = [
-            "yes", "yeah", "yep", "almost", "close", "arrived", "am here", "i'm here",
-            "10min", "10 min", "10 mins", "10mins", "10 minutes", "10 minute",
-            "ten min", "ten minutes", "almost there", "close by", "nearby"
-        ]
-
-        if any(neg in lower_text for neg in ["no", "not", "nope", "haven't", "havent", "not yet"]):
-            rider_msg = (
-                f"Got it 👍\n\n"
-                f"Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
-            )
-            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
-            return
-
-        elif any(pos in lower_text for pos in positive_eta_triggers):
-            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
-            rider_msg = (
-                f"Awesome 🛵!\n\n"
-                f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}* ({rider_order.dropoff_location_name or 'Drop-off'}):\n\n"
-                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                f"Please request the 5-digit verification code from the recipient."
-            )
-            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
-
-            # Notify Customer (Sender) and Recipient upon Rider ETA confirmation
-            try:
-                sender_res = await db.execute(
-                    select(models.User.name).where(
-                        models.User.wa_id.in_(get_phone_variants(rider_order.sender_wa_number))
-                    )
-                )
-                sender_name = sender_res.scalars().first() or "Sender"
-
-                customer_eta_msg = (
-                    f"🛵 *Delivery Update*\n\n"
-                    f"Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{rider_order.order_number}*!"
-                )
-                recipient_eta_msg = (
-                    f"📦 *Package Update*\n\n"
-                    f"Your package from *{sender_name}* (Order *{rider_order.order_number}*) is getting close!\n\n"
-                    f"Your rider has confirmed they are approximately 10 minutes away."
-                )
-
-                if rider_order.sender_wa_number:
-                    await send_custom_message(sender_wa_number=rider_order.sender_wa_number, message=customer_eta_msg, auth=auth, graph_url=graph_url)
-                if rider_order.recipient_phone_number:
-                    await send_details_to_recipients(sender_wa_number=rider_order.recipient_phone_number, message=recipient_eta_msg, auth=auth, graph_url=graph_url)
-            except Exception as notify_err:
-                print(f"Error sending ETA confirmation notifications to customer/recipient: {notify_err}")
-
-            return
-
-        else:
-            # Unrecognised text from rider mid-delivery — give contextual reply, don't let Femi AI handle it
-            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
-            if rider_order.delivery_progression_status == "package_picked_up":
-                status_label = "in transit to the drop-off location"
-            elif rider_order.delivery_progression_status == "package_delivered" or rider_order.status == "completed":
-                status_label = "completed"
-            elif rider_order.status in ["rider_accepted", "awaiting_pickup"]:
-                status_label = "heading to pickup"
-            else:
-                status_label = "on an active delivery"
-            await send_custom_message(sender_wa_number, (
-                f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
-                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
-                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
-                f"If you need anything, just type:\n"
-                f"• Reply with the recipient's *5-digit code* (e.g. *12345*) to complete delivery\n"
-                f"• *'code'* — to get instructions on the delivery verification code\n"
-                f"• *'yes'* — to confirm you're near the drop-off\n"
-                f"• *'no'* — if you're still on your way"
-            ), auth, graph_url)
-            return
-
-    # --- 0c. CUSTOMER / RECIPIENT INBOUND OTP INQUIRIES ---
-    # Intercept queries like "I need the code", "what is my OTP?", "where is the code?", "delivery code"
-    # before routing to Groq Intent Classifier or Femi AI.
-    lower_clean = text_body.strip().lower().strip(".,!?:;")
-    otp_keywords_pattern = re.compile(
-        r'\b(otp|pin|passcode|pass\s*code|verification|verify)\b|\b(delivery|dropoff|drop\s*off|pickup)\s+code\b|\bcode\b',
-        re.IGNORECASE
-    )
-    is_promo = any(promo_word in lower_clean for promo_word in ["promo", "discount", "referral", "coupon"])
-
-    if not is_promo and otp_keywords_pattern.search(lower_clean):
-        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
-        if order:
-            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
-                otp_msg = (
-                    f"🔐 *Delivery Verification Code*\n\n"
-                    f"Order: *{order.order_number}*\n"
-                    f"Code: 👉 *{order.verification_code}* 👈\n\n"
-                    f"*Instructions:*\n"
-                    f"Share this 5-digit code with the rider *only* when they arrive at the drop-off location."
-                )
-                await send_custom_message(sender_wa_number, otp_msg, auth, graph_url)
-                return
-            else:
-                pending_msg = (
-                    f"📦 *Delivery Code Update*\n\n"
-                    f"Your package has not been picked up yet. A 5-digit verification code will be generated and sent to you automatically as soon as the rider confirms pickup."
-                )
-                await send_custom_message(sender_wa_number, pending_msg, auth, graph_url)
-                return
-
-    # --- 1. ACTIVE WORKFLOW STATE CHECK ---
-    active_order = await get_active_ride(sender_wa_number, db)
-    if active_order and active_order.package_image_id is None:
-        msg = (
-            f"📸 *Package Photo Needed*\n\n"
-            f"Your order *{active_order.order_number}* has been initialized.\n\n"
-            f"Please snap and send a photo of the package to complete your dispatch request and alert nearby riders!"
-        )
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    lower_clean = text_body.strip().lower().strip(".,!?:;")
-
-    # --- 1b. CUSTOMER TEXT-BASED RATING CHECK ---
-    # If customer recently had a delivery completed, catch rating replies (e.g. '5', '5 stars', '⭐⭐⭐⭐⭐')
-    recent_delivered = await db.execute(
-        select(models.Orders)
-        .where(models.Orders.sender_wa_number.in_(get_phone_variants(sender_wa_number)))
-        .where(models.Orders.delivery_progression_status == "package_delivered")
-        .order_by(models.Orders.created_at.desc())
-    )
-    last_delivered = recent_delivered.scalars().first()
-    if last_delivered:
-        already_rated = await db.execute(
-            select(models.RiderRating)
-            .where(models.RiderRating.order_number == last_delivered.order_number)
-        )
-        if not already_rated.scalars().first():
-            detected_rating = None
-            if "⭐⭐⭐⭐⭐" in text_body or lower_clean in ["5", "5 star", "5 stars", "five star", "five stars", "5/5", "5 out of 5", "five"]:
-                detected_rating = 5
-            elif "⭐⭐⭐⭐" in text_body or lower_clean in ["4", "4 star", "4 stars", "four star", "four stars", "4/5", "4 out of 5", "four"]:
-                detected_rating = 4
-            elif "⭐⭐⭐" in text_body or lower_clean in ["3", "3 star", "3 stars", "three star", "three stars", "3/5", "3 out of 5", "three"]:
-                detected_rating = 3
-            elif "⭐⭐" in text_body or lower_clean in ["2", "2 star", "2 stars", "two star", "two stars", "2/5", "2 out of 5", "two"]:
-                detected_rating = 2
-            elif "⭐" in text_body or lower_clean in ["1", "1 star", "1 stars", "one star", "one stars", "1/5", "1 out of 5", "one"]:
-                detected_rating = 1
-
-            if detected_rating is not None:
-                await save_rider_rating(
-                    order_number=last_delivered.order_number,
-                    rating_val=detected_rating,
-                    customer_wa=sender_wa_number,
-                    db=db,
-                    auth=auth,
-                    graph_url=graph_url
-                )
-                return
-
-    # --- 1c. GREETINGS & WELCOME TRIGGERS (Fast-path: dispatch default_message template) ---
-    greeting_triggers = {
-        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-        "start", "menu", "help", "restart", "yo", "femi", "hi femi", "hello femi",
-        "greetings", "hey femi", "welcome", "howdy", "sup", "get started"
-    }
-    is_greeting = lower_clean in greeting_triggers or any(
-        lower_clean == g or lower_clean.startswith(f"{g} ")
-        for g in ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy"]
-    )
-    if is_greeting and user_role != "recipient":
-        await send_default_template(sender_wa_number, username, auth, graph_url)
-        return
-
-    # Fast-path pre-check for generic courtesy acknowledgments
-    generic_courtesies = {
-        "ok", "okay", "thanks", "thank you", "alright", "got it", "noted", "cool", 
-        "sure", "nice", "alright thank you", "ok thank you", "ok thanks", "great", 
-        "fine", "good", "perfect", "kk", "k", "no problem", "np", "thx"
-    }
-    
-    if lower_clean in generic_courtesies:
-        intent = "GENERAL_CHAT"
-    else:
-        # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
-        delete_triggers = [
-            "delete my account", "delete account", "delete my data", "delete data",
-            "remove my account", "remove account", "delete info", "remove my data",
-            "unregister", "unregister me", "delete profile"
-        ]
-        if any(trigger in lower_clean for trigger in delete_triggers):
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
-            else:
-                msg = "You currently do not have a registered account with InTime."
-                await send_custom_message(sender_wa_number, msg, auth, graph_url)
-            return
-
-        intent = await classify_message_intent(text_body)
-
-    # --- 3. INTENT HANDLING ---
-    if intent == "CREATE_ORDER":
-        if user_role == "recipient":
-            # Recipient did not send an explicit order trigger phrase (caught in 0a).
-            # Do NOT treat their general chatter as an order creation request or push registration.
-            order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
-            if order:
-                intent = "TRACK_ORDER"
-            else:
-                intent = "GENERAL_CHAT"
-        else:
-            registered = await is_user_registered(sender_wa_number, db)
-            if registered:
-                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-            else:
-                await send_registration_template(sender_wa_number, auth, graph_url)
-            return
-
-    if intent == "DELETE_ACCOUNT":
-        registered = await is_user_registered(sender_wa_number, db)
-        if registered:
-            await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
-        else:
-            msg = "You currently do not have a registered account with InTime."
-            await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    elif intent == "CANCEL_ORDER":
-        order = await get_active_ride(sender_wa_number, db)
-        if order and order.delivery_progression_status == "package_picked_up":
-            msg = (
-                f"⚠️ *Package Already in Transit*\n\n"
-                f"Order *{order.order_number}* has already been picked up by your rider and is on the way to the recipient.\n\n"
-                f"Orders cannot be cancelled automatically once in transit. Please contact our support team at +234 815 103 3428 or intimesender@gmail.com for assistance."
-            )
-        elif order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup"]:
-            prev_rider_wa = order.rider_wa_number
-            await db.execute(
-                update(models.Orders)
-                .where(models.Orders.order_number == order.order_number)
-                .values(status="cancelled")
-            )
-            await db.commit()
-
-            # Notify rider if one was assigned
-            if prev_rider_wa:
-                rider_cancel_msg = (
-                    f"❌ *Order Cancelled*\n\n"
-                    f"The customer has cancelled Order *{order.order_number}*.\n\n"
-                    f"Thank you for your time — new requests will come your way shortly! 🛵"
-                )
-                await send_custom_message(prev_rider_wa, rider_cancel_msg, auth, graph_url)
-
-            msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
-        elif order:
-            msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."
-        else:
-            msg = "You currently have no active order to cancel."
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    elif intent == "TRACK_ORDER":
-        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
-        if order:
-            rider_info = f"Rider Phone: *{order.rider_wa_number}*" if order.rider_wa_number else "Searching for available riders..."
-            if order.delivery_progression_status == "package_picked_up":
-                status_display = "*In Transit to Drop-off*"
-            else:
-                status_display = f"*{order.status.replace('_', ' ').title()}*"
-
-            msg = (
-                f"📦 *Order Status Update*\n\n"
-                f"Order Number: *{order.order_number}*\n"
-                f"Status: {status_display}\n\n"
-                f"📍 Pickup: {order.pickup_location_name or 'Not set'}\n"
-                f"🏁 Dropoff: {order.dropoff_location_name or 'Not set'}\n"
-                f"📝 Package: {order.package_description or 'Not specified'}\n\n"
-                f"🧑‍✈️ {rider_info}"
-            )
-            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
-                msg += f"\n\n🔐 *Verification Code:* 👉 *{order.verification_code}* 👈\n\n_(Share this with the rider only upon drop-off arrival)_"
-        else:
-            msg = "You currently have no active delivery orders."
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    elif intent == "MODIFY_ORDER":
-        msg = (
-            f"To modify your delivery details or create a new order, "
-            f"please type *Send an Order* in this chat whenever you're ready!"
-        )
-        await send_custom_message(sender_wa_number, msg, auth, graph_url)
-        return
-
-    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent - Femi Avatar) ---
-    try:
-        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
-        if order:
-            prog_status = f", Delivery Progression: {order.delivery_progression_status}" if order.delivery_progression_status else ""
-            v_code = f", Verification Code: {order.verification_code}" if order.verification_code else ""
-            order_context = f"Active order: {order.order_number} (Status: {order.status}{prog_status}{v_code})."
-        else:
-            order_context = "No active delivery order."
-
-        if user_role == "recipient":
-            role_instructions = (
-                f"USER ROLE: Package Recipient (receiving an incoming package).\n"
-                f"- This user is a recipient receiving a delivery, NOT currently an ordering customer.\n"
-                f"- Do NOT tell them to complete registration or nag them to sign up.\n"
-                f"- Reassure them and answer any questions regarding their incoming delivery, rider arrival, and 5-digit verification code with warmth and clarity.\n"
-                f"- Only if they explicitly ask how to send packages themselves, let them know they can type *Send an Order* anytime."
-            )
-            rule_6 = "6. ROLE APPROPRIATENESS: Answer questions about their incoming delivery warmly and clearly. Never push registration or 'Send an Order' on a recipient unless they specifically ask."
-        elif user_role == "rider":
-            role_instructions = (
-                f"USER ROLE: Dispatch Rider.\n"
-                f"- This user is a registered dispatch rider for InTime.\n"
-                f"- Assist them with check-in, dispatch instructions, or support."
-            )
-            rule_6 = "6. ROLE APPROPRIATENESS: Address them as a rider. Guide them on check-in or delivery instructions."
-        else:
-            role_instructions = "USER ROLE: Customer / Prospect."
-            rule_6 = "6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!"
-
-        system_prompt = (
-            f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
-            f"Customer Name: {username}.\n"
-            f"{role_instructions}\n"
-            f"Current Context: {order_context}.\n"
-            f"COMPANY KNOWLEDGE:\n"
-            f"- Official Website: https://sendintime.com.ng\n"
-            f"- Contact Email: contact@sendintime.com.ng (or intimesender@gmail.com)\n"
-            f"- Support Phone: +234 815 103 3428\n"
-            f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
-            f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
-            f"STRICT BEHAVIOR RULES:\n"
-            f"1. BREATHING SPACE & PARAGRAPHS: Format ALL your responses with double line breaks (\\n\\n) between paragraphs and thoughts to give clean, readable breathing space! Never lump text into one long dense block.\n"
-            f"2. AVATAR IDENTITY & DYNAMISM: Introduce yourself as Femi when starting a new conversation or when greeted (e.g., 'Hi 👋, I'm Femi!\\n\\nWelcome to *InTime*.\\n\\nHow can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨'). Keep your greetings fresh, dynamic, and varied across users.\n"
-            f"3. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
-            f"4. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
-            f"5. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
-            f"{rule_6}\n"
-            f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
-            f"8. REFERRAL NAME: Address the customer as {username}.\n"
-            f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
-            f"10. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
-            f"STYLE: Keep replies short and spacious (2-3 short paragraphs with \\n\\n line breaks), highly engaging, friendly, and spiced with icons!"
-        )
-
-        user_history = get_user_chat_memory(sender_wa_number)
-        if not user_history and user_role != "recipient":
-            # First turn from customer / prospect: dispatch default_message template to close lead in fewest messages
-            await send_default_template(sender_wa_number, username, auth, graph_url)
-            return
-
-        messages_payload = [{"role": "system", "content": system_prompt}]
-        for turn in user_history:
-            messages_payload.append(turn)
-        messages_payload.append({"role": "user", "content": text_body})
-
-        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-
-        ai_reply = None
-        for model_name in models_to_try:
-            try:
-                chat_completion = await groq_client.chat.completions.create(
-                    messages=messages_payload,
-                    model=model_name,
-                    max_tokens=200,
-                    timeout=5.0
-                )
-                ai_reply = chat_completion.choices[0].message.content.strip()
-                if ai_reply:
-                    break
-            except Exception as inner_e:
-                print(f"Groq conversational model {model_name} warning: {inner_e}")
-                continue
-
-        if ai_reply:
-            # Convert standard markdown double asterisks (**) to WhatsApp single asterisks (*)
-            ai_reply = ai_reply.replace("**", "*")
-            add_user_chat_memory(sender_wa_number, "user", text_body)
-            add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
-            await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
-        else:
-            if user_role != "recipient":
-                await send_default_template(sender_wa_number, username, auth, graph_url)
-            else:
-                fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
-                await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
-
-    except Exception as e:
-        print(f"Groq AI error: {e}")
-        if user_role != "recipient":
-            await send_default_template(sender_wa_number, username, auth, graph_url)
-        else:
-            fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
-            await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
+import asyncio
+from datetime import UTC, datetime, timedelta
+from sqlalchemy import select, update, delete, func
+from sqlalchemy.ext.asyncio import AsyncSession
+import json
+import requests
+import models
+import httpx
+import os
+import re
+import random
+from dotenv import load_dotenv
+from groq import AsyncGroq
+
+load_dotenv()
+
+# Meta WhatsApp Flow IDs (configurable via environment variables for easy account migration)
+FLOW_PICKUP_ID = os.getenv("FLOW_PICKUP_ID", "1521319786323152")
+FLOW_INCREASE_FARE_ID = os.getenv("FLOW_INCREASE_FARE_ID", "950647507961316")
+FLOW_RIDER_ACCEPT_ID = os.getenv("FLOW_RIDER_ACCEPT_ID", "1513067607105184")
+FLOW_NEGOTIATE_ID = os.getenv("FLOW_NEGOTIATE_ID", "1448553113617488")
+FLOW_COUNTER_OFFER_ID = os.getenv("FLOW_COUNTER_OFFER_ID", "949497837687906")
+FLOW_FOOD_ORDER_ID = os.getenv("FLOW_FOOD_ORDER_ID", "")
+
+# ---------------------------------------------------------------------------
+# In-memory chat history store for Groq multi-turn conversations.
+# Maps sender_wa_number -> list of {"role": ..., "content": ...} dicts.
+# Capped at MAX_HISTORY turns per user to avoid token bloat.
+# ---------------------------------------------------------------------------
+_chat_memory: dict[str, list[dict]] = {}
+MAX_HISTORY = 10  # number of message turns (user + assistant) to keep
+
+
+def get_user_chat_memory(sender_wa_number: str) -> list[dict]:
+    """Return the stored conversation history for a given WhatsApp number."""
+    return list(_chat_memory.get(sender_wa_number, []))
+
+
+def add_user_chat_memory(sender_wa_number: str, role: str, content: str) -> None:
+    """Append a new turn to the user's conversation history, trimming if over MAX_HISTORY."""
+    history = _chat_memory.setdefault(sender_wa_number, [])
+    history.append({"role": role, "content": content})
+    # Keep only the most recent MAX_HISTORY messages
+    if len(history) > MAX_HISTORY:
+        _chat_memory[sender_wa_number] = history[-MAX_HISTORY:]
+
+
+def get_dynamic_femi_welcome(username: str, is_recipient: bool = False) -> str:
+    """Generates dynamic, spacious introductory messages for Femi avatar."""
+    name = username if username and username.lower() not in ["user", "customer"] else ""
+    name_str = f" {name}" if name else ""
+
+    if is_recipient:
+        recipient_templates = [
+            (
+                f"Hello{name_str} 👋! I'm Femi from *InTime* 🛵✨.\n\n"
+                f"I'm here to assist you with your incoming package delivery 📦.\n\n"
+                f"If you need any information about your delivery status or verification code, just let me know!"
+            ),
+            (
+                f"Hi{name_str} 👋, I'm Femi from *InTime*!\n\n"
+                f"I can help you check on your incoming package or provide your delivery verification code.\n\n"
+                f"How can I help you today? 😊"
+            ),
+            (
+                f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
+                f"I'm Femi, your delivery assistant. I'm here to support you with your incoming package.\n\n"
+                f"Feel free to ask about your rider's arrival or your 5-digit delivery code!"
+            )
+        ]
+        return random.choice(recipient_templates)
+
+    templates = [
+        (
+            f"Hi 👋, I'm Femi!\n\n"
+            f"Welcome to *InTime*{name_str}.\n\n"
+            f"How can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨"
+        ),
+        (
+            f"Hey{name_str} 👋! Femi here from *InTime*.\n\n"
+            f"Need to ship a quick package or dispatch across Nigeria?\n\n"
+            f"Whenever you're ready, just type *Send an Order* right here to get rolling! 🛵💨✨"
+        ),
+        (
+            f"Hello{name_str} ✨! I'm Femi, your *InTime* delivery assistant.\n\n"
+            f"Ready to deliver something fast and safe today?\n\n"
+            f"Just type *Send an Order* in this chat and we'll connect you with top-rated riders! 📦🚀"
+        ),
+        (
+            f"Welcome to *InTime*{name_str}! 📦🛵\n\n"
+            f"I'm Femi, your personal dispatch assistant.\n\n"
+            f"How can I assist you today? Type *Send an Order* anytime to create a package request!"
+        )
+    ]
+    return random.choice(templates)
+
+
+async def send_rider_accepted_with_options(
+    customer_wa_number: str,
+    rider_name: str,
+    rider_phone: str,
+    order_number: str,
+    auth: str,
+    graph_url: str,
+    rating_display: str = None
+):
+    """Sends the rider-accepted confirmation to the customer with Find Another Rider and Cancel Order quick-reply buttons."""
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    rating_line = f"⭐ Rating: *{rating_display}*\n" if rating_display else ""
+    body_text = (
+        f"🎉 *Great news!* Your rider has been confirmed for Order *{order_number}*.\n\n"
+        f"🧑‍✈️ Rider: *{rider_name}*\n"
+        f"📞 Phone: *{rider_phone}*\n"
+        f"{rating_line}\n"
+        f"Your rider is heading to the pickup location now. Tap below if you need to make a change."
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"FIND_ANOTHER_RIDER:{order_number}",
+                            "title": "🔄 Find Another Rider"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"CANCEL_ORDER:{order_number}",
+                            "title": "❌ Cancel Order"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("rider accepted options sent:", response.status_code, response.text)
+    return
+
+
+async def check_active_user_order(customer_wa_number: str, db: AsyncSession):
+    """Returns the most recent active in-progress order for a customer, if any."""
+    possible_numbers = get_phone_variants(customer_wa_number)
+    active_order_res = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.in_(["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "awaiting_dropoff"]))
+        .order_by(models.Orders.created_at.desc())
+    )
+    return active_order_res.scalars().first()
+
+
+async def send_delete_account_confirmation(
+    customer_wa_number: str,
+    auth: str,
+    graph_url: str,
+    db: AsyncSession
+):
+    """
+    Checks if customer has an active order before allowing account deletion.
+    - If package in transit (picked up): informs customer delivery must complete first.
+    - If active (not picked up yet): instructs customer to cancel active order first.
+    - If no active order: sends confirmation prompt with interactive Yes/No buttons.
+    """
+    active_order = await check_active_user_order(customer_wa_number, db)
+
+    if active_order:
+        if active_order.delivery_progression_status == "package_picked_up":
+            in_transit_msg = (
+                f"⚠️ *Account Deletion Blocked*\n\n"
+                f"Your package for Order *{active_order.order_number}* is currently in transit with your dispatch rider.\n\n"
+                f"For safety and security of goods in transit, your active delivery must be completed before your account can be deleted. "
+                f"Once your package has been delivered to the recipient, you can proceed with deleting your account!"
+            )
+            await send_custom_message(customer_wa_number, in_transit_msg, auth, graph_url)
+            return
+        else:
+            active_msg = (
+                f"⚠️ *Account Deletion Blocked*\n\n"
+                f"You currently have an active order (**Order *{active_order.order_number}***) in progress.\n\n"
+                f"Account deletion cannot be processed while an order is active. "
+                f"Please cancel your active order first (or wait for it to complete) before deleting your account.\n\n"
+                f"ℹ️ *To cancel your active order, simply type 'Cancel Order' or tap the cancel button on your order details.*"
+            )
+            await send_custom_message(customer_wa_number, active_msg, auth, graph_url)
+            return
+
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    body_text = (
+        "⚠️ *Account Deletion Request*\n\n"
+        "Are you sure you want to delete your account?\n\n"
+        "This action will permanently remove your user profile from InTime."
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "CONFIRM_DELETE_ACCOUNT",
+                            "title": "🗑️ Yes, Delete"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "CANCEL_DELETE_ACCOUNT",
+                            "title": "❌ Cancel"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Delete account confirmation prompt sent:", response.status_code, response.text)
+    return
+
+
+async def show_typing_indicator(message_id: str, auth: str, graph_url):
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {
+            "type": "text"
+        }
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
+
+
+async def send_default_template(sender_wa_number, username, auth, graph_url):
+    """Sends the official default_message_ template with quick-reply / flow action buttons."""
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
+    template_name = os.getenv("DEFAULT_MESSAGE_TEMPLATE", "default_message_").strip()
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+
+    # Flow token payload for templates with Flow buttons
+    flow_token_data = json.dumps({"action": "food_order_address", "sender_wa_number": target_number})
+
+    # Permutations of components to match Meta template configurations:
+    # default_message_ has {{1}} in the HEADER (Welcome Back {{1}}!) and the 3rd button (index 2) is a Flow button:
+    component_variations = [
+        # Variation 1 (Exact match for screenshot): Header variable + Flow button at index 2
+        [
+            {
+                "type": "header",
+                "parameters": [{"type": "text", "text": display_name}]
+            },
+            {
+                "type": "button",
+                "sub_type": "flow",
+                "index": "2",
+                "parameters": [
+                    {"type": "action", "action": {"flow_token": flow_token_data}}
+                ]
+            }
+        ],
+        # Variation 2: Header variable only (if Meta template has static flow definition)
+        [
+            {
+                "type": "header",
+                "parameters": [{"type": "text", "text": display_name}]
+            }
+        ],
+        # Variation 3: Body variable + Flow button at index 0 (legacy templates)
+        [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": display_name}]
+            },
+            {
+                "type": "button",
+                "sub_type": "flow",
+                "index": "0",
+                "parameters": [
+                    {"type": "action", "action": {"flow_token": flow_token_data}}
+                ]
+            }
+        ],
+        # Variation 4: Body variable only (legacy templates)
+        [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": display_name}]
+            }
+        ],
+        # Variation 5: No components
+        []
+    ]
+
+    names_to_try = [template_name]
+    if template_name != "default_message":
+        names_to_try.append("default_message")
+
+    languages_to_try = ["en_US", "en"]
+
+    response = None
+    async with httpx.AsyncClient() as client:
+        for t_name in names_to_try:
+            for lang in languages_to_try:
+                for comp in component_variations:
+                    req_body = {
+                        "messaging_product": "whatsapp",
+                        "recipient_type": "individual",
+                        "to": target_number,
+                        "type": "template",
+                        "template": {
+                            "name": t_name,
+                            "language": {"code": lang}
+                        }
+                    }
+                    if comp:
+                        req_body["template"]["components"] = comp
+
+                    try:
+                        res = await client.post(graph_url, json=req_body, headers=headers)
+                        print(f"Template attempt ({t_name}, {lang}, comp_len={len(comp)}) -> {res.status_code}: {res.text}")
+                        if res.status_code == 200:
+                            print(f"✅ Dispatched template '{t_name}' ({lang}) successfully: 200 OK")
+                            return res
+                        else:
+                            if "132001" in res.text or "does not exist" in res.text.lower():
+                                # Template does not exist under this name or language code, skip remaining component tries
+                                break
+                    except Exception as e:
+                        print(f"Error trying template {t_name}: {e}")
+                        continue
+
+        # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
+        print("Default template failed or not found on WABA, sending text welcome fallback...")
+        welcome_text = (
+            f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
+            f"How can we help you today?\n\n"
+            f"• Reply *Send an Order* to book a package delivery\n"
+            f"• Reply *Order Food* to view the Madam G food menu\n"
+            f"• Reply *Contact Support* if you need assistance"
+        )
+        await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
+
+    return response
+
+async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "start_over_template",
+                "language": { "code": "en" }      
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+    print(req_body)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+    return
+
+
+async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
+    """Dispatches daily 8:00 AM WhatsApp check-in template to riders."""
+    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "template",
+        "template": {
+            "name": "rider_checkin",
+            "language": { "code": "en" }      
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Rider check-in template dispatched:", response.status_code, response.text)
+    return
+
+
+async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Dispatches the food_order_address WhatsApp Flow to let customer pick restaurant & enter delivery address.
+    Falls back to food catalog menu if flow ID is not configured yet.
+    """
+    flow_id = os.getenv("FLOW_FOOD_ORDER_ID", "").strip()
+    if not flow_id:
+        print("ℹ️ FLOW_FOOD_ORDER_ID is not configured yet. Falling back to food catalog menu...")
+        await send_food_catalog_menu(sender_wa_number, auth, graph_url)
+        return
+
+    flow_token = {
+        "action": "food_order_address",
+        "sender_wa_number": sender_wa_number
+    }
+    await send_custom_flow(
+        wa_number=sender_wa_number,
+        flow_token=flow_token,
+        message="Please select your restaurant and confirm your delivery address to browse the menu and order 🍲🛵💨",
+        header="Order Food 🍲",
+        flow_id=flow_id,
+        flow_cta="Select Address",
+        screen_name="Your Address",
+        auth=auth,
+        graph_url=graph_url
+    )
+
+
+async def send_food_catalog_menu(sender_wa_number: str, auth: str, graph_url: str, catalog_id: str = None):
+    """
+    Sends the interactive food catalog menu for Madam G.
+    Uses native WhatsApp Catalog Message (view catalog button) connected to the WhatsApp Business Account.
+    Does NOT display any plain text menu.
+    """
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    cat_id = catalog_id or os.getenv("META_CATALOG_ID", "1515700860395437")
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+
+    # Ensure WhatsApp Commerce Settings & Catalog linkage on Meta
+    async with httpx.AsyncClient() as client:
+        try:
+            phone_number_id = graph_url.split("/v21.0/")[1].split("/")[0] if "/v21.0/" in graph_url else ""
+            waba_id = os.getenv("WABA_ID", "793614220010952")
+            if phone_number_id:
+                comm_url = f"https://graph.facebook.com/v21.0/{phone_number_id}/whatsapp_commerce_settings"
+                comm_res = await client.post(comm_url, params={"is_catalog_visible": "true", "is_cart_enabled": "true"}, headers=headers)
+                print("whatsapp_commerce_settings sync:", comm_res.status_code, comm_res.text)
+            if waba_id:
+                cat_url = f"https://graph.facebook.com/v21.0/{waba_id}/product_catalogs"
+                cat_res = await client.post(cat_url, data={"catalog_id": cat_id}, headers={"Authorization": f"Bearer {auth}"})
+                print("waba product_catalogs sync:", cat_res.status_code, cat_res.text)
+        except Exception as e:
+            print("Catalog auto-sync notice:", e)
+
+        thumbnail_id = "mg_jollof"
+        business_phone = os.getenv("PRODUCTION_PHONE_NUMBER", "2348151033428").strip()
+
+        # Attempt 1: Native Catalog Message with approved thumbnail anchor (mg_jollof)
+        req_body_catalog = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": target_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "catalog_message",
+                "body": {
+                    "text": "Please pick what you would like to order from the catalog below 🍲✨"
+                },
+                "footer": {
+                    "text": "InTime Food Delivery ⚡"
+                },
+                "action": {
+                    "name": "catalog_message",
+                    "parameters": {
+                        "thumbnail_product_retailer_id": thumbnail_id
+                    }
+                }
+            }
+        }
+
+        print(f"📦 Dispatching native food catalog message to {target_number}...")
+        response = await client.post(graph_url, json=req_body_catalog, headers=headers)
+        print("Native food catalog_message response:", response.status_code, response.text)
+
+        # Attempt 2: catalog_message with thumbnail anchor
+        if response.status_code != 200:
+            print(f"Retrying catalog_message with thumbnail ({thumbnail_id})...")
+            req_body_catalog_thumb = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": target_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "catalog_message",
+                    "body": {
+                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
+                    },
+                    "action": {
+                        "name": "catalog_message",
+                        "parameters": {
+                            "thumbnail_product_retailer_id": thumbnail_id
+                        }
+                    }
+                }
+            }
+            response = await client.post(graph_url, json=req_body_catalog_thumb, headers=headers)
+            print("Native food catalog_message (thumbnail) response:", response.status_code, response.text)
+
+        # Attempt 3: Interactive CTA URL 'View Catalog' button (most reliable — opens native WhatsApp catalog)
+        # Used as primary delivery mechanism when native catalog_message API is blocked pending permission sync
+        if response.status_code != 200:
+            print("Delivering interactive cta_url 'View Catalog' button (reliable fallback)...")
+            req_body_cta = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": target_number,
+                "type": "interactive",
+                "interactive": {
+                    "type": "cta_url",
+                    "header": {
+                        "type": "text",
+                        "text": "🍽️ Madam G Kitchen"
+                    },
+                    "body": {
+                        "text": "Please pick what you would like to order from the catalog below 🍲✨"
+                    },
+                    "footer": {
+                        "text": "InTime Food Delivery ⚡"
+                    },
+                    "action": {
+                        "name": "cta_url",
+                        "parameters": {
+                            "display_text": "View Catalog",
+                            "url": f"https://wa.me/c/{business_phone}"
+                        }
+                    }
+                }
+            }
+            response = await client.post(graph_url, json=req_body_cta, headers=headers)
+            print("Food catalog cta_url response:", response.status_code, response.text)
+
+        if response.status_code != 200:
+            print(f"⚠️ Food catalog dispatch was not delivered (status {response.status_code}).")
+
+    return response
+
+
+async def send_custom_message(sender_wa_number, message, auth, graph_url):
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "text",
+        "text": {
+            "body": message
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+      
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(graph_url, json=req_body, headers=headers)
+            print("custom message sent", response.status_code, response.text)
+        except Exception as e:
+            print("send_custom_message error:", e)
+    return
+
+async def send_details_to_recipients(sender_wa_number, message, auth, graph_url):
+    """Sends delivery notifications specifically to package recipients, ensuring phone format normalization."""
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    print(f"[RECIPIENT NOTIFY] Sending message to recipient: {target_number} (raw input: {sender_wa_number})")
+    await send_custom_message(sender_wa_number=target_number, message=message, auth=auth, graph_url=graph_url)
+
+async def send_image(sender_wa_number, auth, graph_url, image_id):
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "image",
+        "image": {
+            "id": image_id
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+      
+    async with httpx.AsyncClient() as client:
+        await client.post(graph_url, json=req_body, headers=headers)
+
+    return
+
+
+async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url):
+    target_number = normalize_phone_number(wa_number) or wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                "header": { "type": "text", "text": header },
+                "body": { "text": message },
+                "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": json.dumps(flow_token), 
+                    "flow_id": flow_id,
+                    "flow_cta": flow_cta,
+                    "flow_action": "navigate",
+                    "flow_action_payload": {
+                    "screen": screen_name
+                    }
+                }
+                }
+            }
+        }
+    
+    print("req_body")
+    print(req_body)
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+         }
+      
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+
+
+    return
+
+
+async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors user registration inactivity.
+    Sends a friendly reminder after 5 minutes if user hasn't completed registration or placed an order.
+    Never sends reminders to riders or package recipients.
+    """
+    try:
+        await asyncio.sleep(300)
+
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            role = await get_user_role(sender_wa_number, db)
+            if role in ["rider", "recipient"]:
+                print(f"[REGISTRATION REMINDER] Aborting reminder for {sender_wa_number} (role: '{role}')")
+                return
+
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                return  # Stop if user already registered!
+
+            possible_numbers = get_phone_variants(sender_wa_number)
+            has_order = await db.execute(
+                select(models.Orders.id).where(models.Orders.sender_wa_number.in_(possible_numbers)).limit(1)
+            )
+            if has_order.scalars().first() is not None:
+                return
+
+            # Extra safeguard: check if this number is a recipient of ANY order
+            is_recipient = await db.execute(
+                select(models.Orders.id).where(models.Orders.recipient_phone_number.in_(possible_numbers)).limit(1)
+            )
+            if is_recipient.scalars().first() is not None:
+                print(f"[REGISTRATION REMINDER] Aborting reminder for recipient {sender_wa_number}")
+                return
+
+            reminder_msg = (
+                "⏰ *Registration Reminder*\n\n"
+                "We noticed you haven't completed your registration yet.\n\n"
+                "Please type 'Send an Order' in this chat to complete your sign-up so you can start sending packages!"
+            )
+            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_registration_reminder background task error: {e}")
+
+
+async def send_registration_template(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "w",
+                "language": { "code": "en" },
+                "components": [
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0"
+                    
+                }
+                ]
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+        #print(response.text[0]["messages"][0]["id"])
+
+    asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
+    return
+
+
+async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url):
+    
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "template",
+            "template": {
+                "name": "other_details",
+                "language": { "code": "en" },
+                "components": [
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0"
+                    
+                }
+                ]
+            }
+            }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+        #print(response.text[0]["messages"][0]["id"])
+    return
+
+'''async def request_package_image (sender_wa_number, auth, graph_url):
+    req_body = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_wa_number,
+            "type": "image",
+            "image": {
+                "id": "1474439550701963"
+            }
+        }'''
+
+async def request_pickup_location (sender_wa_number, auth, graph_url):
+    req_body = {
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "type": "interactive",
+  "to": sender_wa_number,
+  "interactive": {
+    "type": "location_request_message",
+    "body": {
+      "text": "📍 Please share your *PICKUP LOCATION* so we can get things moving!"
+    },
+    "action": {
+      "name": "send_location"
+    }
+  }
+}
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print(response.status_code, response.text)
+        #print(response.text[0]["messages"][0]["id"])
+    return
+
+# async def request_dropoff_location (sender_wa_number, auth, graph_url):
+#     req_body = {
+#   "messaging_product": "whatsapp",
+#   "recipient_type": "individual",
+#   "type": "interactive",
+#   "to": sender_wa_number,
+#   "interactive": {
+#     "type": "location_request_message",
+#     "body": {
+#       "text": "Please select your DROP-OFF location "
+#     },
+#     "action": {
+#       "name": "send_location"
+#     }
+#   }
+# }
+
+#     headers = {
+#         "Authorization": f"Bearer {auth}",
+#         "Content-Type": "application/json"
+
+#     }
+#     async with httpx.AsyncClient() as client:
+#         response = await client.post(graph_url, json=req_body, headers=headers)
+#         print(response.status_code, response.text)
+#         #print(response.text[0]["messages"][0]["id"])
+#     return
+
+
+def normalize_phone_number(phone: str) -> str:
+    """
+    Converts any Nigerian phone number into canonical WhatsApp format (2348151033428).
+    Handles 080..., 081..., 090..., 070..., 091..., +234..., 234...
+    """
+    if not phone:
+        return ""
+    clean = re.sub(r'[^\d]', '', str(phone))
+    if clean.startswith("0") and len(clean) == 11:
+        return "234" + clean[1:]
+    if len(clean) == 10 and clean[0] in ['7', '8', '9']:
+        return "234" + clean
+    return clean
+
+
+def get_phone_variants(phone: str) -> list[str]:
+    """
+    Generates all equivalent representations of a phone number (e.g. 081..., 23481..., +23481..., 81..., +1...).
+    Handles raw digits and country prefix variations across international and local formats.
+    """
+    if not phone:
+        return []
+    raw_str = str(phone)
+    clean_digits = re.sub(r'[^\d]', '', raw_str)
+    variants = set([phone, raw_str, clean_digits])
+    if clean_digits:
+        variants.add(f"+{clean_digits}")
+
+    canonical = normalize_phone_number(phone)
+    if len(canonical) == 13 and canonical.startswith("234"):
+        local_fmt = "0" + canonical[3:]
+        plus_fmt = "+" + canonical
+        raw_fmt = canonical[3:]
+        variants.update([canonical, local_fmt, plus_fmt, raw_fmt])
+    return [v for v in variants if v]
+
+
+async def get_user_role(wa_number: str, db: AsyncSession) -> str:
+    """
+    Categorizes a WhatsApp phone number into one of four roles:
+    - 'rider': Number is registered as a dispatch rider in models.Riders.
+    - 'customer': Number is registered in models.User (not deleted) or has created orders as sender_wa_number.
+    - 'recipient': Number is listed as recipient_phone_number on any active or historical order, and has not registered as a customer.
+    - 'guest': Unregistered user with no rider, customer, or recipient history.
+    """
+    if not wa_number:
+        return "guest"
+
+    possible_numbers = get_phone_variants(wa_number)
+
+    # 1. Check Rider
+    rider_res = await db.execute(
+        select(models.Riders.id).where(
+            (models.Riders.rider_wa_number.in_(possible_numbers)) |
+            (models.Riders.rider_phonenumber_2.in_(possible_numbers))
+        ).limit(1)
+    )
+    if rider_res.scalars().first() is not None:
+        return "rider"
+
+    # 2. Check Registered Customer (models.User)
+    user_res = await db.execute(
+        select(models.User.id).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        ).limit(1)
+    )
+    if user_res.scalars().first() is not None:
+        return "customer"
+
+    # Check Customer who sent an order
+    sender_res = await db.execute(
+        select(models.Orders.id).where(
+            models.Orders.sender_wa_number.in_(possible_numbers)
+        ).limit(1)
+    )
+    if sender_res.scalars().first() is not None:
+        return "customer"
+
+    # 3. Check Recipient
+    recipient_res = await db.execute(
+        select(models.Orders.id).where(
+            models.Orders.recipient_phone_number.in_(possible_numbers)
+        ).limit(1)
+    )
+    if recipient_res.scalars().first() is not None:
+        return "recipient"
+
+    return "guest"
+
+
+async def get_active_order_for_customer_or_recipient(wa_number: str, db: AsyncSession):
+    """
+    Retrieves the most recent active order where the user is either the sender or the recipient.
+    Used for OTP inquiries and tracking where either party may request status or verification codes.
+    """
+    possible_numbers = get_phone_variants(wa_number)
+    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
+    result = await db.execute(
+        select(models.Orders)
+        .where(
+            (models.Orders.sender_wa_number.in_(possible_numbers)) |
+            (models.Orders.recipient_phone_number.in_(possible_numbers))
+        )
+        .where(models.Orders.status.in_(active_statuses))
+        .where(models.Orders.status != "completed")
+        .where(
+            (models.Orders.delivery_progression_status.is_(None)) |
+            (models.Orders.delivery_progression_status != "package_delivered")
+        )
+        .order_by(models.Orders.created_at.desc())
+    )
+    order = result.scalars().first()
+    if order:
+        if order.status == "confirmed" and order.sla_expires_by:
+            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
+            if sla_dt <= datetime.now(UTC):
+                return None
+        return order
+    return None
+
+
+async def get_active_ride(sender_wa_number: str, db: AsyncSession):
+    possible_numbers = get_phone_variants(sender_wa_number)
+    active_statuses = ["confirmed", "rider_accepted", "awaiting_pickup", "package_picked_up", "in_transit", "picked_up", "awaiting_dropoff", "on_the_way", "arrived"]
+    result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.in_(active_statuses))
+        .where(models.Orders.status != "completed")
+        .where(
+            (models.Orders.delivery_progression_status.is_(None)) |
+            (models.Orders.delivery_progression_status != "package_delivered")
+        )
+        .order_by(models.Orders.created_at.desc())
+    )
+    order = result.scalars().first()
+    if order:
+        if order.status == "confirmed" and order.sla_expires_by:
+            sla_dt = order.sla_expires_by if order.sla_expires_by.tzinfo else order.sla_expires_by.replace(tzinfo=UTC)
+            if sla_dt <= datetime.now(UTC):
+                return None
+        return order
+    return None
+
+async def update_rider_offer_status(rider_wa_number: str, status_val: str, db: AsyncSession):
+    """Updates status in RiderOffer table for rider receipts (delivered, read)."""
+    possible_numbers = get_phone_variants(rider_wa_number)
+
+    await db.execute(
+        update(models.RiderOffer)
+        .where(models.RiderOffer.rider_wa_number.in_(possible_numbers))
+        .where(models.RiderOffer.status != "accepted")
+        .values(status=status_val, updated_at=datetime.now(UTC))
+    )
+    await db.commit()
+
+
+async def get_rider_rating_stats(rider_wa_number: str, db: AsyncSession) -> tuple[float | None, int]:
+    """Calculate the average star rating and total review count for a rider across all their phone variants."""
+    possible_numbers = get_phone_variants(rider_wa_number)
+    result = await db.execute(
+        select(func.avg(models.RiderRating.rating), func.count(models.RiderRating.id))
+        .where(models.RiderRating.rider_wa_number.in_(possible_numbers))
+    )
+    row = result.first()
+    if row and row[0] is not None:
+        return round(float(row[0]), 1), int(row[1])
+    return None, 0
+
+
+async def send_rider_rating_prompt(
+    customer_wa_number: str,
+    rider_name: str,
+    order_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends an interactive WhatsApp list message allowing the customer to rate the rider from 5 to 1 stars."""
+    target_number = normalize_phone_number(customer_wa_number) or customer_wa_number
+    safe_rider_name = (rider_name or "your rider")[:20]
+
+    body_text = (
+        f"⭐ *Rate Your Delivery*\n\n"
+        f"How would you rate *{rider_name}* for Order *{order_number}*?\n\n"
+        f"Tap *Rate Rider* below to submit your rating — 5 stars for excellent service! 🌟"
+    )
+
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "header": {
+                "type": "text",
+                "text": "⭐ Rate Your Rider"
+            },
+            "body": {
+                "text": body_text
+            },
+            "footer": {
+                "text": "InTime Service Quality"
+            },
+            "action": {
+                "button": "Rate Rider",
+                "sections": [
+                    {
+                        "title": f"Rate {safe_rider_name}"[:24],
+                        "rows": [
+                            {
+                                "id": f"rate_rider:{order_number}:5",
+                                "title": "⭐⭐⭐⭐⭐ 5 Stars",
+                                "description": "Excellent service!"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:4",
+                                "title": "⭐⭐⭐⭐ 4 Stars",
+                                "description": "Very good service"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:3",
+                                "title": "⭐⭐⭐ 3 Stars",
+                                "description": "Good service"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:2",
+                                "title": "⭐⭐ 2 Stars",
+                                "description": "Fair / Needs improvement"
+                            },
+                            {
+                                "id": f"rate_rider:{order_number}:1",
+                                "title": "⭐ 1 Star",
+                                "description": "Poor service"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        res = await client.post(graph_url, json=req_body, headers=headers)
+        print("rating prompt sent:", res.status_code, res.text)
+        if res.status_code >= 400:
+            fallback_msg = (
+                f"⭐ *Rate Your Experience with {rider_name}*\n\n"
+                f"How would you rate your delivery for Order *{order_number}*?\n\n"
+                f"Reply with a number:\n"
+                f"5️⃣ - ⭐⭐⭐⭐⭐ (5 Stars - Excellent service!)\n"
+                f"4️⃣ - ⭐⭐⭐⭐ (4 Stars - Very good)\n"
+                f"3️⃣ - ⭐⭐⭐ (3 Stars - Good)\n"
+                f"2️⃣ - ⭐⭐ (2 Stars - Fair)\n"
+                f"1️⃣ - ⭐ (1 Star - Poor)"
+            )
+            await send_custom_message(customer_wa_number, fallback_msg, auth, graph_url)
+
+
+async def send_rider_eta_prompt(
+    rider_wa_number: str,
+    order_number: str,
+    auth: str,
+    graph_url: str
+):
+    """Sends an interactive WhatsApp button prompt to the rider asking if they are 10 minutes away from drop-off."""
+    target_number = normalize_phone_number(rider_wa_number) or rider_wa_number
+    body_text = (
+        f"📍 *ETA Check*\n\n"
+        f"Are you about 10 minutes away from the drop-off location for Order *{order_number}*?"
+    )
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": body_text
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"ETA_YES_10MINS:{order_number}",
+                            "title": "🛵 Yes, ~10 Mins"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"ETA_NO_STILL_FAR:{order_number}",
+                            "title": "⏳ Still On Way"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(graph_url, json=req_body, headers=headers)
+            print("rider ETA prompt sent:", res.status_code, res.text)
+            if res.status_code >= 400:
+                # Fallback to plain text if interactive button is rejected
+                await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
+    except Exception as e:
+        print(f"Error sending interactive ETA buttons to rider: {e}")
+        await send_custom_message(rider_wa_number, body_text + "\n\nReply with *'yes'* or *'no'*.", auth, graph_url)
+
+
+async def save_rider_rating(
+    order_number: str,
+    rating_val: int,
+    customer_wa: str,
+    db: AsyncSession,
+    auth: str,
+    graph_url: str
+):
+    """Saves a rider star rating (1–5) and notifies both customer and rider with updated stats."""
+    rating_val = max(1, min(5, rating_val))
+
+    order_res = await db.execute(
+        select(models.Orders).where(models.Orders.order_number == order_number)
+    )
+    order = order_res.scalars().first()
+    if not order:
+        return
+
+    rider_wa = order.rider_wa_number
+    customer_number = customer_wa or order.sender_wa_number
+
+    # Check if this order was already rated
+    existing_rating = await db.execute(
+        select(models.RiderRating).where(models.RiderRating.order_number == order_number)
+    )
+    if existing_rating.scalars().first():
+        msg = f"🙏 You have already submitted a rating for Order *{order_number}*. Thank you for your feedback!"
+        await send_custom_message(customer_number, msg, auth, graph_url)
+        return
+
+    # Find rider's name
+    rider_name = "your rider"
+    if rider_wa:
+        r_res = await db.execute(
+            select(models.Riders.first_name, models.Riders.last_name)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa)))
+        )
+        r_row = r_res.first()
+        if r_row:
+            rider_name = f"{r_row[0]} {r_row[1]}"
+
+    # Insert into rider_ratings
+    new_rating = models.RiderRating(
+        rider_wa_number=rider_wa or "unknown",
+        order_number=order_number,
+        rating=rating_val
+    )
+    db.add(new_rating)
+    await db.commit()
+
+    # Fetch updated average rating and count
+    avg_rating, total_count = await get_rider_rating_stats(rider_wa, db) if rider_wa else (None, 0)
+    avg_str = f"{avg_rating:.1f} ★" if avg_rating is not None else f"{rating_val}.0 ★"
+    reviews_str = f"{total_count} {'review' if total_count == 1 else 'reviews'}"
+
+    stars_display = "⭐" * rating_val
+    rating_labels = {
+        5: "Excellent service!",
+        4: "Very good service!",
+        3: "Good service!",
+        2: "Fair service.",
+        1: "Poor service."
+    }
+    label = rating_labels.get(rating_val, "")
+
+    # Send energetic thank you to customer
+    customer_msg = (
+        f"🌟 *Thank you for rating {rider_name}!* 🌟\n\n"
+        f"You gave: {stars_display} (*{rating_val}/5 stars* — {label})\n\n"
+        f"Your feedback helps us reward great riders and keep InTime fast, reliable, and delightful! 🛵💨\n\n"
+        f"Ready for your next dispatch? Just type *Send an Order* anytime! 📦🚀"
+    )
+    await send_custom_message(customer_number, customer_msg, auth, graph_url)
+
+    # Notify rider of the rating they received
+    if rider_wa:
+        rider_msg = (
+            f"🎉 *New Customer Rating!* {stars_display}\n\n"
+            f"A customer just rated you *{rating_val}/5 stars* for Order *{order_number}*! 🌟\n\n"
+            f"📊 Your overall average rating is now: *{avg_str}* ({reviews_str})\n\n"
+            f"Keep up the great work! More orders coming soon! 🏍️💨"
+        )
+        await send_custom_message(rider_wa, rider_msg, auth, graph_url)
+
+
+async def verify_delivery_code(
+    order: models.Orders,
+    submitted_code: str,
+    rider_wa_number: str,
+    db: AsyncSession,
+    auth: str,
+    graph_url: str
+) -> bool:
+    """
+    Validates the 5-digit delivery verification code submitted by the rider.
+    Enforces a strict 3-trial limit.
+    On success: marks order as completed/delivered, sends completion notifications, and prompts customer for rating.
+    On failure: increments attempts, warns rider of remaining trials, and alerts sender on lockout (3 failed attempts).
+    """
+    clean_submitted = re.sub(r'[^\d]', '', str(submitted_code or "")).strip()
+    clean_expected = re.sub(r'[^\d]', '', str(order.verification_code or "")).strip()
+
+    # 1. Check if maximum attempts already exhausted
+    if (order.verification_attempts or 0) >= 3:
+        locked_msg = (
+            f"🚫 *Verification Locked*\n\n"
+            f"The maximum limit of 3 verification attempts has already been reached for Order *{order.order_number}*.\n\n"
+            f"For security reasons, code entry is disabled. Please contact InTime support at *+234 815 103 3428* or have the sender confirm the handover."
+        )
+        await send_custom_message(rider_wa_number, locked_msg, auth, graph_url)
+        return False
+
+    # 2. Check for match
+    if clean_expected and clean_submitted == clean_expected:
+        # SUCCESS! Update order status to completed and delivered
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order.order_number)
+            .values(
+                delivery_progression_status="package_delivered",
+                status="completed"
+            )
+        )
+        await db.commit()
+
+        # Fetch rider's display name
+        r_res = await db.execute(
+            select(models.Riders.first_name, models.Riders.last_name)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
+        )
+        r_row = r_res.first()
+        rider_display_name = f"{r_row[0]} {r_row[1]}" if r_row else "your rider"
+
+        rider_success_msg = (
+            f"✅ *Verification Successful!* 🎉\n\n"
+            f"Code *{clean_submitted}* verified successfully! Order *{order.order_number}* is now completed.\n\n"
+            f"Thank you for your fantastic hustle! 🛵💨 More dispatch requests coming your way soon! 💪✨"
+        )
+        recipient_msg = (
+            f"✅🎉 *Your Package Has Arrived!*\n\n"
+            f"Your delivery for Order *{order.order_number}* has been verified with your verification code and completed! 📦✨\n\n"
+            f"Thank you for choosing *InTime*! Have a wonderful day ahead! 🌟😊"
+        )
+        sender_msg = (
+            f"🎉🥳 *Delivery Complete & Verified!* 📦✨\n\n"
+            f"Woohoo! Your package for Order *{order.order_number}* was safely verified with your recipient's code and delivered! 🎊🛵💨\n\n"
+            f"Thank you so much for choosing *InTime* — we loved delivering for you today! 🚀💫\n"
+            f"Whenever you need to send another package, we're always right here for you! 🌟🙌"
+        )
+
+        # Send notifications
+        await send_custom_message(rider_wa_number, rider_success_msg, auth, graph_url)
+        if order.sender_wa_number:
+            await send_custom_message(order.sender_wa_number, sender_msg, auth, graph_url)
+        if order.recipient_phone_number:
+            await send_details_to_recipients(order.recipient_phone_number, recipient_msg, auth, graph_url)
+
+        # Send rating prompt to customer
+        if order.sender_wa_number:
+            await send_rider_rating_prompt(
+                customer_wa_number=order.sender_wa_number,
+                rider_name=rider_display_name,
+                order_number=order.order_number,
+                auth=auth,
+                graph_url=graph_url
+            )
+
+        print(f"🟢 [CODE VERIFIED] Order {order.order_number} verified with code {clean_submitted} by rider {rider_wa_number}.")
+        return True
+
+    else:
+        # INCORRECT CODE
+        new_attempts = (order.verification_attempts or 0) + 1
+        await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order.order_number)
+            .values(verification_attempts=new_attempts)
+        )
+        await db.commit()
+
+        remaining_trials = max(0, 3 - new_attempts)
+
+        if remaining_trials > 0:
+            trial_str = f"*{remaining_trials}* trial{'s' if remaining_trials > 1 else ''}"
+            fail_msg = (
+                f"❌ *Incorrect Verification Code!*\n\n"
+                f"The code *{clean_submitted or submitted_code}* does not match.\n\n"
+                f"⚠️ You have {trial_str} remaining (Attempt {new_attempts}/3).\n\n"
+                f"Please ask the recipient for their 5-digit verification code and try again."
+            )
+            await send_custom_message(rider_wa_number, fail_msg, auth, graph_url)
+            print(f"⚠️ [CODE FAILED] Order {order.order_number}: attempt {new_attempts}/3 failed (entered: '{clean_submitted}').")
+        else:
+            # 3 ATTEMPTS EXHAUSTED - LOCKOUT
+            lockout_rider_msg = (
+                f"🚫 *Verification Limit Exceeded*\n\n"
+                f"You have failed 3 verification attempts for Order *{order.order_number}*.\n\n"
+                f"For security reasons, code entry is now locked. Please contact InTime support at *+234 815 103 3428* or ask the sender to verify the delivery."
+            )
+            await send_custom_message(rider_wa_number, lockout_rider_msg, auth, graph_url)
+
+            # Alert sender
+            if order.sender_wa_number:
+                alert_sender_msg = (
+                    f"⚠️ *Security Alert: Verification Attempts Failed*\n\n"
+                    f"Your rider entered an incorrect verification code 3 times for Order *{order.order_number}*.\n\n"
+                    f"Please contact your recipient or call InTime support at *+234 815 103 3428* to confirm package handover."
+                )
+                await send_custom_message(order.sender_wa_number, alert_sender_msg, auth, graph_url)
+
+            print(f"🚨 [CODE LOCKOUT] Order {order.order_number}: 3 verification attempts exhausted by rider {rider_wa_number}.")
+
+        return False
+
+
+async def get_active_ride_by_number(order_number: str, db: AsyncSession):
+    result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.order_number == order_number)
+    )
+    return result.scalars().first()
+
+
+async def schedule_user_session_timeout(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors user input inactivity during order initialization (e.g. pending package image upload).
+    Sends a friendly reminder after 5 minutes, and auto-expires the session after 15 minutes.
+    """
+    try:
+        # 1. First reminder after 5 minutes (300 seconds)
+        await asyncio.sleep(300)
+
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            # If user already uploaded image or order state changed, exit immediately
+            if not order or order.status != "confirmed" or order.package_image_id is not None:
+                return
+
+            reminder_msg = (
+                f"⏰ *Pending Order Reminder*\n\n"
+                f"We're still waiting for a photo of your package to complete Order *{order_number}* and alert nearby riders.\n\n"
+                f"Please snap and upload the photo whenever you're ready!"
+            )
+            await send_custom_message(sender_wa_number, reminder_msg, auth, graph_url)
+
+        # 2. Session timeout / expiry after another 10 minutes (600 seconds -> 15 minutes total)
+        await asyncio.sleep(600)
+
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed" or order.package_image_id is not None:
+                return
+
+            # Mark order as expired in DB
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order_number)
+                .values(status="expired")
+            )
+            await db.commit()
+
+            timeout_msg = (
+                f"⌛ *Session Expired*\n\n"
+                f"Your order request *{order_number}* has timed out due to inactivity.\n\n"
+                f"Whenever you're ready to send a package, just reply 'Hi' or type 'Send an Order'!"
+            )
+            await send_custom_message(sender_wa_number, timeout_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_user_session_timeout background task error: {e}")
+
+
+async def schedule_rider_process_reminders(order_number: str, rider_wa_number: str, auth: str, graph_url: str):
+    """
+    Monitors an active order after rider acceptance.
+    Phase 1 — Pickup: sends "Have you picked up the package?" after 5 min, then up to 2 reminders every 5 min.
+    If rider doesn't respond after all reminders: unassigns rider, re-routes order to other riders.
+    Phase 2 — Dropoff: after pickup confirmed, sends dropoff reminders.
+    """
+    try:
+        # ---------------------------------------------------------------
+        # PHASE 1: PICKUP PROMPT & REMINDERS (Initial + 2 follow-ups max)
+        # ---------------------------------------------------------------
+        await asyncio.sleep(300)  # 5 minutes after acceptance before first prompt
+
+        pickup_reminder_count = 0
+        max_reminders_after_initial = 2
+
+        while pickup_reminder_count <= max_reminders_after_initial:
+            from database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                order = await get_active_ride_by_number(order_number, db)
+
+                # Exit if order cancelled, completed, or expired
+                if not order or order.status in ["cancelled", "completed", "expired"]:
+                    return
+
+                # If rider already marked package picked up, advance to Phase 2
+                if order.delivery_progression_status in ["package_picked_up", "package_delivered"]:
+                    break
+
+                # Send initial prompt or reminder
+                if pickup_reminder_count == 0:
+                    header = "Have you picked up the package?"
+                    message = "📦 Tap the button below once you've picked up the package."
+                else:
+                    header = "⏰ Pickup Reminder"
+                    message = (
+                        f"⏰ *Pickup Reminder ({pickup_reminder_count}/{max_reminders_after_initial})*\n\n"
+                        f"Hi! You have an ongoing pickup for Order *{order_number}*.\n\n"
+                        f"Please tap the button below once you've picked up the package from the sender."
+                    )
+
+                await send_custom_flow(
+                    wa_number=rider_wa_number,
+                    flow_token={"order_number": order_number},
+                    message=message,
+                    header=header,
+                    flow_id=FLOW_PICKUP_ID,
+                    flow_cta="Picked Up Package?",
+                    screen_name="flow_to_ask_if_rider_has_picked_up_package",
+                    auth=auth,
+                    graph_url=graph_url
+                )
+
+            pickup_reminder_count += 1
+            await asyncio.sleep(300)  # 5 minutes between each reminder
+
+        # ---------------------------------------------------------------
+        # CHECK IF RIDER FAILED TO RESPOND TO ALL PICKUP REMINDERS
+        # ---------------------------------------------------------------
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if order and order.status == "rider_accepted" and order.delivery_progression_status not in ["package_picked_up", "package_delivered"]:
+                print(f"[RIDER TIMEOUT] Rider ({rider_wa_number}) did not respond to pickup reminders for order {order_number}. Re-routing...")
+
+                # 1. Unassign rider, reset order to 'confirmed'
+                await db.execute(
+                    update(models.Orders)
+                    .where(models.Orders.order_number == order_number)
+                    .values(status="confirmed", rider_wa_number=None)
+                )
+                await db.commit()
+
+                # 2. Notify unresponsive rider
+                await send_custom_message(rider_wa_number, (
+                    f"⏰ *Order Re-assigned*\n\n"
+                    f"Due to inactivity, Order *{order_number}* has been unassigned from you and returned to dispatch."
+                ), auth, graph_url)
+
+                # 3. Notify customer
+                await send_custom_message(order.sender_wa_number, (
+                    f"🔄 *Re-routing Order*\n\n"
+                    f"Your assigned rider was unresponsive for Order *{order_number}*.\n\n"
+                    f"We are re-routing your delivery to other nearby riders right now!"
+                ), auth, graph_url)
+
+                # 4. Re-broadcast to available riders
+                order_details = {
+                    "package_description": order.package_description,
+                    "pick_up_location": order.pickup_location_name,
+                    "drop_off_location": order.dropoff_location_name,
+                    "offered_price": order.customer_initial_offered_price or order.final_price_agreed_by_cust_and_rider or "1000",
+                    "order_number": order.order_number,
+                    "image_id": order.package_image_id
+                }
+                await get_rider(
+                    sender_wa_number=order.sender_wa_number,
+                    auth=auth,
+                    graph_url=graph_url,
+                    order_details=order_details,
+                    db=db
+                )
+                return
+
+        # ---------------------------------------------------------------
+        # PHASE 2: DROPOFF / DELIVERY REMINDERS (up to 2 reminders)
+        # ---------------------------------------------------------------
+        await asyncio.sleep(600)  # 10 min after pickup before first dropoff reminder
+
+        dropoff_reminder_count = 0
+        while dropoff_reminder_count < max_reminders_after_initial:
+            async with AsyncSessionLocal() as db:
+                order = await get_active_ride_by_number(order_number, db)
+
+                if not order or order.status in ["cancelled", "completed", "expired"]:
+                    return
+                if order.delivery_progression_status == "package_delivered":
+                    return
+
+                recipient_phone_str = order.recipient_phone_number or "Not provided"
+                dropoff_loc = order.dropoff_location_name or "Drop-off location"
+                await send_custom_message(
+                    sender_wa_number=rider_wa_number,
+                    message=(
+                        f"⏰ *Delivery Reminder ({dropoff_reminder_count + 1}/{max_reminders_after_initial})* 🛵💨\n\n"
+                        f"Order: *{order_number}*\n\n"
+                        f"🏁 *Drop-off:* {dropoff_loc}\n"
+                        f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                        f"When you arrive at the drop-off location, ask the recipient for their *5-digit verification code* and reply with it directly in this chat (e.g. *12345*) to complete the delivery! 🤝✅"
+                    ),
+                    auth=auth,
+                    graph_url=graph_url
+                )
+
+            dropoff_reminder_count += 1
+            await asyncio.sleep(300)
+
+        # Final check: if still in transit after all reminders, nudge the customer
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if order and order.delivery_progression_status == "package_picked_up":
+                await send_custom_message(order.sender_wa_number, (
+                    f"📦 *Delivery Status Check*\n\n"
+                    f"Order *{order_number}* is currently in transit.\n"
+                    f"If you need an update, you can call your rider directly at *{rider_wa_number}*."
+                ), auth, graph_url)
+
+    except Exception as e:
+        print(f"schedule_rider_process_reminders background task error: {e}")
+
+
+async def _delayed_send_pickup_flow(wa_number, order_number, auth, graph_url, delay=300):
+    await asyncio.sleep(delay)
+    await send_custom_flow(
+        wa_number=wa_number,
+        flow_token={"order_number": order_number},
+        message="📦 Tap the button below once you've picked up the package.",
+        header="Have you picked up the package?",
+        flow_id=FLOW_PICKUP_ID,
+        flow_cta="Picked Up Package?",
+        screen_name="flow_to_ask_if_rider_has_picked_up_package",
+        auth=auth,
+        graph_url=graph_url
+    )
+
+
+async def schedule_customer_offer_timeout(order_number: str, customer_wa_number: str, rider_name: str, proposed_amount: str, auth: str, graph_url: str):
+    """
+    Monitors customer inactivity when a rider sends a counter-offer.
+    Sends a friendly reminder after 4 minutes if customer hasn't accepted.
+    """
+    try:
+        await asyncio.sleep(240)
+
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return  # Stop if customer accepted, cancelled, or rider assigned
+
+            reminder_msg = (
+                f"⏰ *Counter Offer Reminder*\n\n"
+                f"Rider *{rider_name}* proposed an offer of *{proposed_amount}* for Order *{order_number}*.\n\n"
+                f"Please accept the offer or adjust your fare to confirm your rider!"
+            )
+            await send_custom_message(customer_wa_number, reminder_msg, auth, graph_url)
+    except Exception as e:
+        print(f"schedule_customer_offer_timeout background task error: {e}")
+
+
+async def schedule_order_followups(order_number: str, sender_wa_number: str, auth: str, graph_url: str):
+    """
+    State-aware background task that monitors order search progress.
+    Re-queries DB before every alert. Suppresses follow-up if order is no longer searching (confirmed).
+    Timeline:
+      - 2 minutes (120s): If riders have viewed the order, notifies customer:
+        "Good news 👀 *{read_count}* rider(s) have viewed your delivery offer! We're waiting for one to accept."
+        (Silent if 0 views).
+      - 5 minutes (300s total, +180s): If riders viewed, sends updated view count.
+        If no riders viewed yet but order was delivered:
+        "Good news 👀 We have delivered your order to *{delivered_count}* rider(s) and they are yet to view it. We'll update you as soon as they open it!"
+      - 7 minutes (420s total, +120s): If still no rider accepted, prompts customer with fare escalation:
+        "🔔 Need a rider faster?" flow.
+    """
+    try:
+        notified_views = 0
+
+        # --- CHECKPOINT 1: 2 Minutes (120 seconds) ---
+        await asyncio.sleep(120)
+
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return  # Stop immediately if rider accepted, cancelled, or completed!
+
+            offers_res = await db.execute(
+                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
+            )
+            offers = offers_res.scalars().all()
+            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+
+            # Only notify at 2 mins if riders have actively viewed the order
+            if read_count > 0:
+                verb_phrase = "s have" if read_count > 1 else " has"
+                msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+                notified_views = read_count
+
+        # --- CHECKPOINT 2: 5 Minutes (300 seconds total, +180 seconds) ---
+        await asyncio.sleep(180)
+
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return
+
+            offers_res = await db.execute(
+                select(models.RiderOffer).where(models.RiderOffer.order_number == order_number)
+            )
+            offers = offers_res.scalars().all()
+            read_count = sum(1 for o in offers if o.status in ["read", "viewed"])
+            delivered_count = sum(1 for o in offers if o.status in ["delivered", "read", "viewed"])
+            total_notified = len(offers)
+            effective_delivered = delivered_count if delivered_count > 0 else total_notified
+
+            if read_count > 0:
+                if read_count != notified_views:
+                    verb_phrase = "s have" if read_count > 1 else " has"
+                    msg = f"Good news 👀 *{read_count}* rider{verb_phrase} viewed your delivery offer! We're waiting for one to accept."
+                    await send_custom_message(sender_wa_number, msg, auth, graph_url)
+                    notified_views = read_count
+            elif effective_delivered > 0:
+                plural_del = "s" if effective_delivered > 1 else ""
+                msg = f"Good news 👀 We have delivered your order to *{effective_delivered}* rider{plural_del} and they are yet to view it. We'll update you as soon as they open it!"
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+            else:
+                msg = "Stay locked in 👀 We're searching for available riders nearby for your package. We'll update you as soon as one accepts."
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+
+        # --- CHECKPOINT 3: 7 Minutes (420 seconds total, +120 seconds) ---
+        await asyncio.sleep(120)
+
+        async with AsyncSessionLocal() as db:
+            order = await get_active_ride_by_number(order_number, db)
+            if not order or order.status != "confirmed":
+                return
+
+            escalation_msg = (
+                "We've sent your delivery offer to nearby riders, but none have accepted yet. 🔄\n\n"
+                "Increasing your fare slightly can help attract a rider quickly."
+            )
+            await send_custom_flow(
+                wa_number=sender_wa_number,
+                flow_token={"order_number": order_number},
+                message=escalation_msg,
+                header="🔔 Need a rider faster?",
+                flow_id=FLOW_INCREASE_FARE_ID,
+                flow_cta="I want to increase my fare",
+                screen_name="CUST_INCREASE_FARE_SCREEN",
+                auth=auth,
+                graph_url=graph_url
+            )
+    except Exception as e:
+        print(f"schedule_order_followups background task error: {e}")
+
+
+async def mark_rider_available_if_rider(sender_wa_number: str, db: AsyncSession):
+    """
+    Automatically marks a rider as 'available' whenever they send a message to InTime.
+    This registers the rider for daily dispatch within Meta's free 24-hour customer service window.
+    """
+    if not sender_wa_number:
+        return
+    possible_numbers = get_phone_variants(sender_wa_number)
+    rider_result = await db.execute(
+        select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
+    )
+    rider = rider_result.scalars().first()
+    if rider:
+        if rider.availability_status != "available":
+            rider.availability_status = "available"
+            await db.commit()
+            print(f"🟢 [RIDER CHECK-IN] Marked rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) as AVAILABLE for 24h window.")
+        else:
+            print(f"ℹ️ [RIDER CHECK-IN] Rider '{rider.first_name} {rider.last_name}' ({rider.rider_wa_number}) is already ACTIVE.")
+
+
+async def get_rider(sender_wa_number, auth, graph_url, order_details, db: AsyncSession, reset_offers: bool = False):
+    """
+    Dispatches the order to all available riders.
+    When reset_offers=True (used during re-routing), previous RiderOffer records for this order
+    are deleted first so the view count restarts from zero for the new round.
+    """
+    search_msg = f"🔍 Searching for available riders nearby, please hold on..."
+    await send_custom_message(sender_wa_number, search_msg, auth, graph_url)
+
+    # --- Reset rider offer records when re-routing to avoid inflated view counts ---
+    if reset_offers:
+        await db.execute(
+            delete(models.RiderOffer).where(
+                models.RiderOffer.order_number == order_details['order_number']
+            )
+        )
+        await db.commit()
+        print(f"[REROUTE] Cleared previous RiderOffer records for order {order_details['order_number']}")
+
+    sender_variants = get_phone_variants(sender_wa_number)
+    riders_res = await db.execute(
+        select(models.Riders)
+        .where(models.Riders.availability_status == "available")
+        .where(models.Riders.kyc_status == "verified")
+        .where(models.Riders.rider_wa_number.not_in(sender_variants))
+    )
+    riders = list(riders_res.scalars().all())
+
+    # --- TENTATIVE TEST-RIDER FALLBACK FOR META APP REVIEW ---
+    enable_test_fallback = os.getenv("ENABLE_REVIEW_TEST_FALLBACK", "true").strip().lower() in ("true", "1", "yes", "t")
+    test_rider_wa = os.getenv("TEST_RIDER_WA_NUMBER", "2348122319750").strip()
+
+    if not riders and enable_test_fallback and test_rider_wa:
+        test_rider_variants = get_phone_variants(test_rider_wa)
+        fallback_res = await db.execute(
+            select(models.Riders).where(models.Riders.rider_wa_number.in_(test_rider_variants))
+        )
+        fallback_rider = fallback_res.scalars().first()
+        if not fallback_rider:
+            fallback_rider = models.Riders(
+                first_name="Test",
+                last_name="Rider",
+                rider_wa_number=test_rider_wa,
+                rider_phonenumber_2=test_rider_wa,
+                availability_status="available",
+                kyc_status="verified"
+            )
+            db.add(fallback_rider)
+            await db.commit()
+            await db.refresh(fallback_rider)
+        elif fallback_rider.availability_status != "available" or fallback_rider.kyc_status != "verified":
+            fallback_rider.availability_status = "available"
+            fallback_rider.kyc_status = "verified"
+            await db.commit()
+            await db.refresh(fallback_rider)
+
+        riders = [fallback_rider]
+        print(f"[REVIEW TEST MODE ACTIVE] Production rider pool empty. Dispatched order {order_details['order_number']} to fallback test rider {test_rider_wa}.")
+
+    print(f"[DISPATCH SEARCH] Order {order_details['order_number']} dispatched by ({sender_wa_number}). Found {len(riders)} available rider(s): {[r.rider_wa_number for r in riders]}")
+    if not riders:
+        print(f"[DISPATCH SEARCH] No active 'available' riders found for order {order_details['order_number']}.")
+
+    is_priority = bool(order_details.get('is_priority') or (order_details.get('is_drug') and order_details.get('is_urgent')))
+
+    for rider in riders:
+        try:
+            if is_priority:
+                header = f"🚨 URGENT MEDICATION DISPATCH! 🚨\n"
+                dispatch_msg = (
+                    f"💊 *PRIORITY DELIVERY - URGENT MEDICATION* 💊\n\n"
+                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
+                    f"⚡ *PRIORITY*: Medical supply needed ASAP! Please accept immediately if available."
+                )
+            else:
+                header = f"DISPATCH REQUEST!\n"
+                dispatch_msg = (
+                    f"ORDER DESCRIPTION 📦: {order_details['package_description']}\n\n"
+                    f"PICKUP LOCATION📍: {order_details['pick_up_location']}\n\n"
+                    f"DROPOFF LOCATION📍: {order_details['drop_off_location']}\n\n"
+                    f"OFFERED PRICE💵: {order_details['offered_price']}\n\n"
+                    f"ORDER NUMBER: {order_details['order_number']}\n\n"
+                )
+
+            new_offer = models.RiderOffer(
+                order_number=order_details['order_number'],
+                rider_wa_number=rider.rider_wa_number,
+                status="sent"
+            )
+            db.add(new_offer)
+
+            await send_custom_flow(
+                wa_number=rider.rider_wa_number,
+                flow_token={"order_number": order_details['order_number']},
+                message=dispatch_msg,
+                header=header,
+                flow_id=FLOW_RIDER_ACCEPT_ID,
+                flow_cta="Accept or Negotiate",
+                screen_name="RECOMMEND",
+                auth=auth,
+                graph_url=graph_url
+            )
+            if order_details.get('image_id'):
+                await send_image(rider.rider_wa_number, auth, graph_url, order_details['image_id'])
+        except Exception as e:
+            print(f"Error dispatching offer to rider {rider.rider_wa_number}: {e}")
+
+    await db.commit()
+
+    asyncio.create_task(schedule_order_followups(order_details['order_number'], sender_wa_number, auth, graph_url))
+    return
+
+
+
+
+# async def handle_location(sender_wa_number, lat, lng, address, auth, graph_url, db):
+#     ride = await get_active_ride(sender_wa_number, db)
+    
+#     if not ride:
+#         # no active ride, something went wrong
+#         message = "Something went wrong, please start again."
+#         await send_custom_message(sender_wa_number, message , auth, graph_url)
+#         return
+
+#     match ride.status:
+#         case "awaiting_pickup":
+#             ride.pickup_lat = lat
+#             ride.pickup_lng = lng
+#             ride.pickup_location_name = address
+#             ride.status = "awaiting_dropoff"
+#             await db.commit()
+#             await request_dropoff_location(sender_wa_number, auth, graph_url)
+
+#         case "awaiting_dropoff":
+#             ride.dropoff_lat = lat
+#             ride.dropoff_lng = lng
+#             ride.dropoff_location_name = address
+#             ride.status = "confirmed"
+#             await db.commit()
+            
+#             order_details = {
+#                 "package_description": ride.package_description,
+#                 "pick_up_location": ride.pickup_location_name,
+#                 "drop_off_location": ride.dropoff_location_name,
+#                 "offered_price": ride.customer_intital_offered_price,
+#                 "order_id": ride.order_number
+
+#             }
+#             print("order_details is: ")
+#             print(order_details)
+#             await get_rider(sender_wa_number=sender_wa_number, auth=auth, graph_url=graph_url, order_details=order_details, db=db)
+
+
+
+
+
+
+async def handle_case_where_rider_has_accepted_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
+    try:
+        order_result = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.order_number == order_number)
+        )
+        order = order_result.scalars().first()
+        if not order:
+            print(f"⚠️ [RIDER ACCEPT] Order {order_number} not found.")
+            return
+        order_status = order.status
+
+        rider_details_res = await db.execute(
+            select(models.Riders)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(sender_wa_number)))
+        )
+        rider_details = rider_details_res.scalars().first()
+        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
+        rider_phone = rider_details.rider_wa_number if rider_details else sender_wa_number
+
+        if order_status == "confirmed":
+            customer_wa_res = await db.execute(
+                select(models.Orders.sender_wa_number)
+                .where(models.Orders.order_number == order_number)
+            )
+            customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
+            
+            sender_user_res = await db.execute(
+                select(models.User.name).where(
+                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+                )
+            )
+            sender_name = sender_user_res.scalars().first() or "Someone"
+            recipient_phone_str = order.recipient_phone_number or "Not provided"
+            rider_message = (
+                f"🎉 *Ride Accepted!* 🏍️💨\n\n"
+                f"You have accepted Order *{order.order_number}*.\n\n"
+                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please head to the pickup location now. Safe riding! 🌟"
+            )
+            recipient_message = (
+                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
+                f"📦 Description: {order.package_description}\n\n"
+                f"📍 Pickup: {order.pickup_location_name}\n\n"
+                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
+                f"🔖 Order No: {order.order_number}\n\n"
+                f"🧑‍✈️ Rider: {rider_name}\n"
+                f"📞 Rider's Phone: {rider_phone}"
+            )
+            recipient_wa_number = order.recipient_phone_number
+
+            # Save accepted state first so the order_number is valid when buttons are sent
+            await db.execute(
+               update(models.Orders)
+               .where(models.Orders.order_number == order_number)
+               .values(
+                   status="rider_accepted",
+                   rider_wa_number=sender_wa_number,
+                   final_price_agreed_by_cust_and_rider=order.final_price_agreed_by_cust_and_rider or order.customer_initial_offered_price
+               )
+            )
+            await db.commit()
+
+            # Notify rider
+            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)
+
+            # Get rider rating stats to display in customer confirmation
+            avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
+            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
+            # Notify customer with action buttons & rider rating
+            await send_rider_accepted_with_options(
+                customer_wa_number=customer_wa_number,
+                rider_name=rider_name,
+                rider_phone=rider_phone,
+                order_number=order_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL,
+                rating_display=rating_display
+            )
+
+            # Notify recipient safely (so un-whitelisted recipient in dev mode doesn't break acceptance flow)
+            if recipient_wa_number:
+                try:
+                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=AUTH, graph_url=GRAPH_URL)
+                except Exception as recip_err:
+                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
+
+            # Start pickup & delivery reminder loop for the rider
+            asyncio.create_task(schedule_rider_process_reminders(
+                order_number=order_number,
+                rider_wa_number=sender_wa_number,
+                auth=AUTH,
+                graph_url=GRAPH_URL
+            ))
+
+        else:
+            rider_message = f"⏰ Sorry, you responded a bit late — this order has already been assigned to another rider."
+            await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+    except Exception as accept_err:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in handle_case_where_rider_has_accepted_the_ride: {accept_err}")   
+
+
+
+
+async def handle_case_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, AUTH, GRAPH_URL, db:AsyncSession):
+    message = (
+        "💬 Not happy with the price? Tap below to send your counter offer."
+        )
+
+    await send_custom_flow(
+            wa_number=sender_wa_number,
+            flow_token={"order_number": order_number},
+            message=message,
+            header="-",
+            flow_id=FLOW_NEGOTIATE_ID,
+            flow_cta="Input Price",
+            screen_name="NEGOTIATE_SCREEN",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
+
+
+async def message_customer_where_rider_is_negotiating_the_ride(sender_wa_number, order_number, rider_proposed_amount, AUTH, GRAPH_URL, db:AsyncSession):
+    order_result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.order_number == order_number)
+    )
+
+    order = order_result.scalars().first()
+
+    rider_result = await db.execute(
+        select(models.Riders)
+        .where(models.Riders.rider_wa_number == sender_wa_number)
+    )
+
+    rider_details = rider_result.scalars().first()
+
+    if order and order.status == "confirmed":
+        customer_wa_res = await db.execute(
+            select(models.Orders.sender_wa_number)
+            .where(models.Orders.order_number == order_number)
+        )
+        customer_wa_number = customer_wa_res.scalars().first() or order.sender_wa_number
+        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
+
+        # Fetch actual average rating for rider
+        avg_rating, total_reviews = await get_rider_rating_stats(sender_wa_number, db)
+        rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
+        customer_message = (
+            f"🧑‍✈️ Rider: *{rider_name}*\n\n"
+            f"💰 Offered Price: *{rider_proposed_amount}*\n\n"
+            f"🔖 Order No: {order.order_number}\n\n"
+            f"⭐ Rating: *{rating_display}*"
+            )
+        
+        asking_customer_to_increase_price_msg = (
+            f"Not satisfied with any of the offers? "
+            f"You can increase your fare using the button below "
+            "and we'll search for more riders. 🔄"
+        )
+        
+        
+        
+        #sending a message to the customer about the riders offering the prices
+        await send_custom_flow(
+            wa_number=customer_wa_number,
+            flow_token={"order_number": order_number, "rider_wa_number": sender_wa_number},
+            message=customer_message,
+            header="💸 A rider has made a counter offer",
+            flow_id=FLOW_COUNTER_OFFER_ID,
+            flow_cta="Accept this offer",
+            screen_name="customer_accept_or_reject_rider_offer",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
+
+         #sending a message to the customer asking if they want to increase fare. This should be outside the loop
+        await send_custom_flow(
+            wa_number=customer_wa_number,
+            flow_token={"order_number": order_number},
+            message=asking_customer_to_increase_price_msg,
+            header="🔔",
+            flow_id=FLOW_INCREASE_FARE_ID,
+            flow_cta="I want to increase my fare",
+            screen_name="CUST_INCREASE_FARE_SCREEN",
+            auth=AUTH,
+            graph_url=GRAPH_URL
+        )
+
+        asyncio.create_task(schedule_customer_offer_timeout(order_number, customer_wa_number, rider_name, rider_proposed_amount, AUTH, GRAPH_URL))
+
+        
+
+    else:
+        rider_message = f"Sorry! you responded late and this order has already been picked up by another rider"
+        await send_custom_message(sender_wa_number=sender_wa_number, message=rider_message, auth=AUTH, graph_url=GRAPH_URL)   
+
+
+
+
+
+async def handle_case_where_customer_has_accepted_the_ride(sender_wa_number, rider_wa_number, order_number, auth, graph_url, db:AsyncSession, agreed_price=None):
+    order_result = await db.execute(
+    select(models.Orders)
+    .where(models.Orders.order_number == order_number)
+    )
+    order = order_result.scalars().first()
+    if not order:
+        return
+    order_status = order.status
+
+    print(f"riders number is: {rider_wa_number}")
+    try:
+        rider_details_res = await db.execute(
+            select(models.Riders)
+            .where(models.Riders.rider_wa_number.in_(get_phone_variants(rider_wa_number)))
+        )
+        rider_details = rider_details_res.scalars().first()
+        rider_name = f"{rider_details.first_name} {rider_details.last_name}" if rider_details else "Rider"
+        rider_phone = rider_details.rider_wa_number if rider_details else rider_wa_number
+
+        if order_status == "confirmed":
+            customer_wa_number = sender_wa_number
+
+            sender_user_res = await db.execute(
+                select(models.User.name).where(
+                    models.User.wa_id.in_(get_phone_variants(customer_wa_number))
+                )
+            )
+            sender_name = sender_user_res.scalars().first() or "Someone"
+            recipient_phone_str = order.recipient_phone_number or "Not provided"
+            rider_message = (
+                f"🎉 *Ride Confirmed!* 🏍️💨\n\n"
+                f"Order *{order.order_number}* has been confirmed!\n\n"
+                f"📍 *Pickup Location:* {order.pickup_location_name or 'Pickup Location'}\n"
+                f"🏁 *Drop-off Location:* {order.dropoff_location_name or 'Drop-off Location'}\n\n"
+                f"👤 *Sender Phone:* *{customer_wa_number}*\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please head to the pickup location now. Safe riding! 🌟"
+            )
+            recipient_message = (
+                f"👋 Hello! *{sender_name}* is sending a package to you via InTime!\n\n"
+                f"📦 Description: {order.package_description}\n\n"
+                f"📍 Pickup: {order.pickup_location_name}\n\n"
+                f"🏁 Dropoff: {order.dropoff_location_name}\n\n"
+                f"🔖 Order No: {order.order_number}\n\n"
+                f"🧑‍✈️ Rider: {rider_name}\n"
+                f"📞 Rider's Phone: {rider_phone}"
+            )
+            recipient_wa_number = order.recipient_phone_number
+
+            final_price = agreed_price or (order.customer_initial_offered_price if order else None) or "12000"
+            await db.execute(
+               update(models.Orders)
+               .where(models.Orders.order_number == order_number)
+               .values(status="rider_accepted", final_price_agreed_by_cust_and_rider=final_price, rider_wa_number=rider_wa_number)
+            )
+            await db.commit()
+
+            # Notify rider
+            await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)
+
+            # Get rider rating stats to display in customer confirmation
+            avg_rating, total_reviews = await get_rider_rating_stats(rider_wa_number, db)
+            rating_display = f"{avg_rating:.1f} ★ ({total_reviews} {'review' if total_reviews == 1 else 'reviews'})" if avg_rating is not None else "5.0 ★ (New Rider)"
+
+            # Notify customer with action buttons & rider rating
+            await send_rider_accepted_with_options(
+                customer_wa_number=customer_wa_number,
+                rider_name=rider_name,
+                rider_phone=rider_phone,
+                order_number=order_number,
+                auth=auth,
+                graph_url=graph_url,
+                rating_display=rating_display
+            )
+
+            # Notify recipient safely
+            if recipient_wa_number:
+                try:
+                    await send_details_to_recipients(sender_wa_number=recipient_wa_number, message=recipient_message, auth=auth, graph_url=graph_url)
+                except Exception as recip_err:
+                    print(f"⚠️ Recipient notification skipped/failed: {recip_err}")
+
+            # Start pickup & delivery reminder loop for the rider
+            asyncio.create_task(schedule_rider_process_reminders(
+                order_number=order_number,
+                rider_wa_number=rider_wa_number,
+                auth=auth,
+                graph_url=graph_url
+            ))
+    except Exception as accept_err:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in handle_case_where_customer_has_accepted_the_ride: {accept_err}")
+
+
+
+    else:
+        rider_message = f"⏰ Sorry, this order has already been assigned to another rider."
+        cust_message = f"✅ Your package is already on the way! The rider's details have been sent to you."
+        await send_custom_message(sender_wa_number=rider_wa_number, message=rider_message, auth=auth, graph_url=graph_url)   
+        await send_custom_message(sender_wa_number=customer_wa_number, message=cust_message, auth=auth, graph_url=graph_url)   
+
+        
+
+async def is_user_registered(sender_wa_number: str, db: AsyncSession) -> bool:
+    """Checks if an active user is registered by matching display_phone_number, wa_id, or phone_number_id across formatted variants."""
+    possible_numbers = get_phone_variants(sender_wa_number)
+
+    result = await db.execute(
+        select(models.User).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        )
+    )
+    return result.scalars().first() is not None
+
+
+async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
+    """Soft deletes and anonymizes a user's account record while clearing their chat memory."""
+    possible_numbers = get_phone_variants(sender_wa_number)
+
+    # 1. Fetch user records and soft delete / anonymize PII
+    user_res = await db.execute(
+        select(models.User).where(
+            (models.User.display_phone_number.in_(possible_numbers)) |
+            (models.User.wa_id.in_(possible_numbers)) |
+            (models.User.phone_number_id.in_(possible_numbers))
+        )
+    )
+    users = user_res.scalars().all()
+
+    for u in users:
+        await db.execute(
+            update(models.User)
+            .where(models.User.id == u.id)
+            .values(
+                is_deleted=True,
+                name="Anonymized User",
+                wa_id=f"DELETED_{u.id}",
+                display_phone_number="DELETED",
+                phone_number_id="DELETED"
+            )
+        )
+
+    await db.commit()
+
+    # 2. Cancel and anonymize all orders for this user so old records do not block future sign-ups
+    user_orders_res = await db.execute(
+        select(models.Orders).where(
+            models.Orders.sender_wa_number.in_(possible_numbers)
+        )
+    )
+    user_orders = user_orders_res.scalars().all()
+
+    primary_anon_id = f"DELETED_{users[0].id}" if users else "DELETED"
+
+    for ord_obj in user_orders:
+        if ord_obj.status in ["confirmed", "rider_accepted", "awaiting_pickup", "in_transit", "awaiting_dropoff"]:
+            if ord_obj.delivery_progression_status != "package_delivered":
+                ord_obj.status = "cancelled"
+                if ord_obj.rider_wa_number:
+                    cancel_msg = (
+                        f"❌ *Order Cancelled*\n\n"
+                        f"Order *{ord_obj.order_number}* has been cancelled because the customer deleted their account.\n\n"
+                        f"Thank you for your time — new requests will come your way shortly! 🛵"
+                    )
+                    asyncio.create_task(send_custom_message(ord_obj.rider_wa_number, cancel_msg, os.getenv("AUTHORIZATION"), os.getenv("GRAPH_URL")))
+        ord_obj.sender_wa_number = primary_anon_id
+
+    await db.commit()
+
+    # Clear chat history memory
+    _chat_memory.pop(sender_wa_number, None)
+    for variant in possible_numbers:
+        _chat_memory.pop(variant, None)
+
+    print(f"🗑️ [USER SOFT-DELETED] Account associated with {sender_wa_number} has been anonymized and marked as deleted.")
+    return True
+
+
+async def classify_message_intent(message_text: str) -> str:
+    """Classifies user intent semantically using Groq JSON mode."""
+    system_prompt = (
+        'You are an intent classification engine for InTime delivery platform.\n'
+        'Classify the user\'s message into exactly ONE of the following intents:\n'
+        '- \'CREATE_ORDER\': ONLY if user explicitly requests to send a package, book a delivery, or place a new order (e.g. "send an order", "book a ride").\n'
+        '- \'CANCEL_ORDER\': ONLY if user wants to cancel an active order.\n'
+        '- \'DELETE_ACCOUNT\': ONLY if user explicitly asks to delete their account, delete their data, remove their information, or unregister (e.g. "delete my account", "delete my data", "remove my account", "unregister me").\n'
+        '- \'TRACK_ORDER\': ONLY if user asks for status, ETA, or tracking of an order.\n'
+        '- \'MODIFY_ORDER\': ONLY if user asks to change order details or fare.\n'
+        '- \'SUPPORT\': ONLY if user asks for support email, human agent, or help desk.\n'
+        '- \'GENERAL_CHAT\': All thank-yous, acknowledgments ("alright thank you", "thanks", "okay", "cool"), small talk, general questions, or small chatter.\n\n'
+        'Output strictly a valid JSON object in this format: {"intent": "LABEL"}'
+    )
+    allowed_intents = {"CREATE_ORDER", "CANCEL_ORDER", "DELETE_ACCOUNT", "TRACK_ORDER", "MODIFY_ORDER", "SUPPORT", "GENERAL_CHAT"}
+    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    
+    try:
+        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        for model_name in models_to_try:
+            try:
+                response = await groq_client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message_text}
+                    ],
+                    model=model_name,
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                    max_tokens=50,
+                    timeout=3.0
+                )
+                raw_content = response.choices[0].message.content.strip()
+                parsed = json.loads(raw_content)
+                intent = parsed.get("intent", "").upper().strip()
+                if intent in allowed_intents:
+                    return intent
+            except Exception as inner_e:
+                continue
+    except Exception as e:
+        print(f"Intent classification error: {e}")
+    return "GENERAL_CHAT"
+
+
+async def get_active_rider_order(rider_wa_number: str, db: AsyncSession):
+    """Finds active transit order assigned to the rider."""
+    possible_numbers = get_phone_variants(rider_wa_number)
+
+    result = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.rider_wa_number.in_(possible_numbers))
+        .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
+        .where(models.Orders.delivery_progression_status != "package_delivered")
+        .order_by(models.Orders.created_at.desc())
+    )
+    return result.scalars().first()
+
+
+async def handle_text_message(sender_wa_number: str, text_body: str, username: str, db: AsyncSession, auth: str, graph_url: str):
+    """Semantic routing for incoming freeform text messages using LLM-as-a-Router."""
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+    user_role = await get_user_role(sender_wa_number, db)
+
+    # --- 0a. EXPLICIT ORDER CREATION TRIGGERS (ALWAYS take top priority) ---
+    order_triggers = [
+        "send an order", "send order", "create order", "book order",
+        "send a package", "ship a package", "book a delivery", "dispatch a package",
+        "send package", "ship package", "book delivery", "dispatch package",
+        "need to send an order", "like to send an order", "want to send an order",
+        "need to send order", "like to send order", "want to send order",
+        "i want to send", "i need to send", "i would like to send", "i will like to send"
+    ]
+    if any(trigger in lower_clean for trigger in order_triggers):
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+        else:
+            await send_registration_template(sender_wa_number, auth, graph_url)
+        return
+
+    # --- 0a1. FOOD ORDER TRIGGER ---
+    food_triggers = ["order food", "buy food", "food delivery", "get food", "send food", "order a meal", "buy a meal", "madam g", "menu", "food menu"]
+    if any(trigger in lower_clean for trigger in food_triggers):
+        await send_food_order_flow(sender_wa_number, auth, graph_url)
+        return
+
+    # --- 0a2. RIDER CHECK-IN TRIGGER ---
+    checkin_triggers = ["i'm available", "im available", "i am available", "available", "check in", "checking in", "check-in", "online", "ready for orders"]
+    if lower_clean in checkin_triggers or any(lower_clean == t for t in checkin_triggers):
+        possible_numbers = get_phone_variants(sender_wa_number)
+        rider_res = await db.execute(
+            select(models.Riders).where(models.Riders.rider_wa_number.in_(possible_numbers))
+        )
+        rider = rider_res.scalars().first()
+        if rider:
+            rider.availability_status = "available"
+            await db.commit()
+            custom_message = "Thank you for Checking in! New Dispatch requests would begin routing to you shortly 📦🛵💨"
+            await send_custom_message(sender_wa_number, custom_message, auth, graph_url)
+            return
+
+    # --- 0b. ACTIVE RIDER IN-TRANSIT CHECK ---
+    rider_order = await get_active_rider_order(sender_wa_number, db)
+    if not rider_order:
+        # Fallback: check if sender sent a 4-6 digit verification code for an in-transit pickup order
+        code_match_fallback = re.search(r'\b\d{4,6}\b', text_body)
+        if code_match_fallback:
+            possible_numbers = get_phone_variants(sender_wa_number)
+            fallback_res = await db.execute(
+                select(models.Orders)
+                .where(
+                    (models.Orders.rider_wa_number.in_(possible_numbers)) |
+                    (models.Orders.rider_wa_number.is_(None))
+                )
+                .where(models.Orders.delivery_progression_status == "package_picked_up")
+                .where(models.Orders.status.not_in(["completed", "cancelled", "expired"]))
+                .order_by(models.Orders.created_at.desc())
+            )
+            rider_order = fallback_res.scalars().first()
+
+    if rider_order:
+        lower_text = text_body.strip().lower()
+
+        # 1. Check if rider entered / replied with the 5-digit verification code
+        code_match = re.search(r'\b\d{4,6}\b', text_body)
+        if code_match:
+            submitted_code = code_match.group(0)
+            await verify_delivery_code(
+                order=rider_order,
+                submitted_code=submitted_code,
+                rider_wa_number=sender_wa_number,
+                db=db,
+                auth=auth,
+                graph_url=graph_url
+            )
+            return
+
+        # 2. Rider asking for the verification code instructions
+        code_keywords = ["code", "verification", "5-digit", "5 digit", "digit", "otp", "pin", "number"]
+        if any(kw in lower_text for kw in code_keywords):
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
+            await send_custom_message(sender_wa_number, (
+                f"🔐 *Delivery Verification Code Help* 🛵💨\n\n"
+                f"Order: *{rider_order.order_number}*\n\n"
+                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"📋 *What to do:*\n\n"
+                f"• Ask the **recipient** at *{recipient_phone_str}* for their *5-digit verification code* upon arrival. 🤝📦\n\n"
+                f"• The recipient received their unique code directly via WhatsApp. 📱✨\n\n"
+                f"• Reply with the 5-digit code directly in this chat (e.g. *12345*) to complete delivery! ✅💪\n\n"
+                f"⚠️ *Note:* You have 3 trials to enter the correct code."
+            ), auth, graph_url)
+            return
+
+        positive_eta_triggers = [
+            "yes", "yeah", "yep", "almost", "close", "arrived", "am here", "i'm here",
+            "10min", "10 min", "10 mins", "10mins", "10 minutes", "10 minute",
+            "ten min", "ten minutes", "almost there", "close by", "nearby"
+        ]
+
+        if any(neg in lower_text for neg in ["no", "not", "nope", "haven't", "havent", "not yet"]):
+            rider_msg = (
+                f"Got it 👍\n\n"
+                f"Take your time and ride safely! We'll check back with you shortly regarding Order *{rider_order.order_number}*."
+            )
+            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
+            return
+
+        elif any(pos in lower_text for pos in positive_eta_triggers):
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
+            rider_msg = (
+                f"Awesome 🛵!\n\n"
+                f"Thanks for confirming. When you arrive at the drop-off location for Order *{rider_order.order_number}* ({rider_order.dropoff_location_name or 'Drop-off'}):\n\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"Please request the 5-digit verification code from the recipient."
+            )
+            await send_custom_message(sender_wa_number, rider_msg, auth, graph_url)
+
+            # Notify Customer (Sender) and Recipient upon Rider ETA confirmation
+            try:
+                sender_res = await db.execute(
+                    select(models.User.name).where(
+                        models.User.wa_id.in_(get_phone_variants(rider_order.sender_wa_number))
+                    )
+                )
+                sender_name = sender_res.scalars().first() or "Sender"
+
+                customer_eta_msg = (
+                    f"🛵 *Delivery Update*\n\n"
+                    f"Rider has confirmed they are approximately 10 minutes away from the drop-off location for Order *{rider_order.order_number}*!"
+                )
+                recipient_eta_msg = (
+                    f"📦 *Package Update*\n\n"
+                    f"Your package from *{sender_name}* (Order *{rider_order.order_number}*) is getting close!\n\n"
+                    f"Your rider has confirmed they are approximately 10 minutes away."
+                )
+
+                if rider_order.sender_wa_number:
+                    await send_custom_message(sender_wa_number=rider_order.sender_wa_number, message=customer_eta_msg, auth=auth, graph_url=graph_url)
+                if rider_order.recipient_phone_number:
+                    await send_details_to_recipients(sender_wa_number=rider_order.recipient_phone_number, message=recipient_eta_msg, auth=auth, graph_url=graph_url)
+            except Exception as notify_err:
+                print(f"Error sending ETA confirmation notifications to customer/recipient: {notify_err}")
+
+            return
+
+        else:
+            # Unrecognised text from rider mid-delivery — give contextual reply, don't let Femi AI handle it
+            recipient_phone_str = rider_order.recipient_phone_number or "Not provided"
+            if rider_order.delivery_progression_status == "package_picked_up":
+                status_label = "in transit to the drop-off location"
+            elif rider_order.delivery_progression_status == "package_delivered" or rider_order.status == "completed":
+                status_label = "completed"
+            elif rider_order.status in ["rider_accepted", "awaiting_pickup"]:
+                status_label = "heading to pickup"
+            else:
+                status_label = "on an active delivery"
+            await send_custom_message(sender_wa_number, (
+                f"🛵 Hi! You're currently *{status_label}* for Order *{rider_order.order_number}*.\n\n"
+                f"🏁 *Drop-off:* {rider_order.dropoff_location_name or 'Drop-off location'}\n"
+                f"📞 *Recipient Phone:* *{recipient_phone_str}*\n\n"
+                f"If you need anything, just type:\n"
+                f"• Reply with the recipient's *5-digit code* (e.g. *12345*) to complete delivery\n"
+                f"• *'code'* — to get instructions on the delivery verification code\n"
+                f"• *'yes'* — to confirm you're near the drop-off\n"
+                f"• *'no'* — if you're still on your way"
+            ), auth, graph_url)
+            return
+
+    # --- 0c. CUSTOMER / RECIPIENT INBOUND OTP INQUIRIES ---
+    # Intercept queries like "I need the code", "what is my OTP?", "where is the code?", "delivery code"
+    # before routing to Groq Intent Classifier or Femi AI.
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+    otp_keywords_pattern = re.compile(
+        r'\b(otp|pin|passcode|pass\s*code|verification|verify)\b|\b(delivery|dropoff|drop\s*off|pickup)\s+code\b|\bcode\b',
+        re.IGNORECASE
+    )
+    is_promo = any(promo_word in lower_clean for promo_word in ["promo", "discount", "referral", "coupon"])
+
+    if not is_promo and otp_keywords_pattern.search(lower_clean):
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+        if order:
+            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+                otp_msg = (
+                    f"🔐 *Delivery Verification Code*\n\n"
+                    f"Order: *{order.order_number}*\n"
+                    f"Code: 👉 *{order.verification_code}* 👈\n\n"
+                    f"*Instructions:*\n"
+                    f"Share this 5-digit code with the rider *only* when they arrive at the drop-off location."
+                )
+                await send_custom_message(sender_wa_number, otp_msg, auth, graph_url)
+                return
+            else:
+                pending_msg = (
+                    f"📦 *Delivery Code Update*\n\n"
+                    f"Your package has not been picked up yet. A 5-digit verification code will be generated and sent to you automatically as soon as the rider confirms pickup."
+                )
+                await send_custom_message(sender_wa_number, pending_msg, auth, graph_url)
+                return
+
+    # --- 1. ACTIVE WORKFLOW STATE CHECK ---
+    active_order = await get_active_ride(sender_wa_number, db)
+    if active_order and active_order.package_image_id is None:
+        msg = (
+            f"📸 *Package Photo Needed*\n\n"
+            f"Your order *{active_order.order_number}* has been initialized.\n\n"
+            f"Please snap and send a photo of the package to complete your dispatch request and alert nearby riders!"
+        )
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    lower_clean = text_body.strip().lower().strip(".,!?:;")
+
+    # --- 1b. CUSTOMER TEXT-BASED RATING CHECK ---
+    # If customer recently had a delivery completed, catch rating replies (e.g. '5', '5 stars', '⭐⭐⭐⭐⭐')
+    recent_delivered = await db.execute(
+        select(models.Orders)
+        .where(models.Orders.sender_wa_number.in_(get_phone_variants(sender_wa_number)))
+        .where(models.Orders.delivery_progression_status == "package_delivered")
+        .order_by(models.Orders.created_at.desc())
+    )
+    last_delivered = recent_delivered.scalars().first()
+    if last_delivered:
+        already_rated = await db.execute(
+            select(models.RiderRating)
+            .where(models.RiderRating.order_number == last_delivered.order_number)
+        )
+        if not already_rated.scalars().first():
+            detected_rating = None
+            if "⭐⭐⭐⭐⭐" in text_body or lower_clean in ["5", "5 star", "5 stars", "five star", "five stars", "5/5", "5 out of 5", "five"]:
+                detected_rating = 5
+            elif "⭐⭐⭐⭐" in text_body or lower_clean in ["4", "4 star", "4 stars", "four star", "four stars", "4/5", "4 out of 5", "four"]:
+                detected_rating = 4
+            elif "⭐⭐⭐" in text_body or lower_clean in ["3", "3 star", "3 stars", "three star", "three stars", "3/5", "3 out of 5", "three"]:
+                detected_rating = 3
+            elif "⭐⭐" in text_body or lower_clean in ["2", "2 star", "2 stars", "two star", "two stars", "2/5", "2 out of 5", "two"]:
+                detected_rating = 2
+            elif "⭐" in text_body or lower_clean in ["1", "1 star", "1 stars", "one star", "one stars", "1/5", "1 out of 5", "one"]:
+                detected_rating = 1
+
+            if detected_rating is not None:
+                await save_rider_rating(
+                    order_number=last_delivered.order_number,
+                    rating_val=detected_rating,
+                    customer_wa=sender_wa_number,
+                    db=db,
+                    auth=auth,
+                    graph_url=graph_url
+                )
+                return
+
+    # --- 1c. GREETINGS & WELCOME TRIGGERS (Fast-path: dispatch default_message template) ---
+    greeting_triggers = {
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+        "start", "menu", "help", "restart", "yo", "femi", "hi femi", "hello femi",
+        "greetings", "hey femi", "welcome", "howdy", "sup", "get started"
+    }
+    is_greeting = lower_clean in greeting_triggers or any(
+        lower_clean == g or lower_clean.startswith(f"{g} ")
+        for g in ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "howdy"]
+    )
+    if is_greeting and user_role != "recipient":
+        await send_default_template(sender_wa_number, username, auth, graph_url)
+        return
+
+    # Fast-path pre-check for generic courtesy acknowledgments
+    generic_courtesies = {
+        "ok", "okay", "thanks", "thank you", "alright", "got it", "noted", "cool", 
+        "sure", "nice", "alright thank you", "ok thank you", "ok thanks", "great", 
+        "fine", "good", "perfect", "kk", "k", "no problem", "np", "thx"
+    }
+    
+    if lower_clean in generic_courtesies:
+        intent = "GENERAL_CHAT"
+    else:
+        # --- 2. EXPLICIT COMMAND & SEMANTIC INTENT ROUTING ---
+        delete_triggers = [
+            "delete my account", "delete account", "delete my data", "delete data",
+            "remove my account", "remove account", "delete info", "remove my data",
+            "unregister", "unregister me", "delete profile"
+        ]
+        if any(trigger in lower_clean for trigger in delete_triggers):
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
+            else:
+                msg = "You currently do not have a registered account with InTime."
+                await send_custom_message(sender_wa_number, msg, auth, graph_url)
+            return
+
+        intent = await classify_message_intent(text_body)
+
+    # --- 3. INTENT HANDLING ---
+    if intent == "CREATE_ORDER":
+        if user_role == "recipient":
+            # Recipient did not send an explicit order trigger phrase (caught in 0a).
+            # Do NOT treat their general chatter as an order creation request or push registration.
+            order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+            if order:
+                intent = "TRACK_ORDER"
+            else:
+                intent = "GENERAL_CHAT"
+        else:
+            registered = await is_user_registered(sender_wa_number, db)
+            if registered:
+                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+            else:
+                await send_registration_template(sender_wa_number, auth, graph_url)
+            return
+
+    if intent == "DELETE_ACCOUNT":
+        registered = await is_user_registered(sender_wa_number, db)
+        if registered:
+            await send_delete_account_confirmation(sender_wa_number, auth, graph_url, db)
+        else:
+            msg = "You currently do not have a registered account with InTime."
+            await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    elif intent == "CANCEL_ORDER":
+        order = await get_active_ride(sender_wa_number, db)
+        if order and order.delivery_progression_status == "package_picked_up":
+            msg = (
+                f"⚠️ *Package Already in Transit*\n\n"
+                f"Order *{order.order_number}* has already been picked up by your rider and is on the way to the recipient.\n\n"
+                f"Orders cannot be cancelled automatically once in transit. Please contact our support team at +234 815 103 3428 or intimesender@gmail.com for assistance."
+            )
+        elif order and order.status in ["confirmed", "rider_accepted", "awaiting_pickup"]:
+            prev_rider_wa = order.rider_wa_number
+            await db.execute(
+                update(models.Orders)
+                .where(models.Orders.order_number == order.order_number)
+                .values(status="cancelled")
+            )
+            await db.commit()
+
+            # Notify rider if one was assigned
+            if prev_rider_wa:
+                rider_cancel_msg = (
+                    f"❌ *Order Cancelled*\n\n"
+                    f"The customer has cancelled Order *{order.order_number}*.\n\n"
+                    f"Thank you for your time — new requests will come your way shortly! 🛵"
+                )
+                await send_custom_message(prev_rider_wa, rider_cancel_msg, auth, graph_url)
+
+            msg = f"❌ Your order *{order.order_number}* has been successfully cancelled."
+        elif order:
+            msg = f"Order *{order.order_number}* cannot be cancelled at this stage (Status: {order.status})."
+        else:
+            msg = "You currently have no active order to cancel."
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    elif intent == "TRACK_ORDER":
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+        if order:
+            rider_info = f"Rider Phone: *{order.rider_wa_number}*" if order.rider_wa_number else "Searching for available riders..."
+            if order.delivery_progression_status == "package_picked_up":
+                status_display = "*In Transit to Drop-off*"
+            else:
+                status_display = f"*{order.status.replace('_', ' ').title()}*"
+
+            msg = (
+                f"📦 *Order Status Update*\n\n"
+                f"Order Number: *{order.order_number}*\n"
+                f"Status: {status_display}\n\n"
+                f"📍 Pickup: {order.pickup_location_name or 'Not set'}\n"
+                f"🏁 Dropoff: {order.dropoff_location_name or 'Not set'}\n"
+                f"📝 Package: {order.package_description or 'Not specified'}\n\n"
+                f"🧑‍✈️ {rider_info}"
+            )
+            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+                msg += f"\n\n🔐 *Verification Code:* 👉 *{order.verification_code}* 👈\n\n_(Share this with the rider only upon drop-off arrival)_"
+        else:
+            msg = "You currently have no active delivery orders."
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    elif intent == "MODIFY_ORDER":
+        msg = (
+            f"To modify your delivery details or create a new order, "
+            f"please type *Send an Order* in this chat whenever you're ready!"
+        )
+        await send_custom_message(sender_wa_number, msg, auth, graph_url)
+        return
+
+    # --- 4. GENERAL CHAT / SUPPORT (Conversational Groq Agent - Femi Avatar) ---
+    try:
+        order = await get_active_order_for_customer_or_recipient(sender_wa_number, db)
+        if order:
+            prog_status = f", Delivery Progression: {order.delivery_progression_status}" if order.delivery_progression_status else ""
+            v_code = f", Verification Code: {order.verification_code}" if order.verification_code else ""
+            order_context = f"Active order: {order.order_number} (Status: {order.status}{prog_status}{v_code})."
+        else:
+            order_context = "No active delivery order."
+
+        if user_role == "recipient":
+            role_instructions = (
+                f"USER ROLE: Package Recipient (receiving an incoming package).\n"
+                f"- This user is a recipient receiving a delivery, NOT currently an ordering customer.\n"
+                f"- Do NOT tell them to complete registration or nag them to sign up.\n"
+                f"- Reassure them and answer any questions regarding their incoming delivery, rider arrival, and 5-digit verification code with warmth and clarity.\n"
+                f"- Only if they explicitly ask how to send packages themselves, let them know they can type *Send an Order* anytime."
+            )
+            rule_6 = "6. ROLE APPROPRIATENESS: Answer questions about their incoming delivery warmly and clearly. Never push registration or 'Send an Order' on a recipient unless they specifically ask."
+        elif user_role == "rider":
+            role_instructions = (
+                f"USER ROLE: Dispatch Rider.\n"
+                f"- This user is a registered dispatch rider for InTime.\n"
+                f"- Assist them with check-in, dispatch instructions, or support."
+            )
+            rule_6 = "6. ROLE APPROPRIATENESS: Address them as a rider. Guide them on check-in or delivery instructions."
+        else:
+            role_instructions = "USER ROLE: Customer / Prospect."
+            rule_6 = "6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!"
+
+        system_prompt = (
+            f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
+            f"Customer Name: {username}.\n"
+            f"{role_instructions}\n"
+            f"Current Context: {order_context}.\n"
+            f"COMPANY KNOWLEDGE:\n"
+            f"- Official Website: https://sendintime.com.ng\n"
+            f"- Contact Email: contact@sendintime.com.ng (or intimesender@gmail.com)\n"
+            f"- Support Phone: +234 815 103 3428\n"
+            f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
+            f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
+            f"STRICT BEHAVIOR RULES:\n"
+            f"1. BREATHING SPACE & PARAGRAPHS: Format ALL your responses with double line breaks (\\n\\n) between paragraphs and thoughts to give clean, readable breathing space! Never lump text into one long dense block.\n"
+            f"2. AVATAR IDENTITY & DYNAMISM: Introduce yourself as Femi when starting a new conversation or when greeted (e.g., 'Hi 👋, I'm Femi!\\n\\nWelcome to *InTime*.\\n\\nHow can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨'). Keep your greetings fresh, dynamic, and varied across users.\n"
+            f"3. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
+            f"4. NO REPETITIVE INTROS: Do NOT repeat 'Hi, I'm Femi' on every single turn if you are already in an ongoing conversation with the user.\n"
+            f"5. EMOJIS & SPICE: Use expressive emojis and icons (like 📦, 🛵, ✨, 🚀, ⚡, 💬, 🎉) in every response to make the conversation lively, engaging, and friendly!\n"
+            f"{rule_6}\n"
+            f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"8. REFERRAL NAME: Address the customer as {username}.\n"
+            f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"10. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
+            f"STYLE: Keep replies short and spacious (2-3 short paragraphs with \\n\\n line breaks), highly engaging, friendly, and spiced with icons!"
+        )
+
+        user_history = get_user_chat_memory(sender_wa_number)
+        if not user_history and user_role != "recipient":
+            # First turn from customer / prospect: dispatch default_message template to close lead in fewest messages
+            await send_default_template(sender_wa_number, username, auth, graph_url)
+            return
+
+        messages_payload = [{"role": "system", "content": system_prompt}]
+        for turn in user_history:
+            messages_payload.append(turn)
+        messages_payload.append({"role": "user", "content": text_body})
+
+        groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
+        ai_reply = None
+        for model_name in models_to_try:
+            try:
+                chat_completion = await groq_client.chat.completions.create(
+                    messages=messages_payload,
+                    model=model_name,
+                    max_tokens=200,
+                    timeout=5.0
+                )
+                ai_reply = chat_completion.choices[0].message.content.strip()
+                if ai_reply:
+                    break
+            except Exception as inner_e:
+                print(f"Groq conversational model {model_name} warning: {inner_e}")
+                continue
+
+        if ai_reply:
+            # Convert standard markdown double asterisks (**) to WhatsApp single asterisks (*)
+            ai_reply = ai_reply.replace("**", "*")
+            add_user_chat_memory(sender_wa_number, "user", text_body)
+            add_user_chat_memory(sender_wa_number, "assistant", ai_reply)
+            await send_custom_message(sender_wa_number, ai_reply, auth, graph_url)
+        else:
+            if user_role != "recipient":
+                await send_default_template(sender_wa_number, username, auth, graph_url)
+            else:
+                fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
+                await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
+
+    except Exception as e:
+        print(f"Groq AI error: {e}")
+        if user_role != "recipient":
+            await send_default_template(sender_wa_number, username, auth, graph_url)
+        else:
+            fallback_msg = get_dynamic_femi_welcome(username, is_recipient=True)
+            await send_custom_message(sender_wa_number, fallback_msg, auth, graph_url)
