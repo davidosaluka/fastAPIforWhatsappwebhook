@@ -874,7 +874,7 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str)
 
     """
 
-    flow_id = os.getenv("FLOW_FOOD_ORDER_ID", "").strip()
+    flow_id = os.getenv("FLOW_FOOD_ORDER_ID", "").strip() or "1597823012149145"
 
     if not flow_id:
 
