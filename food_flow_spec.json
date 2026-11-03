@@ -267,27 +267,27 @@
                 "data-source": [
                   {
                     "id": "pack_classic_jollof",
-                    "title": "Madam G Classic Jollof (₦5,300)",
+                    "title": "Classic Jollof (₦5,300)",
                     "description": "Jollof Rice + Medium Chicken + Fried Plantain"
                   },
                   {
                     "id": "pack_swallow_combo",
-                    "title": "Madam G Swallow Special (₦1,400)",
+                    "title": "Swallow Special (₦1,400)",
                     "description": "Semo + Egusi Soup + Goat Meat"
                   },
                   {
                     "id": "pack_fried_feast",
-                    "title": "Madam G Fried Feast (₦3,300)",
+                    "title": "Fried Feast (₦3,300)",
                     "description": "Fried Rice + Big Beef (2 pcs) + Salad + Coke"
                   },
                   {
                     "id": "pack_rice_beans",
-                    "title": "White Rice & Beans Special (₦2,300)",
+                    "title": "Rice & Beans Combo (₦2,300)",
                     "description": "White Rice and Beans + Big Beef (1 pc) + Plantain"
                   },
                   {
                     "id": "skip_to_custom",
-                    "title": "🛠️ Skip to Custom Pack Builder",
+                    "title": "🛠️ Build Custom Pack",
                     "description": "Build your own meal: Rice/Swallow + Soup + Protein + Extras"
                   }
                 ]
@@ -389,9 +389,9 @@
                 "data-source": [
                   { "id": "rice_jollof", "title": "Jollof Rice (₦1,300)" },
                   { "id": "rice_fried", "title": "Fried Rice (₦1,300)" },
-                  { "id": "rice_mixed", "title": "Mixed Rice: Fried & Jollof (₦1,300)" },
+                  { "id": "rice_mixed", "title": "Mixed Rice (₦1,300)" },
                   { "id": "rice_white", "title": "White Rice (₦1,300)" },
-                  { "id": "rice_white_beans", "title": "White Rice and Beans (₦1,300)" },
+                  { "id": "rice_white_beans", "title": "White Rice & Beans (₦1,300)" },
                   { "id": "swallow_semo", "title": "Semo (₦700)" },
                   { "id": "swallow_fufu", "title": "Fufu (₦700)" },
                   { "id": "base_none", "title": "No Base Meal (₦0)" }
@@ -560,11 +560,11 @@
               },
               {
                 "type": "TextBody",
-                "text": "Tap *Proceed to Confirmation* to finalize your order, or use the WhatsApp Back (←) button to adjust your items."
+                "text": "Tap *Proceed* to finalize your order, or use the WhatsApp Back (←) button to adjust your items."
               },
               {
                 "type": "Footer",
-                "label": "Proceed to Confirmation",
+                "label": "Proceed",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
