@@ -9,8 +9,10 @@ import models
 import json
 from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
-from routers import createAPIrequest
+from routers import createAPIrequest, flow_endpoint
 from scheduler import start_scheduler
+from fastapi.staticfiles import StaticFiles
+import os
 
 import logging
 
@@ -151,6 +153,12 @@ app = FastAPI(lifespan=lifespan)
 #@app.post("/webhook/sendMessage", response_model=apiPostRequestResponse, status_code=status.HTTP_200_OK)
 
 app.include_router(createAPIrequest.router, prefix="/webhook", tags=["createAPIrequest"])
+app.include_router(flow_endpoint.router, prefix="/api", tags=["flow_endpoint"])
+
+# Mount static directory for restaurant logos
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 

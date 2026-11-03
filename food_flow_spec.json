@@ -1,0 +1,623 @@
+{
+  "version": "3.1",
+  "data_api_version": "3.0",
+  "data_channel_uri": "https://fastapiforwhatsappwebhook-production.up.railway.app/api/flow/endpoint",
+  "routing_model": {
+    "CONFIRM_ADDRESS_SCREEN": ["SELECT_RESTAURANT_SCREEN", "ENTER_ADDRESS_SCREEN"],
+    "ENTER_ADDRESS_SCREEN": ["SELECT_RESTAURANT_SCREEN"],
+    "SELECT_RESTAURANT_SCREEN": ["MENU_CHOICE_SCREEN"],
+    "MENU_CHOICE_SCREEN": ["PREDESIGNED_PACKS_SCREEN", "BUILD_CUSTOM_PACK_SCREEN"],
+    "PREDESIGNED_PACKS_SCREEN": ["CART_REVIEW_SCREEN", "BUILD_CUSTOM_PACK_SCREEN"],
+    "BUILD_CUSTOM_PACK_SCREEN": ["CART_REVIEW_SCREEN"],
+    "CART_REVIEW_SCREEN": ["MENU_CHOICE_SCREEN", "CART_REVIEW_SCREEN", "ORDER_SUCCESS_SCREEN"],
+    "ORDER_SUCCESS_SCREEN": []
+  },
+  "screens": [
+    {
+      "id": "CONFIRM_ADDRESS_SCREEN",
+      "title": "Delivery Address",
+      "data": {
+        "address_display": {
+          "type": "string",
+          "__example__": "📍 Saved Address: 12 Adeola Odeku St, VI, Lagos\n📞 Contact: 2348122319750"
+        },
+        "saved_address": {
+          "type": "string",
+          "__example__": "12 Adeola Odeku St, VI, Lagos"
+        },
+        "saved_phone": {
+          "type": "string",
+          "__example__": "2348122319750"
+        },
+        "use_previous": {
+          "type": "string",
+          "__example__": "yes"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Delivery Details 🛵"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.address_display}"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "use_previous",
+            "label": "Would you like to deliver to this address?",
+            "required": true,
+            "data-source": [
+              {
+                "id": "yes",
+                "title": "Yes, use this address & contact"
+              },
+              {
+                "id": "no",
+                "title": "No, enter a new delivery address"
+              }
+            ]
+          },
+          {
+            "type": "Footer",
+            "label": "Continue",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "use_previous": "${form.use_previous}",
+                "saved_address": "${data.saved_address}",
+                "saved_phone": "${data.saved_phone}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ENTER_ADDRESS_SCREEN",
+      "title": "Enter Address",
+      "data": {
+        "delivery_address": {
+          "type": "string",
+          "__example__": ""
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "2348122319750"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Where should we deliver? 📍"
+          },
+          {
+            "type": "TextBody",
+            "text": "Please provide your street or landmark delivery address and active phone number for the rider."
+          },
+          {
+            "type": "TextInput",
+            "name": "delivery_address",
+            "label": "Delivery Street Address & Landmark",
+            "required": true,
+            "input-type": "text"
+          },
+          {
+            "type": "TextInput",
+            "name": "contact_phone",
+            "label": "Recipient Contact Phone Number",
+            "required": true,
+            "input-type": "phone"
+          },
+          {
+            "type": "Footer",
+            "label": "Select Restaurant",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "delivery_address": "${form.delivery_address}",
+                "contact_phone": "${form.contact_phone}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SELECT_RESTAURANT_SCREEN",
+      "title": "Pick Restaurant",
+      "data": {
+        "delivery_address": {
+          "type": "string",
+          "__example__": "Lekki Phase 1"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "2348122319750"
+        },
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Kitchen"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Choose a Kitchen 🍽️"
+          },
+          {
+            "type": "TextBody",
+            "text": "Select the restaurant you would like to order fresh food from:"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "restaurant",
+            "label": "Available Restaurants",
+            "required": true,
+            "data-source": [
+              {
+                "id": "Madam G Kitchen",
+                "title": "Madam G Kitchen (Open Now 🍲)",
+                "description": "Authentic Nigerian rice, swallows, pepper soup & proteins"
+              }
+            ]
+          },
+          {
+            "type": "Footer",
+            "label": "View Menu",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "restaurant": "${form.restaurant}",
+                "delivery_address": "${data.delivery_address}",
+                "contact_phone": "${data.contact_phone}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "MENU_CHOICE_SCREEN",
+      "title": "Madam G Kitchen",
+      "data": {
+        "delivery_address": {
+          "type": "string",
+          "__example__": "Lekki Phase 1"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "2348122319750"
+        },
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Kitchen"
+        },
+        "restaurant_logo": {
+          "type": "string",
+          "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+        },
+        "cart_packs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pack_name": { "type": "string" },
+              "quantity": { "type": "number" },
+              "total_price": { "type": "number" }
+            }
+          },
+          "__example__": []
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Image",
+            "src": "${data.restaurant_logo}",
+            "height": 140,
+            "aspect-ratio": "1:1"
+          },
+          {
+            "type": "TextHeading",
+            "text": "Madam G - Feel At Home 🍲"
+          },
+          {
+            "type": "TextBody",
+            "text": "Delivered hot and fresh across town by InTime dispatch riders ⚡.\n\nHow would you like to assemble your meal?"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "menu_choice",
+            "label": "Ordering Options",
+            "required": true,
+            "data-source": [
+              {
+                "id": "predesigned",
+                "title": "🍱 Pre-Designed Packs (Popular Combos)",
+                "description": "Ready-to-order meal combinations picked by the chef"
+              },
+              {
+                "id": "custom",
+                "title": "🛠️ Build Custom Pack (Your Own Selection)",
+                "description": "Choose your exact base rice/swallow, soups, proteins & extras"
+              }
+            ]
+          },
+          {
+            "type": "Footer",
+            "label": "Next",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "menu_choice": "${form.menu_choice}",
+                "restaurant": "${data.restaurant}",
+                "delivery_address": "${data.delivery_address}",
+                "contact_phone": "${data.contact_phone}",
+                "cart_packs": "${data.cart_packs}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "PREDESIGNED_PACKS_SCREEN",
+      "title": "Pre-Designed Packs",
+      "data": {
+        "delivery_address": { "type": "string", "__example__": "Lekki" },
+        "contact_phone": { "type": "string", "__example__": "2348122319750" },
+        "restaurant": { "type": "string", "__example__": "Madam G Kitchen" },
+        "restaurant_logo": { "type": "string", "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg" },
+        "cart_packs": { "type": "array", "__example__": [] },
+        "pack_quantity": { "type": "string", "__example__": "1" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Image",
+            "src": "${data.restaurant_logo}",
+            "height": 90,
+            "aspect-ratio": "1:1"
+          },
+          {
+            "type": "TextHeading",
+            "text": "Chef's Special Packs 🍱"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "selected_pack",
+            "label": "Select a Meal Pack",
+            "required": true,
+            "data-source": [
+              {
+                "id": "pack_classic_jollof",
+                "title": "Madam G Classic Jollof (₦5,300)",
+                "description": "Jollof Rice + Medium Chicken + Fried Plantain"
+              },
+              {
+                "id": "pack_swallow_combo",
+                "title": "Madam G Swallow Special (₦1,400)",
+                "description": "Semo + Egusi Soup + Goat Meat"
+              },
+              {
+                "id": "pack_fried_feast",
+                "title": "Madam G Fried Feast (₦3,300)",
+                "description": "Fried Rice + Big Beef (2 pcs) + Salad + Coke"
+              },
+              {
+                "id": "pack_rice_beans",
+                "title": "White Rice & Beans Special (₦2,300)",
+                "description": "White Rice and Beans + Big Beef (1 pc) + Plantain"
+              }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "pack_quantity",
+            "label": "Quantity of this pack",
+            "required": true,
+            "data-source": [
+              { "id": "1", "title": "1 Pack" },
+              { "id": "2", "title": "2 Packs" },
+              { "id": "3", "title": "3 Packs" },
+              { "id": "4", "title": "4 Packs" },
+              { "id": "5", "title": "5 Packs" }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "pack_note",
+            "label": "Pack note / instructions (optional)",
+            "required": false,
+            "input-type": "text"
+          },
+          {
+            "type": "Footer",
+            "label": "Add to Order",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "selected_pack": "${form.selected_pack}",
+                "pack_quantity": "${form.pack_quantity}",
+                "pack_note": "${form.pack_note}",
+                "restaurant": "${data.restaurant}",
+                "delivery_address": "${data.delivery_address}",
+                "contact_phone": "${data.contact_phone}",
+                "cart_packs": "${data.cart_packs}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "BUILD_CUSTOM_PACK_SCREEN",
+      "title": "Custom Pack Builder",
+      "data": {
+        "delivery_address": { "type": "string", "__example__": "Lekki" },
+        "contact_phone": { "type": "string", "__example__": "2348122319750" },
+        "restaurant": { "type": "string", "__example__": "Madam G Kitchen" },
+        "restaurant_logo": { "type": "string", "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg" },
+        "cart_packs": { "type": "array", "__example__": [] },
+        "pack_quantity": { "type": "string", "__example__": "1" }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Image",
+            "src": "${data.restaurant_logo}",
+            "height": 80,
+            "aspect-ratio": "1:1"
+          },
+          {
+            "type": "TextHeading",
+            "text": "Build Your Meal Pack 🛠️"
+          },
+          {
+            "type": "Dropdown",
+            "name": "base_meal",
+            "label": "1. Base Meal (Rice or Swallow)",
+            "required": true,
+            "data-source": [
+              { "id": "rice_jollof", "title": "Jollof Rice (₦1,300)" },
+              { "id": "rice_fried", "title": "Fried Rice (₦1,300)" },
+              { "id": "rice_mixed", "title": "Mixed Rice: Fried & Jollof (₦1,300)" },
+              { "id": "rice_white", "title": "White Rice (₦1,300)" },
+              { "id": "rice_white_beans", "title": "White Rice and Beans (₦1,300)" },
+              { "id": "swallow_semo", "title": "Semo (₦700)" },
+              { "id": "swallow_fufu", "title": "Fufu (₦700)" },
+              { "id": "base_none", "title": "No Base Meal (₦0)" }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "soup",
+            "label": "2. Soup (For swallows or extra)",
+            "required": true,
+            "data-source": [
+              { "id": "soup_none", "title": "No Soup (₦0)" },
+              { "id": "soup_egusi", "title": "Egusi Soup (₦200)" },
+              { "id": "soup_ogbono", "title": "Ogbono Soup (₦200)" },
+              { "id": "soup_mixed", "title": "Mixed Ogbono & Egusi (₦200)" },
+              { "id": "soup_efo", "title": "Vegetable: Efo Riro (₦500)" }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "protein",
+            "label": "3. Protein / Meat / Fish",
+            "required": true,
+            "data-source": [
+              { "id": "protein_none", "title": "No Protein (₦0)" },
+              { "id": "protein_chicken_small", "title": "Small Chicken (₦3,000)" },
+              { "id": "protein_chicken_med", "title": "Medium Chicken (₦3,500)" },
+              { "id": "protein_chicken_big", "title": "Big Chicken (₦4,000)" },
+              { "id": "protein_beef_big_1", "title": "Big Beef - 1 piece (₦500)" },
+              { "id": "protein_beef_big_2", "title": "Big Beef - 2 pieces (₦1,000)" },
+              { "id": "protein_beef_small_2", "title": "Small Beef - 2 pieces (₦400)" },
+              { "id": "protein_goat", "title": "Goat Meat (₦500)" },
+              { "id": "protein_goat_soup", "title": "Goat Meat Pepper Soup (₦2,000)" },
+              { "id": "protein_egg_fried", "title": "Fried Egg (₦1,000)" },
+              { "id": "protein_egg_boiled", "title": "Boiled Egg (₦300)" }
+            ]
+          },
+          {
+            "type": "CheckboxGroup",
+            "name": "extras",
+            "label": "4. Sides & Extras (Optional)",
+            "required": false,
+            "data-source": [
+              { "id": "extra_plantain_1", "title": "Fried Plantain - 1 serving (₦500)" },
+              { "id": "extra_plantain_2", "title": "Fried Plantain - 2 servings (₦1,000)" },
+              { "id": "extra_moimoi_1", "title": "Moi Moi - 1 wrap (₦1,000)" },
+              { "id": "extra_moimoi_2", "title": "Moi Moi - 2 wraps (₦2,000)" },
+              { "id": "extra_salad", "title": "Salad (₦500)" }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "drink",
+            "label": "5. Drink (Optional)",
+            "required": false,
+            "data-source": [
+              { "id": "drink_none", "title": "No Drink (₦0)" },
+              { "id": "drink_coke", "title": "Coke (₦500)" },
+              { "id": "drink_maltina", "title": "Maltina (₦700)" },
+              { "id": "drink_water", "title": "Water (₦300)" }
+            ]
+          },
+          {
+            "type": "Dropdown",
+            "name": "pack_quantity",
+            "label": "Pack Quantity",
+            "required": true,
+            "data-source": [
+              { "id": "1", "title": "1 Pack" },
+              { "id": "2", "title": "2 Packs" },
+              { "id": "3", "title": "3 Packs" },
+              { "id": "4", "title": "4 Packs" }
+            ]
+          },
+          {
+            "type": "TextInput",
+            "name": "pack_note",
+            "label": "Kitchen note (e.g. separate soup, extra pepper)",
+            "required": false,
+            "input-type": "text"
+          },
+          {
+            "type": "Footer",
+            "label": "Add Pack to Cart",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "base_meal": "${form.base_meal}",
+                "soup": "${form.soup}",
+                "protein": "${form.protein}",
+                "extras": "${form.extras}",
+                "drink": "${form.drink}",
+                "pack_quantity": "${form.pack_quantity}",
+                "pack_note": "${form.pack_note}",
+                "restaurant": "${data.restaurant}",
+                "delivery_address": "${data.delivery_address}",
+                "contact_phone": "${data.contact_phone}",
+                "cart_packs": "${data.cart_packs}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "CART_REVIEW_SCREEN",
+      "title": "Cart & Review",
+      "data": {
+        "delivery_address": { "type": "string", "__example__": "Lekki" },
+        "contact_phone": { "type": "string", "__example__": "2348122319750" },
+        "restaurant": { "type": "string", "__example__": "Madam G Kitchen" },
+        "restaurant_logo": { "type": "string", "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg" },
+        "cart_packs": { "type": "array", "__example__": [] },
+        "cart_display": { "type": "string", "__example__": "📦 Pack 1 (x1) - ₦5,300\n_Jollof + Chicken + Plantain_" },
+        "subtotal_text": { "type": "string", "__example__": "₦5,300" },
+        "delivery_text": { "type": "string", "__example__": "₦1,000" },
+        "total_text": { "type": "string", "__example__": "₦6,300" },
+        "cart_count": { "type": "number", "__example__": 1 }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Your Food Cart 🛒"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.cart_display}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Payment Summary"
+          },
+          {
+            "type": "TextBody",
+            "text": "Food Subtotal: ${data.subtotal_text}\nDelivery Fee: ${data.delivery_text}\n*Grand Total: ${data.total_text}*"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "user_action",
+            "label": "Next Step",
+            "required": true,
+            "data-source": [
+              {
+                "id": "place_order",
+                "title": "✅ Confirm & Place Order (${data.total_text})"
+              },
+              {
+                "id": "add_more",
+                "title": "➕ Add Another Meal Pack"
+              },
+              {
+                "id": "delete_pack_0",
+                "title": "🗑️ Delete Pack 1"
+              }
+            ]
+          },
+          {
+            "type": "Footer",
+            "label": "Proceed",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "user_action": "${form.user_action}",
+                "restaurant": "${data.restaurant}",
+                "delivery_address": "${data.delivery_address}",
+                "contact_phone": "${data.contact_phone}",
+                "cart_packs": "${data.cart_packs}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ORDER_SUCCESS_SCREEN",
+      "title": "Order Placed",
+      "data": {
+        "extension_message_response": {
+          "type": "object",
+          "properties": {
+            "params": {
+              "type": "object",
+              "properties": {
+                "flow_name": { "type": "string" },
+                "restaurant": { "type": "string" },
+                "delivery_address": { "type": "string" },
+                "contact_phone": { "type": "string" },
+                "cart_packs": { "type": "string" },
+                "subtotal": { "type": "number" },
+                "delivery_fee": { "type": "number" },
+                "total_amount": { "type": "number" },
+                "cart_summary": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Order Submitted! 🎉"
+          },
+          {
+            "type": "TextBody",
+            "text": "Your meal request has been sent to Madam G Kitchen. Nearby InTime dispatch riders are receiving your order right now!\n\nTap Done to return to chat."
+          },
+          {
+            "type": "Footer",
+            "label": "Done",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "flow_name": "food_order_dynamic",
+                "status": "submitted"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
