@@ -216,6 +216,15 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
             return Response(content=enc_response, media_type="text/plain")
 
+        # Handle native Back button action
+        if action == "BACK":
+            resp_payload = {
+                "version": "3.0",
+                "data": {"status": "active"}
+            }
+            enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
+            return Response(content=enc_response, media_type="text/plain")
+
         # Parse flow token data
         flow_token = {}
         if flow_token_raw:
@@ -463,105 +472,30 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: CART_REVIEW_SCREEN ---
             elif screen == "CART_REVIEW_SCREEN":
-                if user_action == "add_predesigned" or user_action == "add_more":
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "PREDESIGNED_PACKS_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart,
-                            "pack_quantity": "1"
-                        }
-                    }
-                elif user_action == "add_custom":
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "BUILD_CUSTOM_PACK_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart,
-                            "pack_quantity": "1"
-                        }
-                    }
-                elif user_action.startswith("delete_pack_"):
-                    try:
-                        del_idx = int(user_action.replace("delete_pack_", ""))
-                        if 0 <= del_idx < len(current_cart):
-                            current_cart.pop(del_idx)
-                    except Exception as e:
-                        logger.warning(f"Error deleting pack: {e}")
+                cart_text, subtotal = format_cart_display(current_cart)
+                est_delivery = 1000
+                grand_total = subtotal + est_delivery
 
-                    cart_text, subtotal = format_cart_display(current_cart)
-                    est_delivery = 1000 if current_cart else 0
-                    grand_total = subtotal + est_delivery
-                    actions = build_cart_action_options(current_cart, grand_total)
-
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "CART_REVIEW_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "cart_packs": current_cart,
-                            "cart_display": cart_text,
-                            "subtotal_text": f"₦{subtotal:,}",
-                            "delivery_text": f"₦{est_delivery:,}",
-                            "total_text": f"₦{grand_total:,}",
-                            "action_options": actions
-                        }
+                resp_payload = {
+                    "version": "3.0",
+                    "screen": "screen_itnvpz",
+                    "data": {
+                        "delivery_address": delivery_address,
+                        "contact_phone": contact_phone,
+                        "restaurant": restaurant,
+                        "cart_packs": json.dumps(current_cart),
+                        "subtotal": subtotal,
+                        "delivery_fee": est_delivery,
+                        "total_amount": grand_total,
+                        "cart_summary": cart_text,
+                        "screen_1_Restaurants_0": [restaurant],
+                        "screen_0_HouseFlat_Number_0": house_num,
+                        "screen_0_Street_Name_1": street_name or delivery_address,
+                        "screen_0_Receivers_Number_2": contact_phone
                     }
-                elif user_action == "checkout" or user_action == "place_order":
-                    cart_text, subtotal = format_cart_display(current_cart)
-                    est_delivery = 1000
-                    grand_total = subtotal + est_delivery
-
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "screen_itnvpz",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "cart_packs": json.dumps(current_cart),
-                            "subtotal": subtotal,
-                            "delivery_fee": est_delivery,
-                            "total_amount": grand_total,
-                            "cart_summary": cart_text,
-                            "screen_1_Restaurants_0": [restaurant],
-                            "screen_0_HouseFlat_Number_0": house_num,
-                            "screen_0_Street_Name_1": street_name or delivery_address,
-                            "screen_0_Receivers_Number_2": contact_phone
-                        }
-                    }
-                else:
-                    # Refresh cart
-                    cart_text, subtotal = format_cart_display(current_cart)
-                    est_delivery = 1000
-                    grand_total = subtotal + est_delivery
-                    actions = build_cart_action_options(current_cart, grand_total)
-
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "CART_REVIEW_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "cart_packs": current_cart,
-                            "cart_display": cart_text,
-                            "subtotal_text": f"₦{subtotal:,}",
-                            "delivery_text": f"₦{est_delivery:,}",
-                            "total_text": f"₦{grand_total:,}",
-                            "action_options": actions
-                        }
-                    }
+                }
+                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
+                return Response(content=enc_response, media_type="text/plain")
 
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")

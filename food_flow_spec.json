@@ -5,9 +5,9 @@
     "CONFIRM_ADDRESS_SCREEN": ["RATE", "RECOMMEND"],
     "RECOMMEND": ["RATE"],
     "RATE": ["PREDESIGNED_PACKS_SCREEN"],
-    "PREDESIGNED_PACKS_SCREEN": ["CART_REVIEW_SCREEN", "BUILD_CUSTOM_PACK_SCREEN"],
+    "PREDESIGNED_PACKS_SCREEN": ["BUILD_CUSTOM_PACK_SCREEN", "CART_REVIEW_SCREEN"],
     "BUILD_CUSTOM_PACK_SCREEN": ["CART_REVIEW_SCREEN"],
-    "CART_REVIEW_SCREEN": ["PREDESIGNED_PACKS_SCREEN", "BUILD_CUSTOM_PACK_SCREEN", "CART_REVIEW_SCREEN", "screen_itnvpz"],
+    "CART_REVIEW_SCREEN": ["screen_itnvpz"],
     "screen_itnvpz": []
   },
   "screens": [
@@ -474,7 +474,7 @@
               },
               {
                 "type": "Footer",
-                "label": "Add Pack to Cart",
+                "label": "Review Order",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
@@ -535,22 +535,6 @@
         "total_text": {
           "type": "string",
           "__example__": "₦6,300"
-        },
-        "action_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": { "type": "string" },
-              "title": { "type": "string" }
-            }
-          },
-          "__example__": [
-            { "id": "place_order", "title": "✅ Proceed to Checkout (₦6,300)" },
-            { "id": "add_predesigned", "title": "🍱 Add Another Combo Pack" },
-            { "id": "add_custom", "title": "🛠️ Add Another Custom Pack" },
-            { "id": "delete_pack_0", "title": "🗑️ Delete Pack 1" }
-          ]
         }
       },
       "layout": {
@@ -573,19 +557,16 @@
                 "text": "💵 Food Subtotal: ${data.subtotal_text}\n🛵 Delivery Fee: ${data.delivery_text}\n💳 *Grand Total: ${data.total_text}*"
               },
               {
-                "type": "RadioButtonsGroup",
-                "name": "user_action",
-                "label": "Next Step",
-                "required": true,
-                "data-source": "${data.action_options}"
+                "type": "TextBody",
+                "text": "Tap *Proceed to Confirmation* to finalize your order, or use the WhatsApp Back (←) button to adjust your items."
               },
               {
                 "type": "Footer",
-                "label": "Proceed",
+                "label": "Proceed to Confirmation",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
-                    "user_action": "${form.user_action}",
+                    "user_action": "place_order",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
