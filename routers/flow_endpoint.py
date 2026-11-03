@@ -557,3 +557,4 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         logger.error(f"Flow endpoint error: {e}", exc_info=True)
         # WhatsApp expects HTTP 421 if decryption / signature fails
         raise HTTPException(status_code=421, detail=str(e))
+
