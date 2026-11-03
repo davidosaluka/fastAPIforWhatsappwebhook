@@ -12,7 +12,7 @@ from flow_crypto import decrypt_flow_request, encrypt_flow_response
 logger = logging.getLogger("flow_endpoint")
 router = APIRouter()
 
-# Pricing and catalog constants for Madam G Kitchen
+# Pricing and catalog constants for Madam G Restaurant
 MEAL_PRICES = {
     # Rice meals (All single price ₦1,300)
     "rice_jollof": {"name": "Jollof Rice", "price": 1300},
@@ -24,7 +24,7 @@ MEAL_PRICES = {
     "swallow_semo": {"name": "Semo", "price": 700},
     "swallow_fufu": {"name": "Fufu", "price": 700},
     "base_none": {"name": "No Base Meal (Sides/Proteins only)", "price": 0},
-    # Soups (Ogbono + Egusi mix is same price ₦200)
+    # Soups (Ogbono + Egusi mix is same single price ₦200)
     "soup_egusi": {"name": "Egusi Soup", "price": 200},
     "soup_ogbono": {"name": "Ogbono Soup", "price": 200},
     "soup_mixed": {"name": "Mixed (Ogbono & Egusi)", "price": 200},
@@ -134,7 +134,7 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, list[str]]:
             total += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
-    qty = int(pack_data.get("quantity") or 1)
+    qty = int(pack_data.get("pack_quantity") or 1)
     pack_total = total * max(1, qty)
     return pack_total, items
 
@@ -156,6 +156,31 @@ def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
         grand_total += price
 
     return "\n\n".join(lines), grand_total
+
+
+def build_cart_action_options(cart_packs: list[dict], grand_total: int) -> list[dict]:
+    """Generates dynamic radio button options for CART_REVIEW_SCREEN."""
+    options = []
+    if cart_packs:
+        options.append({
+            "id": "place_order",
+            "title": f"✅ Proceed to Checkout (₦{grand_total:,})"
+        })
+    options.append({
+        "id": "add_predesigned",
+        "title": "🍱 Add Another Combo Pack"
+    })
+    options.append({
+        "id": "add_custom",
+        "title": "🛠️ Add Another Custom Pack"
+    })
+    for idx, pack in enumerate(cart_packs):
+        pname = pack.get("pack_name", f"Pack {idx + 1}")
+        options.append({
+            "id": f"delete_pack_{idx}",
+            "title": f"🗑️ Delete {pname}"
+        })
+    return options
 
 
 @router.post("/flow/endpoint")
@@ -203,7 +228,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
         # 2. INIT action (Flow opens on user's phone)
         if action == "INIT":
-            # Check database for returning user's saved address and phone
             saved_address = ""
             saved_phone = sender_wa
             has_previous = False
@@ -232,18 +256,19 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     "data": {
                         "saved_address": saved_address,
                         "saved_phone": saved_phone,
-                        "address_display": f"📍 Saved Address: {saved_address}\n📞 Contact Phone: {saved_phone}",
+                        "address_display": f"📍 Saved Address: {saved_address}\n📞 Receiver's Phone: {saved_phone}",
                         "use_previous": "yes"
                     }
                 }
             else:
-                # New customer -> Directly show address input screen
+                # New customer -> Directly show RECOMMEND address input screen
                 resp_payload = {
                     "version": "3.0",
-                    "screen": "ENTER_ADDRESS_SCREEN",
+                    "screen": "RECOMMEND",
                     "data": {
-                        "delivery_address": "",
-                        "contact_phone": saved_phone
+                        "screen_0_HouseFlat_Number_0": "",
+                        "screen_0_Street_Name_1": "",
+                        "screen_0_Receivers_Number_2": saved_phone
                     }
                 }
 
@@ -254,109 +279,98 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         if action == "data_exchange":
             user_action = data.get("user_action") or ""
             current_cart = data.get("cart_packs", [])
-            delivery_address = data.get("delivery_address") or data.get("saved_address", "")
-            contact_phone = data.get("contact_phone") or data.get("saved_phone", sender_wa)
-            restaurant = data.get("restaurant", "Madam G Kitchen")
+            
+            # Extract address fields from previous or current screens
+            house_num = data.get("HouseFlat_Number_801bd0") or data.get("screen_0_HouseFlat_Number_0", "")
+            street_name = data.get("Street_Name_17f2ce") or data.get("screen_0_Street_Name_1", "")
+            if street_name:
+                delivery_address = f"{house_num}, {street_name}".strip(", ")
+            else:
+                delivery_address = data.get("delivery_address") or data.get("saved_address", "")
+
+            contact_phone = (
+                data.get("Receivers_Number_eb5784") or 
+                data.get("screen_0_Receivers_Number_2") or 
+                data.get("contact_phone") or 
+                data.get("saved_phone", sender_wa)
+            )
+
+            # Extract restaurant
+            rest_input = data.get("Restaurants_e39410") or data.get("restaurant", "Madam G Restaurant")
+            if isinstance(rest_input, list):
+                restaurant = rest_input[0] if rest_input else "Madam G Restaurant"
+            else:
+                restaurant = str(rest_input)
+            if "madam" in restaurant.lower():
+                restaurant = "Madam G Restaurant"
 
             # --- SCREEN: CONFIRM_ADDRESS_SCREEN ---
             if screen == "CONFIRM_ADDRESS_SCREEN":
                 use_prev = data.get("use_previous", "yes")
                 if use_prev == "yes":
-                    # Proceed to Restaurant Screen with saved info
+                    # Proceed directly to Restaurant selection (RATE)
                     resp_payload = {
                         "version": "3.0",
-                        "screen": "SELECT_RESTAURANT_SCREEN",
+                        "screen": "RATE",
                         "data": {
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
-                            "restaurant": "Madam G Kitchen"
+                            "screen_0_HouseFlat_Number_0": house_num,
+                            "screen_0_Street_Name_1": street_name or delivery_address,
+                            "screen_0_Receivers_Number_2": contact_phone
                         }
                     }
                 else:
-                    # User wants to enter new address & contact
+                    # User chose to enter new address -> navigate to RECOMMEND
                     resp_payload = {
                         "version": "3.0",
-                        "screen": "ENTER_ADDRESS_SCREEN",
+                        "screen": "RECOMMEND",
                         "data": {
-                            "delivery_address": "",
-                            "contact_phone": contact_phone
+                            "screen_0_HouseFlat_Number_0": "",
+                            "screen_0_Street_Name_1": "",
+                            "screen_0_Receivers_Number_2": contact_phone
                         }
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREEN: ENTER_ADDRESS_SCREEN ---
-            elif screen == "ENTER_ADDRESS_SCREEN":
-                entered_addr = data.get("delivery_address", "").strip()
-                entered_phone = data.get("contact_phone", "").strip() or sender_wa
-
+            # --- SCREEN: RECOMMEND (Address Entry) ---
+            elif screen == "RECOMMEND":
                 resp_payload = {
                     "version": "3.0",
-                    "screen": "SELECT_RESTAURANT_SCREEN",
-                    "data": {
-                        "delivery_address": entered_addr,
-                        "contact_phone": entered_phone,
-                        "restaurant": "Madam G Kitchen"
-                    }
-                }
-                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
-                return Response(content=enc_response, media_type="text/plain")
-
-            # --- SCREEN: SELECT_RESTAURANT_SCREEN ---
-            elif screen == "SELECT_RESTAURANT_SCREEN":
-                selected_rest = data.get("restaurant", "Madam G Kitchen")
-                # Show Menu Choice (Pre-designed Packs vs Custom Pack Builder) with Madam G logo
-                resp_payload = {
-                    "version": "3.0",
-                    "screen": "MENU_CHOICE_SCREEN",
+                    "screen": "RATE",
                     "data": {
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
-                        "restaurant": selected_rest,
-                        "restaurant_logo": LOGO_URL,
-                        "cart_packs": current_cart
+                        "screen_0_HouseFlat_Number_0": house_num,
+                        "screen_0_Street_Name_1": street_name,
+                        "screen_0_Receivers_Number_2": contact_phone
                     }
                 }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREEN: MENU_CHOICE_SCREEN ---
-            elif screen == "MENU_CHOICE_SCREEN":
-                choice = data.get("menu_choice", "predesigned")
-                if choice == "custom":
-                    # Navigate to Custom Pack Builder
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "BUILD_CUSTOM_PACK_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart,
-                            "pack_quantity": "1"
-                        }
+            # --- SCREEN: RATE (Pick Restaurant) ---
+            elif screen == "RATE":
+                resp_payload = {
+                    "version": "3.0",
+                    "screen": "PREDESIGNED_PACKS_SCREEN",
+                    "data": {
+                        "delivery_address": delivery_address,
+                        "contact_phone": contact_phone,
+                        "restaurant": restaurant,
+                        "restaurant_logo": LOGO_URL,
+                        "cart_packs": current_cart,
+                        "pack_quantity": "1"
                     }
-                else:
-                    # Navigate to Pre-designed Packs Screen
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "PREDESIGNED_PACKS_SCREEN",
-                        "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart,
-                            "pack_quantity": "1"
-                        }
-                    }
+                }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREEN: PREDESIGNED_PACKS_SCREEN (Add Combo) ---
+            # --- SCREEN: PREDESIGNED_PACKS_SCREEN ---
             elif screen == "PREDESIGNED_PACKS_SCREEN":
-                if user_action == "switch_to_custom":
+                combo_key = data.get("selected_pack", "pack_classic_jollof")
+                if combo_key == "skip_to_custom" or user_action == "switch_to_custom":
                     resp_payload = {
                         "version": "3.0",
                         "screen": "BUILD_CUSTOM_PACK_SCREEN",
@@ -370,8 +384,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         }
                     }
                 else:
-                    # User picked a pre-designed combo
-                    combo_key = data.get("selected_pack", "pack_classic_jollof")
                     combo_info = PREDESIGNED_PACKS.get(combo_key, PREDESIGNED_PACKS["pack_classic_jollof"])
                     qty = int(data.get("pack_quantity") or 1)
                     pack_note = data.get("pack_note", "")
@@ -389,6 +401,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     cart_text, subtotal = format_cart_display(current_cart)
                     est_delivery = 1000
                     grand_total = subtotal + est_delivery
+                    actions = build_cart_action_options(current_cart, grand_total)
 
                     resp_payload = {
                         "version": "3.0",
@@ -397,19 +410,18 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
                             "cart_packs": current_cart,
                             "cart_display": cart_text,
                             "subtotal_text": f"₦{subtotal:,}",
                             "delivery_text": f"₦{est_delivery:,}",
                             "total_text": f"₦{grand_total:,}",
-                            "cart_count": len(current_cart)
+                            "action_options": actions
                         }
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREEN: BUILD_CUSTOM_PACK_SCREEN (Add Custom Pack) ---
+            # --- SCREEN: BUILD_CUSTOM_PACK_SCREEN ---
             elif screen == "BUILD_CUSTOM_PACK_SCREEN":
                 pack_name = f"Custom Pack {len(current_cart) + 1}"
                 qty = int(data.get("pack_quantity") or 1)
@@ -429,6 +441,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 cart_text, subtotal = format_cart_display(current_cart)
                 est_delivery = 1000
                 grand_total = subtotal + est_delivery
+                actions = build_cart_action_options(current_cart, grand_total)
 
                 resp_payload = {
                     "version": "3.0",
@@ -437,13 +450,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "restaurant": restaurant,
-                        "restaurant_logo": LOGO_URL,
                         "cart_packs": current_cart,
                         "cart_display": cart_text,
                         "subtotal_text": f"₦{subtotal:,}",
                         "delivery_text": f"₦{est_delivery:,}",
                         "total_text": f"₦{grand_total:,}",
-                        "cart_count": len(current_cart)
+                        "action_options": actions
                     }
                 }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -451,21 +463,33 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: CART_REVIEW_SCREEN ---
             elif screen == "CART_REVIEW_SCREEN":
-                if user_action == "add_more":
-                    # User clicked "Add Another Pack" -> Return to menu choice
+                if user_action == "add_predesigned" or user_action == "add_more":
                     resp_payload = {
                         "version": "3.0",
-                        "screen": "MENU_CHOICE_SCREEN",
+                        "screen": "PREDESIGNED_PACKS_SCREEN",
                         "data": {
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
                             "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart
+                            "cart_packs": current_cart,
+                            "pack_quantity": "1"
+                        }
+                    }
+                elif user_action == "add_custom":
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": "BUILD_CUSTOM_PACK_SCREEN",
+                        "data": {
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
+                            "restaurant": restaurant,
+                            "restaurant_logo": LOGO_URL,
+                            "cart_packs": current_cart,
+                            "pack_quantity": "1"
                         }
                     }
                 elif user_action.startswith("delete_pack_"):
-                    # User clicked Delete on a specific pack
                     try:
                         del_idx = int(user_action.replace("delete_pack_", ""))
                         if 0 <= del_idx < len(current_cart):
@@ -476,6 +500,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     cart_text, subtotal = format_cart_display(current_cart)
                     est_delivery = 1000 if current_cart else 0
                     grand_total = subtotal + est_delivery
+                    actions = build_cart_action_options(current_cart, grand_total)
 
                     resp_payload = {
                         "version": "3.0",
@@ -484,45 +509,43 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
                             "cart_packs": current_cart,
                             "cart_display": cart_text,
                             "subtotal_text": f"₦{subtotal:,}",
                             "delivery_text": f"₦{est_delivery:,}",
                             "total_text": f"₦{grand_total:,}",
-                            "cart_count": len(current_cart)
+                            "action_options": actions
                         }
                     }
                 elif user_action == "checkout" or user_action == "place_order":
-                    # Complete order submission payload
                     cart_text, subtotal = format_cart_display(current_cart)
                     est_delivery = 1000
                     grand_total = subtotal + est_delivery
 
                     resp_payload = {
                         "version": "3.0",
-                        "screen": "ORDER_SUCCESS_SCREEN",
+                        "screen": "screen_itnvpz",
                         "data": {
-                            "extension_message_response": {
-                                "params": {
-                                    "flow_name": "food_order_dynamic",
-                                    "restaurant": restaurant,
-                                    "delivery_address": delivery_address,
-                                    "contact_phone": contact_phone,
-                                    "cart_packs": json.dumps(current_cart),
-                                    "subtotal": subtotal,
-                                    "delivery_fee": est_delivery,
-                                    "total_amount": grand_total,
-                                    "cart_summary": cart_text
-                                }
-                            }
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
+                            "restaurant": restaurant,
+                            "cart_packs": json.dumps(current_cart),
+                            "subtotal": subtotal,
+                            "delivery_fee": est_delivery,
+                            "total_amount": grand_total,
+                            "cart_summary": cart_text,
+                            "screen_1_Restaurants_0": [restaurant],
+                            "screen_0_HouseFlat_Number_0": house_num,
+                            "screen_0_Street_Name_1": street_name or delivery_address,
+                            "screen_0_Receivers_Number_2": contact_phone
                         }
                     }
                 else:
-                    # Default: refresh cart review
+                    # Refresh cart
                     cart_text, subtotal = format_cart_display(current_cart)
                     est_delivery = 1000
                     grand_total = subtotal + est_delivery
+                    actions = build_cart_action_options(current_cart, grand_total)
 
                     resp_payload = {
                         "version": "3.0",
@@ -531,20 +554,19 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
                             "cart_packs": current_cart,
                             "cart_display": cart_text,
                             "subtotal_text": f"₦{subtotal:,}",
                             "delivery_text": f"₦{est_delivery:,}",
                             "total_text": f"₦{grand_total:,}",
-                            "cart_count": len(current_cart)
+                            "action_options": actions
                         }
                     }
 
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-        # Unknown action fallback
+        # Fallback
         resp_payload = {
             "version": "3.0",
             "screen": "CONFIRM_ADDRESS_SCREEN",
@@ -555,6 +577,4 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
     except Exception as e:
         logger.error(f"Flow endpoint error: {e}", exc_info=True)
-        # WhatsApp expects HTTP 421 if decryption / signature fails
         raise HTTPException(status_code=421, detail=str(e))
-
