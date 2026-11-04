@@ -1410,14 +1410,28 @@
               },
               {
                 "type": "TextBody",
-                "text": "Paste your compiled WhatsApp list with names, meals, and prices below.\n\nExample:\n1. Collins: Mixed rice, 1 beef, 1 egg - 1,800\n2. Tosin: Jollof rice, 10 beef - 2,700"
+                "text": "Paste your compiled WhatsApp list below. WhatsApp limits each box to 600 characters (~15 colleagues). If your list is long, continue pasting into Part 2 & Part 3!\n\nExample:\n1. Collins: Mixed rice, 1 beef, 1 egg - 2,100\n2. Hakam- jollof rice, salad, beef, water"
               },
               {
                 "type": "TextArea",
                 "name": "bulk_order_text",
-                "label": "Office Order List",
+                "label": "Office Order List (Part 1)",
                 "required": true,
-                "helper-text": "Paste full office list here"
+                "helper-text": "Paste up to ~15 colleagues here (max 600 chars)"
+              },
+              {
+                "type": "TextArea",
+                "name": "bulk_order_text_2",
+                "label": "Office Order List (Part 2 - optional)",
+                "required": false,
+                "helper-text": "Continue pasting here if list was cut off"
+              },
+              {
+                "type": "TextArea",
+                "name": "bulk_order_text_3",
+                "label": "Office Order List (Part 3 - optional)",
+                "required": false,
+                "helper-text": "Continue pasting here if list exceeds Part 2"
               },
               {
                 "type": "Footer",
@@ -1426,6 +1440,8 @@
                   "name": "data_exchange",
                   "payload": {
                     "bulk_order_text": "${form.bulk_order_text}",
+                    "bulk_order_text_2": "${form.bulk_order_text_2}",
+                    "bulk_order_text_3": "${form.bulk_order_text_3}",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
