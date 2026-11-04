@@ -106,14 +106,17 @@ def calculate_delivery_fee(pack_count: int) -> int:
     Tiered delivery fee:
     - Up to 9 packs: ₦800
     - 10 to 14 packs: ₦1,000
-    - 15 packs and above: ₦1,500
+    - 15 to 24 packs: ₦1,500
+    - 25 packs and above: ₦2,000
     """
     if pack_count <= 9:
         return 800
     elif 10 <= pack_count <= 14:
         return 1000
-    else:
+    elif 15 <= pack_count <= 24:
         return 1500
+    else:
+        return 2000
 
 
 def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
@@ -279,20 +282,20 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
 
 
 def estimate_items_price(desc: str) -> tuple[int, list[str]]:
-    """
-    Intelligently extracts items and estimates total price for an unpriced order line.
-    """
     d = desc.lower()
     total = 0
     detected_items = []
 
-    # 1. Base Meals (Rice ₦1,300, Swallow ₦700, Moi Moi base ₦1,000)
+    # Check if this line is ONLY protein/extras (e.g. "15 beef", "3 chicken")
+    has_base = any(k in d for k in ["rice", "semo", "fufu", "swallow", "moimoi", "moi moi", "moi-moi", "spag", "beans", "plate"])
+
+    # 1. Base Meals
     if any(k in d for k in ["mixed rice", "fried & jollof", "fried and jollof"]):
         total += 1300
         detected_items.append("Mixed Rice (₦1,300)")
-    elif any(k in d for k in ["rice and beans", "rice & beans", "white rice & beans", "white rice and beans"]):
+    elif any(k in d for k in ["rice and beans", "rice & beans", "white rice & beans", "white rice and beans", "white rice, beans", "fried rice, beans"]):
         total += 1300
-        detected_items.append("Rice & Beans (₦1,300)")
+        detected_items.append("Rice & Beans Combo (₦1,300)")
     elif "jollof" in d:
         total += 1300
         detected_items.append("Jollof Rice (₦1,300)")
@@ -311,14 +314,33 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
     elif "rice" in d:
         total += 1300
         detected_items.append("Rice Meal (₦1,300)")
-    else:
-        # Default base meal if not specified
+    elif any(k in d for k in ["moimoi", "moi moi", "moi-moi"]):
+        # Moimoi can serve as base meal
+        total += 1000
+        detected_items.append("Moi Moi (₦1,000)")
+    elif has_base:
         total += 1300
         detected_items.append("Base Meal (₦1,300)")
 
-    # 2. Proteins
+    # 2. Additional Moimoi if rice was already detected as base
+    if any(k in d for k in ["rice", "semo", "fufu"]) and any(k in d for k in ["moimoi", "moi moi", "moi-moi"]):
+        total += 1000
+        detected_items.append("Moi Moi (₦1,000)")
+
+    # 3. Soups
+    if any(k in d for k in ["vegetable", "vegetables", "efo"]):
+        total += 500
+        detected_items.append("Vegetable Soup (₦500)")
+    elif "egusi" in d:
+        total += 200
+        detected_items.append("Egusi Soup (₦200)")
+    elif "ogbono" in d:
+        total += 200
+        detected_items.append("Ogbono Soup (₦200)")
+
+    # 4. Proteins
     # Chicken (₦3,000)
-    m = re.search(r'(\d+)\s*(?:x\s*)?chicken', d)
+    m = re.search(r'(\d+)\s*(?:x|-)?\s*chicken', d)
     if m:
         qty = int(m.group(1))
         cost = qty * 3000
@@ -329,7 +351,7 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         detected_items.append("Chicken (₦3,000)")
 
     # Fish (₦1,000)
-    m = re.search(r'(\d+)\s*(?:x\s*)?(?:fish|titus|croaker)', d)
+    m = re.search(r'(\d+)\s*(?:x|-)?\s*(?:fish|titus|croaker)', d)
     if m:
         qty = int(m.group(1))
         cost = qty * 1000
@@ -340,7 +362,7 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         detected_items.append("Fish (₦1,000)")
 
     # Assorted (₦1,000)
-    m = re.search(r'(\d+)\s*(?:x\s*)?assorted', d)
+    m = re.search(r'(\d+)\s*(?:x|-)?\s*assorted', d)
     if m:
         qty = int(m.group(1))
         cost = qty * 1000
@@ -350,38 +372,39 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 1000
         detected_items.append("Assorted (₦1,000)")
 
-    # Small Beef (₦200) vs Big Beef / Beef (₦500)
-    m_sb = re.search(r'(\d+)\s*(?:x\s*)?small\s*beef', d)
-    if m_sb:
-        qty = int(m_sb.group(1))
-        cost = qty * 200
-        total += cost
-        detected_items.append(f"{qty}x Small Beef (₦{cost:,})")
-    elif "small beef" in d:
-        total += 200
-        detected_items.append("Small Beef (₦200)")
-
-    # Big beef or general beef
-    m_bb = re.search(r'(\d+)\s*(?:x\s*)?(?:big\s*beef|beef|meat)\b', d)
-    if m_bb and "small" not in d:
-        qty = int(m_bb.group(1))
-        cost = qty * 500
-        total += cost
-        detected_items.append(f"{qty}x Big Beef (₦{cost:,})")
-    elif any(k in d for k in ["big beef", "beef", "meat"]) and "small beef" not in d:
-        total += 500
-        detected_items.append("Big Beef (₦500)")
-
     # Goat Meat (₦500)
     if "pepper soup" not in d and any(k in d for k in ["goat meat", "goat"]):
-        m = re.search(r'(\d+)\s*(?:x\s*)?goat', d)
+        m = re.search(r'(\d+)\s*(?:x|-)?\s*goat', d)
         qty = int(m.group(1)) if m else 1
         cost = qty * 500
         total += cost
         detected_items.append(f"{qty}x Goat Meat (₦{cost:,})")
 
+    # Big Beef (₦500) - ONLY if 'big beef' is explicitly mentioned
+    m_bb = re.search(r'(\d+)\s*(?:x|-)?\s*big\s*beef', d)
+    if m_bb:
+        qty = int(m_bb.group(1))
+        cost = qty * 500
+        total += cost
+        detected_items.append(f"{qty}x Big Beef (₦{cost:,})")
+    elif "big beef" in d:
+        total += 500
+        detected_items.append("Big Beef (₦500)")
+
+    # Small Beef / Default Beef (₦200)
+    # Any beef without 'big' defaults to ₦200. Ensure 'goat meat' does not trigger 'meat'!
+    m_sb = re.search(r'(\d+)\s*(?:x|-)?\s*(?:small\s*beef|beef|meat)\b', d)
+    if m_sb and "big" not in d and not ("goat" in d and "beef" not in d):
+        qty = int(m_sb.group(1))
+        cost = qty * 200
+        total += cost
+        detected_items.append(f"{qty}x Beef (₦{cost:,})")
+    elif (any(k in d for k in ["small beef", "beef"]) or ("meat" in d and "goat" not in d)) and "big" not in d:
+        total += 200
+        detected_items.append("Beef (₦200)")
+
     # Egg (₦300)
-    m = re.search(r'(\d+)\s*(?:x\s*)?egg', d)
+    m = re.search(r'(\d+)\s*(?:x|-)?\s*eggs?', d)
     if m:
         qty = int(m.group(1))
         cost = qty * 300
@@ -391,9 +414,9 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 300
         detected_items.append("Egg (₦300)")
 
-    # 3. Sides & Extras
+    # 5. Sides & Extras
     # Plantain (₦500)
-    m = re.search(r'(\d+)\s*(?:x\s*)?plantain', d)
+    m = re.search(r'(\d+)\s*(?:x|-)?\s*plantain', d)
     if m:
         qty = int(m.group(1))
         cost = qty * 500
@@ -408,31 +431,24 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 500
         detected_items.append("Salad (₦500)")
 
-    # Moi Moi side (₦1,000)
-    if "moi moi" in d or "moimoi" in d:
-        total += 1000
-        detected_items.append("Moi Moi (₦1,000)")
+    # Pepper Sauce (₦300)
+    if "pepper sauce" in d or "sauce" in d:
+        total += 300
+        detected_items.append("Pepper Sauce (₦300)")
 
-    # Pepper soup (₦2,000)
+    # Goat Pepper soup (₦2,000)
     if "pepper soup" in d or "peppersoup" in d:
         total += 2000
         detected_items.append("Goat Pepper Soup (₦2,000)")
 
-    # Sauce (₦200)
-    if "sauce" in d or "pepper sauce" in d:
-        total += 200
-        detected_items.append("Pepper Sauce (₦200)")
-
-    # 4. Drinks
-    # Water (₦300)
+    # 6. Drinks
     if "water" in d:
-        m = re.search(r'(\d+)\s*(?:x\s*)?water', d)
+        m = re.search(r'(\d+)\s*(?:x|-)?\s*water', d)
         qty = int(m.group(1)) if m else 1
         cost = qty * 300
         total += cost
         detected_items.append(f"{qty}x Water (₦{cost:,})")
 
-    # Malt / Amstel (₦600)
     if any(k in d for k in ["malt", "maltina", "amstel"]):
         total += 600
         detected_items.append("Maltina (₦600)")
@@ -440,41 +456,48 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 500
         detected_items.append("Soft Drink (₦500)")
 
+    # Check for multiplier like "2 plates of ..."
+    plate_match = re.search(r'(\d+)\s*(?:plates?|packs?)\b', d)
+    multiplier = int(plate_match.group(1)) if plate_match else 1
+    total *= multiplier
+
     return total, detected_items
 
 
 def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
-    """
-    Parses a multi-line pasted WhatsApp office food order list.
-    Handles:
-    - Lines with explicit prices: "1. Collins: Mixed rice, 1 beef, 1 egg - 2,100"
-    - Lines WITHOUT explicit prices: "1. Hakam- mixed rice, salad, beef, plantain, water"
-    - Multi-line headers: "1. Collins- 2 orders"
-    """
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
     packs = []
     current_person = ""
     subtotal = 0
 
     for line in lines:
+        clean_line = line.strip(' *_\t')
+        if re.match(r'^(?:food|delivery|grand\s*total|total\s*packs?|subtotal)\b', clean_line, re.IGNORECASE):
+            continue
+
         header_match = re.match(r'^(?:\d+[\.\)]\s*)?([A-Za-z0-9\s]+?)(?:[-–—:]\s*\d+\s*orders?)?:?$', line, re.IGNORECASE)
-        is_food_line = any(k in line.lower() for k in ["rice", "semo", "fufu", "beef", "chicken", "fish", "meat", "plantain", "salad", "water", "egg", "soup"])
+        is_food_line = any(k in line.lower() for k in ["rice", "semo", "fufu", "beef", "chicken", "fish", "meat", "plantain", "salad", "water", "egg", "soup", "moimoi", "beans"])
 
         if header_match and not is_food_line:
             current_person = header_match.group(1).strip()
             continue
 
-        price_match = re.search(r'[-–—=:]\s*(?:₦|N)?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*$', line)
-        if price_match:
-            price_str = price_match.group(1).replace(',', '')
-            try:
-                explicit_price = int(price_str)
-            except ValueError:
-                explicit_price = 0
-            item_text = line[:price_match.start()].strip(' -–—=:')
+        free_match = re.search(r'[-–—=:]\s*\*?FREE\*?\s*$', line, re.IGNORECASE)
+        if free_match:
+            explicit_price = 0
+            item_text = line[:free_match.start()].strip(' -–—=:')
         else:
-            explicit_price = None
-            item_text = line
+            price_match = re.search(r'[-–—=:]\s*(?:₦|N)?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*$', line)
+            if price_match:
+                price_str = price_match.group(1).replace(',', '')
+                try:
+                    explicit_price = int(price_str)
+                except ValueError:
+                    explicit_price = 0
+                item_text = line[:price_match.start()].strip(' -–—=:')
+            else:
+                explicit_price = None
+                item_text = line
 
         person_prefix_match = re.match(r'^(?:\d+[\.\)]\s*)?([A-Za-z]+)\s*[-–—:]\s*(.*)$', item_text)
         if person_prefix_match and not re.match(r'^(?:pack|order)\b', person_prefix_match.group(1), re.IGNORECASE):
@@ -487,7 +510,10 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
         if not desc:
             continue
 
-        if explicit_price is not None and explicit_price > 0:
+        plate_match = re.search(r'(\d+)\s*(?:plates?|packs?)\b', desc, re.IGNORECASE)
+        pack_qty = int(plate_match.group(1)) if plate_match else 1
+
+        if explicit_price is not None:
             price = explicit_price
             items_list = [desc]
         else:
@@ -499,8 +525,8 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
         pack_name = f"{person}: {desc}"
         packs.append({
             "pack_name": pack_name[:35],
-            "quantity": 1,
-            "unit_price": price,
+            "quantity": pack_qty,
+            "unit_price": price // pack_qty if pack_qty > 0 else price,
             "total_price": price,
             "items": items_list,
             "note": f"For {person}"
