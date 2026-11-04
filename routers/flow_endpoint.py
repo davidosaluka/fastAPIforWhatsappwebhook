@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import base64
+import re
 from typing import Dict, Any, List
 from fastapi import APIRouter, Request, Response, HTTPException, Depends
 from sqlalchemy import select
@@ -201,6 +202,54 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     return total_pack_price, unit_price, multiplier, items
 
 
+def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
+    """
+    Parses a multi-line pasted WhatsApp office food order list.
+    Extracts names, meal descriptions, explicit or computed prices.
+    """
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+    packs = []
+    current_person = ""
+    subtotal = 0
+
+    for line in lines:
+        price_match = re.search(r'[-–—=]\s*(?:₦|N)?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,6})\s*$', line)
+        if not price_match:
+            # Person header like '1. Collins- 2 orders'
+            m = re.match(r'^(?:\d+[\.\)]\s*)?([A-Za-z0-9\s]+?)(?:[-–—]\s*\d+\s*orders?)?:?$', line, re.IGNORECASE)
+            if m:
+                current_person = m.group(1).strip()
+            continue
+
+        price_str = price_match.group(1).replace(',', '')
+        try:
+            price = int(price_str)
+        except ValueError:
+            price = 0
+        subtotal += price
+
+        item_text = line[:price_match.start()].strip(' -–—=:')
+        person_prefix_match = re.match(r'^(?:\d+[\.\)]\s*)?([A-Za-z]+)\s*[-–—:]\s*(.*)$', item_text)
+        if person_prefix_match and not re.match(r'^(?:pack|order)\b', person_prefix_match.group(1), re.IGNORECASE):
+            person = person_prefix_match.group(1).strip()
+            desc = person_prefix_match.group(2).strip()
+        else:
+            person = current_person or "Colleague"
+            desc = item_text
+
+        pack_name = f"{person}: {desc}"
+        packs.append({
+            "pack_name": pack_name[:35],
+            "quantity": 1,
+            "unit_price": price,
+            "total_price": price,
+            "items": [desc],
+            "note": f"For {person}"
+        })
+
+    return packs, subtotal
+
+
 def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
     """Formats cart items into user-facing text and computes food subtotal."""
     if not cart_packs:
@@ -275,7 +324,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         # 2. Opening the Flow (action can be INIT, navigate, or initial data_exchange)
         is_opening_request = (
             action in ["INIT", "navigate"] or
-            (action == "data_exchange" and not screen and not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and not data.get("use_previous"))
+            (action == "data_exchange" and not screen and not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and not data.get("use_previous") and not data.get("bulk_order_text"))
         )
         if is_opening_request:
             saved_address = ""
@@ -430,15 +479,29 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             # --- SCREEN: PREDESIGNED_PACKS_SCREEN ---
             elif screen == "PREDESIGNED_PACKS_SCREEN":
                 combo_key = data.get("selected_pack", "skip_to_custom")
-                if combo_key == "skip_to_custom" or user_action == "switch_to_custom":
+                if combo_key == "bulk_office_order":
+                    # Navigate to Bulk Office Order screen
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": "BULK_ORDER_SCREEN",
+                        "data": {
+                            "restaurant": restaurant,
+                            "restaurant_logo": LOGO_DATA_URI,
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
+                            "cart_packs": current_cart
+                        }
+                    }
+                elif combo_key == "skip_to_custom" or user_action == "switch_to_custom":
+                    # Navigate to Custom Pack 1
                     resp_payload = {
                         "version": "3.0",
                         "screen": "BUILD_CUSTOM_PACK_SCREEN",
                         "data": {
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
                             "restaurant": restaurant,
                             "restaurant_logo": LOGO_DATA_URI,
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
                             "cart_packs": current_cart
                         }
                     }
@@ -484,8 +547,49 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREENS: CUSTOM PACK BUILDERS (Pack 1, 2, 3, 4) ---
-            elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_TWO", "BUILD_CUSTOM_PACK_THREE", "BUILD_CUSTOM_PACK_FOUR"]:
+            # --- SCREEN: BULK_ORDER_SCREEN (Paste Office List) ---
+            elif screen == "BULK_ORDER_SCREEN":
+                bulk_text = (data.get("bulk_order_text") or "").strip()
+                bulk_packs, bulk_total = parse_bulk_order(bulk_text)
+
+                if bulk_packs:
+                    current_cart.extend(bulk_packs)
+                else:
+                    current_cart.append({
+                        "pack_name": "Bulk Office Order",
+                        "quantity": 1,
+                        "unit_price": bulk_total or 2500,
+                        "total_price": bulk_total or 2500,
+                        "items": [bulk_text[:100]],
+                        "note": "Office Bulk Order"
+                    })
+
+                cart_text, subtotal = format_cart_display(current_cart)
+                est_delivery = 1000
+                grand_total = subtotal + est_delivery
+                totals_display = (
+                    f"💵 Food Subtotal: ₦{subtotal:,}\n"
+                    f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
+                    f"💳 *Grand Total: ₦{grand_total:,}*"
+                )
+
+                resp_payload = {
+                    "version": "3.0",
+                    "screen": "CART_REVIEW_SCREEN",
+                    "data": {
+                        "restaurant": restaurant,
+                        "delivery_address": delivery_address,
+                        "contact_phone": contact_phone,
+                        "cart_packs": current_cart,
+                        "cart_display": cart_text,
+                        "totals_display": totals_display
+                    }
+                }
+                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
+                return Response(content=enc_response, media_type="text/plain")
+
+            # --- SCREENS: CUSTOM PACK BUILDERS (Pack 1, 2, 3) ---
+            elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_TWO", "BUILD_CUSTOM_PACK_THREE"]:
                 pack_idx = len(current_cart) + 1
                 pack_note = (data.get("pack_note") or "").strip()
                 pack_total, unit_price, qty, items_list = calculate_pack_price(data)
@@ -517,8 +621,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 if next_action == "add_another":
                     next_screen_map = {
                         "BUILD_CUSTOM_PACK_SCREEN": "BUILD_CUSTOM_PACK_TWO",
-                        "BUILD_CUSTOM_PACK_TWO": "BUILD_CUSTOM_PACK_THREE",
-                        "BUILD_CUSTOM_PACK_THREE": "BUILD_CUSTOM_PACK_FOUR"
+                        "BUILD_CUSTOM_PACK_TWO": "BUILD_CUSTOM_PACK_THREE"
                     }
                     target_screen = next_screen_map.get(screen, "CART_REVIEW_SCREEN")
                     resp_payload = {

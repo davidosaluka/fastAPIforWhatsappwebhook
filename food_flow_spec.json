@@ -14,6 +14,7 @@
     ],
     "PREDESIGNED_PACKS_SCREEN": [
       "BUILD_CUSTOM_PACK_SCREEN",
+      "BULK_ORDER_SCREEN",
       "CART_REVIEW_SCREEN"
     ],
     "BUILD_CUSTOM_PACK_SCREEN": [
@@ -25,10 +26,9 @@
       "CART_REVIEW_SCREEN"
     ],
     "BUILD_CUSTOM_PACK_THREE": [
-      "BUILD_CUSTOM_PACK_FOUR",
       "CART_REVIEW_SCREEN"
     ],
-    "BUILD_CUSTOM_PACK_FOUR": [
+    "BULK_ORDER_SCREEN": [
       "CART_REVIEW_SCREEN"
     ],
     "CART_REVIEW_SCREEN": [
@@ -236,7 +236,7 @@
     },
     {
       "id": "PREDESIGNED_PACKS_SCREEN",
-      "title": "Popular Combos",
+      "title": "Order Food",
       "data": {
         "restaurant": {
           "type": "string",
@@ -277,14 +277,18 @@
               },
               {
                 "type": "TextHeading",
-                "text": "Chef's Special Packs 🍱"
+                "text": "Choose Order Type 🍱"
               },
               {
                 "type": "RadioButtonsGroup",
                 "name": "selected_pack",
-                "label": "Choose a Pack",
+                "label": "Select Option",
                 "required": true,
                 "data-source": [
+                  {
+                    "id": "bulk_office_order",
+                    "title": "📋 Bulk Office Order"
+                  },
                   {
                     "id": "skip_to_custom",
                     "title": "🛠️ Build Custom Pack"
@@ -313,7 +317,7 @@
                 "label": "Pack Multiplier",
                 "required": false,
                 "input-type": "number",
-                "helper-text": "Copies of this pack (default 1)"
+                "helper-text": "Copies of combo pack (default 1)"
               },
               {
                 "type": "TextInput",
@@ -617,7 +621,7 @@
                 "data-source": [
                   {
                     "id": "add_another",
-                    "title": "➕ Add Pack 2"
+                    "title": "➕ Add Pack Two"
                   },
                   {
                     "id": "review_cart",
@@ -928,7 +932,7 @@
                 "data-source": [
                   {
                     "id": "add_another",
-                    "title": "➕ Add Pack 3"
+                    "title": "➕ Add Pack Three"
                   },
                   {
                     "id": "review_cart",
@@ -1232,22 +1236,6 @@
                 "helper-text": "e.g. Collins / separate stew"
               },
               {
-                "type": "RadioButtonsGroup",
-                "name": "next_action",
-                "label": "Next Step",
-                "required": true,
-                "data-source": [
-                  {
-                    "id": "add_another",
-                    "title": "➕ Add Pack 4"
-                  },
-                  {
-                    "id": "review_cart",
-                    "title": "🛒 Review Cart"
-                  }
-                ]
-              },
-              {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
@@ -1264,7 +1252,7 @@
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
-                    "next_action": "${form.next_action}",
+                    "next_action": "review_cart",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
@@ -1278,8 +1266,8 @@
       }
     },
     {
-      "id": "BUILD_CUSTOM_PACK_FOUR",
-      "title": "Custom Pack 4 🍱",
+      "id": "BULK_ORDER_SCREEN",
+      "title": "Bulk Office Order",
       "data": {
         "restaurant": {
           "type": "string",
@@ -1320,246 +1308,26 @@
               },
               {
                 "type": "TextHeading",
-                "text": "Custom Pack 4 🍱"
+                "text": "Bulk Office Order 📋"
               },
               {
-                "type": "Dropdown",
-                "name": "base_meal",
-                "label": "1. Base Meal",
+                "type": "TextBody",
+                "text": "Paste your compiled WhatsApp list with names, meals, and prices below.\n\nExample:\n1. Collins: Mixed rice, 1 beef, 1 egg - 1,800\n2. Tosin: Jollof rice, 10 beef - 2,700"
+              },
+              {
+                "type": "TextArea",
+                "name": "bulk_order_text",
+                "label": "Office Order List",
                 "required": true,
-                "data-source": [
-                  {
-                    "id": "rice_jollof",
-                    "title": "Jollof Rice (₦1,300)"
-                  },
-                  {
-                    "id": "rice_fried",
-                    "title": "Fried Rice (₦1,300)"
-                  },
-                  {
-                    "id": "rice_white",
-                    "title": "White Rice (₦1,300)"
-                  },
-                  {
-                    "id": "rice_mixed",
-                    "title": "Mixed Rice (₦1,300)"
-                  },
-                  {
-                    "id": "rice_white_beans",
-                    "title": "White Rice & Beans (₦1,300)"
-                  },
-                  {
-                    "id": "swallow_semo",
-                    "title": "Semo (₦700)"
-                  },
-                  {
-                    "id": "swallow_fufu",
-                    "title": "Fufu (₦700)"
-                  },
-                  {
-                    "id": "base_moimoi",
-                    "title": "Moi Moi Base (₦1,000)"
-                  },
-                  {
-                    "id": "base_none",
-                    "title": "No Base Meal (₦0)"
-                  }
-                ]
-              },
-              {
-                "type": "Dropdown",
-                "name": "soup",
-                "label": "2. Soup Choice",
-                "required": true,
-                "data-source": [
-                  {
-                    "id": "soup_stew",
-                    "title": "Stew (₦0)"
-                  },
-                  {
-                    "id": "soup_egusi",
-                    "title": "Egusi Soup (₦200)"
-                  },
-                  {
-                    "id": "soup_ogbono",
-                    "title": "Ogbono Soup (₦200)"
-                  },
-                  {
-                    "id": "soup_mixed",
-                    "title": "Mixed Egusi & Ogbono (₦200)"
-                  },
-                  {
-                    "id": "soup_efo",
-                    "title": "Vegetable/Efo Riro (₦500)"
-                  },
-                  {
-                    "id": "soup_none",
-                    "title": "No Soup (₦0)"
-                  }
-                ]
-              },
-              {
-                "type": "TextSubheading",
-                "text": "3. Proteins & Quantity"
-              },
-              {
-                "type": "TextInput",
-                "name": "beef_qty",
-                "label": "Beef (₦200/pc)",
-                "required": false,
-                "input-type": "number",
-                "helper-text": "Pieces of beef (e.g. 2, 10)"
-              },
-              {
-                "type": "TextInput",
-                "name": "egg_qty",
-                "label": "Egg (₦300/pc)",
-                "required": false,
-                "input-type": "number",
-                "helper-text": "Boiled eggs (e.g. 1)"
-              },
-              {
-                "type": "Dropdown",
-                "name": "chicken",
-                "label": "Chicken Option",
-                "required": false,
-                "data-source": [
-                  {
-                    "id": "chicken_none",
-                    "title": "None (₦0)"
-                  },
-                  {
-                    "id": "protein_chicken_small",
-                    "title": "Small Chicken (₦3,000)"
-                  },
-                  {
-                    "id": "protein_chicken_med",
-                    "title": "Medium Chicken (₦3,500)"
-                  },
-                  {
-                    "id": "protein_chicken_big",
-                    "title": "Big Chicken (₦4,000)"
-                  }
-                ]
-              },
-              {
-                "type": "TextInput",
-                "name": "goat_qty",
-                "label": "Goat Meat (₦500/pc)",
-                "required": false,
-                "input-type": "number",
-                "helper-text": "Pieces of goat meat (e.g. 1)"
-              },
-              {
-                "type": "Dropdown",
-                "name": "fish",
-                "label": "Fish Option",
-                "required": false,
-                "data-source": [
-                  {
-                    "id": "fish_none",
-                    "title": "None (₦0)"
-                  },
-                  {
-                    "id": "protein_fish",
-                    "title": "Fried Fish (₦1,000)"
-                  }
-                ]
-              },
-              {
-                "type": "CheckboxGroup",
-                "name": "extras",
-                "label": "4. Sides & Extras",
-                "required": false,
-                "data-source": [
-                  {
-                    "id": "extra_plantain_1",
-                    "title": "Plantain 1 serv (₦500)"
-                  },
-                  {
-                    "id": "extra_plantain_2",
-                    "title": "Plantain 2 serv (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_1",
-                    "title": "Moi Moi 1 wrap (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_2",
-                    "title": "Moi Moi 2 wraps (₦2,000)"
-                  },
-                  {
-                    "id": "extra_salad",
-                    "title": "Salad (₦500)"
-                  },
-                  {
-                    "id": "extra_pepper_sauce",
-                    "title": "Pepper Sauce (₦200)"
-                  }
-                ]
-              },
-              {
-                "type": "Dropdown",
-                "name": "drink",
-                "label": "5. Drink Choice",
-                "required": false,
-                "data-source": [
-                  {
-                    "id": "drink_none",
-                    "title": "No Drink (₦0)"
-                  },
-                  {
-                    "id": "drink_water",
-                    "title": "Water (₦300)"
-                  },
-                  {
-                    "id": "drink_coke",
-                    "title": "Coke/Fanta/Sprite (₦500)"
-                  },
-                  {
-                    "id": "drink_malt",
-                    "title": "Maltina/Amstel (₦600)"
-                  },
-                  {
-                    "id": "drink_chivita",
-                    "title": "Chivita Juice (₦1,500)"
-                  }
-                ]
-              },
-              {
-                "type": "TextInput",
-                "name": "pack_quantity",
-                "label": "Pack Multiplier",
-                "required": false,
-                "input-type": "number",
-                "helper-text": "Copies of this pack (default 1)"
-              },
-              {
-                "type": "TextInput",
-                "name": "pack_note",
-                "label": "Pack Note",
-                "required": false,
-                "input-type": "text",
-                "helper-text": "e.g. Collins / separate stew"
+                "helper-text": "Paste full office list here"
               },
               {
                 "type": "Footer",
-                "label": "Continue",
+                "label": "Review Order",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
-                    "base_meal": "${form.base_meal}",
-                    "soup": "${form.soup}",
-                    "beef_qty": "${form.beef_qty}",
-                    "egg_qty": "${form.egg_qty}",
-                    "chicken": "${form.chicken}",
-                    "goat_qty": "${form.goat_qty}",
-                    "fish": "${form.fish}",
-                    "extras": "${form.extras}",
-                    "drink": "${form.drink}",
-                    "pack_quantity": "${form.pack_quantity}",
-                    "pack_note": "${form.pack_note}",
-                    "next_action": "review_cart",
+                    "bulk_order_text": "${form.bulk_order_text}",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
