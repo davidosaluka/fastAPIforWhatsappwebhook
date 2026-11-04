@@ -485,7 +485,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 return Response(content=enc_response, media_type="text/plain")
 
             # --- SCREENS: CUSTOM PACK BUILDERS (Pack 1, 2, 3, 4) ---
-            elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_2", "BUILD_CUSTOM_PACK_3", "BUILD_CUSTOM_PACK_4"]:
+            elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_TWO", "BUILD_CUSTOM_PACK_THREE", "BUILD_CUSTOM_PACK_FOUR"]:
                 pack_idx = len(current_cart) + 1
                 pack_note = (data.get("pack_note") or "").strip()
                 pack_total, unit_price, qty, items_list = calculate_pack_price(data)
@@ -516,9 +516,9 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 next_action = data.get("next_action")
                 if next_action == "add_another":
                     next_screen_map = {
-                        "BUILD_CUSTOM_PACK_SCREEN": "BUILD_CUSTOM_PACK_2",
-                        "BUILD_CUSTOM_PACK_2": "BUILD_CUSTOM_PACK_3",
-                        "BUILD_CUSTOM_PACK_3": "BUILD_CUSTOM_PACK_4"
+                        "BUILD_CUSTOM_PACK_SCREEN": "BUILD_CUSTOM_PACK_TWO",
+                        "BUILD_CUSTOM_PACK_TWO": "BUILD_CUSTOM_PACK_THREE",
+                        "BUILD_CUSTOM_PACK_THREE": "BUILD_CUSTOM_PACK_FOUR"
                     }
                     target_screen = next_screen_map.get(screen, "CART_REVIEW_SCREEN")
                     resp_payload = {
