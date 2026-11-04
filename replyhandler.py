@@ -864,11 +864,13 @@ async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
 
 
 
-async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str):
+async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str, db: AsyncSession = None):
 
     """
 
     Dispatches the food_order_address WhatsApp Flow to let customer pick restaurant & enter delivery address.
+
+    Resolves customer registration and saved address to personalize the greeting and flow initial state.
 
     Falls back to food catalog menu if flow ID is not configured yet.
 
@@ -884,17 +886,49 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str)
 
         return
 
+    is_registered = False
+    customer_name = ""
+    saved_address = ""
+    saved_phone = sender_wa_number
 
+    try:
+        from routers.flow_endpoint import resolve_customer_details
+        if db:
+            is_reg, name, addr, phone = await resolve_customer_details(sender_wa_number, db)
+        else:
+            from database import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
+                is_reg, name, addr, phone = await resolve_customer_details(sender_wa_number, session)
+        is_registered = is_reg
+        customer_name = name
+        saved_address = addr
+        if phone:
+            saved_phone = phone
+    except Exception as e:
+        print(f"Error resolving customer details in send_food_order_flow: {e}")
 
     flow_token = {
         "action": "food_order_address",
-        "sender_wa_number": sender_wa_number
+        "sender_wa_number": sender_wa_number,
+        "is_registered": is_registered,
+        "customer_name": customer_name,
+        "saved_address": saved_address,
+        "saved_phone": saved_phone
     }
+
+    if is_registered and customer_name:
+        greeting = f"Welcome back, *{customer_name}*! 🍲\n"
+    elif is_registered:
+        greeting = "Welcome back! 🍲\n"
+    else:
+        greeting = "Welcome to InTime Food Delivery! 🍲\n"
+
+    message_body = f"{greeting}Please select your restaurant and confirm your delivery address to browse the menu and order 🛵💨"
 
     await send_custom_flow(
         wa_number=sender_wa_number,
         flow_token=flow_token,
-        message="Please select your restaurant and confirm your delivery address to browse the menu and order 🍲🛵💨",
+        message=message_body,
         header="Order Food 🍲",
         flow_id=flow_id,
         flow_cta="Select Address",
@@ -4783,7 +4817,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     if any(trigger in lower_clean for trigger in food_triggers):
 
-        await send_food_order_flow(sender_wa_number, auth, graph_url)
+        await send_food_order_flow(sender_wa_number, auth, graph_url, db=db)
 
         return
 

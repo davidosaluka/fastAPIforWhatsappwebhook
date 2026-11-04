@@ -5,7 +5,7 @@ import base64
 import re
 from typing import Dict, Any, List
 from fastapi import APIRouter, Request, Response, HTTPException, Depends
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 import models
@@ -345,6 +345,143 @@ def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
     return "\n\n".join(lines), subtotal
 
 
+
+def normalize_phone_number(phone: str) -> str:
+    if not phone:
+        return ""
+    clean = re.sub(r'[^\d]', '', str(phone))
+    if clean.startswith("0") and len(clean) == 11:
+        return "234" + clean[1:]
+    if len(clean) == 10 and clean[0] in ['7', '8', '9']:
+        return "234" + clean
+    return clean
+
+
+def get_phone_variants(phone: str) -> list[str]:
+    if not phone:
+        return []
+    raw_str = str(phone)
+    clean_digits = re.sub(r'[^\d]', '', raw_str)
+    variants = set([phone, raw_str, clean_digits])
+    if clean_digits:
+        variants.add(f"+{clean_digits}")
+
+    canonical = normalize_phone_number(phone)
+    if len(canonical) == 13 and canonical.startswith("234"):
+        local_fmt = "0" + canonical[3:]
+        plus_fmt = "+" + canonical
+        raw_fmt = canonical[3:]
+        variants.update([canonical, local_fmt, plus_fmt, raw_fmt])
+    return [v for v in variants if v]
+
+
+async def resolve_customer_details(sender_wa: str, db: AsyncSession) -> tuple[bool, str, str, str]:
+    """
+    Resolves customer registration status and previous saved address.
+    Checks models.User first (with phone variants), then past orders in models.Orders.
+    Returns: (is_registered, customer_name, saved_address, saved_phone)
+    """
+    if not sender_wa:
+        return False, "", "", ""
+
+    clean_digits = re.sub(r'[^\d]', '', str(sender_wa))
+    clean_last_10 = clean_digits[-10:] if len(clean_digits) >= 10 else clean_digits
+    possible_numbers = get_phone_variants(sender_wa)
+
+    is_registered = False
+    customer_name = ""
+    saved_address = ""
+    saved_phone = sender_wa
+
+    # 1. Primary check: models.User table
+    try:
+        user_stmt = select(models.User).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        )
+        user_res = await db.execute(user_stmt)
+        user_obj = user_res.scalars().first()
+        if user_obj:
+            is_registered = True
+            raw_name = (user_obj.name or "").strip()
+            if raw_name and raw_name.lower() not in ["customer", "none", "null", "user"]:
+                customer_name = raw_name
+            # Check address column on User table
+            user_addr = getattr(user_obj, "address", None)
+            if user_addr and isinstance(user_addr, str):
+                addr_clean = user_addr.strip()
+                if len(addr_clean) >= 5 and addr_clean.lower() not in ["customer address", "none", "null", "dropoff location", "pickup location", "undefined"]:
+                    saved_address = addr_clean
+                    saved_phone = (user_obj.display_phone_number or user_obj.wa_id or sender_wa).strip()
+    except Exception as u_err:
+        logger.warning(f"Error querying models.User for {sender_wa}: {u_err}")
+
+    # 2. Secondary check: Query models.Orders if address not stored on User record
+    if not saved_address:
+        try:
+            ord_stmt = (
+                select(models.Orders)
+                .where(
+                    (models.Orders.sender_wa_number.in_(possible_numbers)) |
+                    (models.Orders.sender_wa_number.like(f"%{clean_last_10}%"))
+                )
+                .order_by(models.Orders.created_at.desc())
+                .limit(10)
+            )
+            ord_res = await db.execute(ord_stmt)
+            orders = ord_res.scalars().all()
+
+            # Priority 2a: Recent food order dropoff
+            for o in orders:
+                if o.package_image_id == "FOOD_ORDER":
+                    addr = (o.dropoff_location_name or "").strip()
+                    if addr and len(addr) >= 5 and addr.lower() not in ["customer address", "none", "null", "dropoff location", "undefined"]:
+                        saved_address = addr
+                        saved_phone = (o.recipient_phone_number or sender_wa).strip()
+                        break
+
+            # Priority 2b: Any recent order dropoff
+            if not saved_address:
+                for o in orders:
+                    addr = (o.dropoff_location_name or "").strip()
+                    if addr and len(addr) >= 5 and addr.lower() not in ["customer address", "none", "null", "dropoff location", "undefined"]:
+                        saved_address = addr
+                        saved_phone = (o.recipient_phone_number or sender_wa).strip()
+                        break
+
+            # Priority 2c: Parcel order pickup location (customer dispatched parcel from their home)
+            if not saved_address:
+                for o in orders:
+                    addr = (o.pickup_location_name or "").strip()
+                    if addr and len(addr) >= 5 and addr.lower() not in ["pickup location", "customer address", "none", "null", "undefined"] and "madam g" not in addr.lower() and "restaurant" not in addr.lower():
+                        saved_address = addr
+                        saved_phone = (o.recipient_phone_number or sender_wa).strip()
+                        break
+
+            # Backfill to user record if user is registered so future lookups are immediate
+            if saved_address and is_registered:
+                try:
+                    await db.execute(
+                        update(models.User)
+                        .where(
+                            (models.User.display_phone_number.in_(possible_numbers)) |
+                            (models.User.wa_id.in_(possible_numbers)) |
+                            (models.User.phone_number_id.in_(possible_numbers))
+                        )
+                        .values(address=saved_address)
+                    )
+                    await db.commit()
+                except Exception as bf_err:
+                    logger.warning(f"Failed to backfill user.address: {bf_err}")
+
+        except Exception as o_err:
+            logger.warning(f"Error querying orders for {sender_wa}: {o_err}")
+
+    return is_registered, customer_name, saved_address, saved_phone
+
+
 @router.post("/flow/endpoint")
 async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -387,68 +524,89 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
             return Response(content=enc_response, media_type="text/plain")
 
-        # Parse flow token data
+        # Parse flow token data safely (handles dict, JSON string, plain string, int without throwing AttributeError)
         flow_token = {}
-        if flow_token_raw:
-            try:
-                flow_token = json.loads(flow_token_raw) if isinstance(flow_token_raw, str) else flow_token_raw
-            except Exception:
-                flow_token = {"sender_wa_number": str(flow_token_raw)}
+        sender_wa = ""
+        token_saved_addr = ""
+        token_saved_phone = ""
+        token_cust_name = ""
+        token_is_registered = False
 
-        sender_wa = flow_token.get("sender_wa_number", "")
+        if isinstance(flow_token_raw, dict):
+            flow_token = flow_token_raw
+        elif isinstance(flow_token_raw, (str, int)):
+            raw_s = str(flow_token_raw).strip()
+            if raw_s.startswith("{"):
+                try:
+                    parsed = json.loads(raw_s)
+                    if isinstance(parsed, dict):
+                        flow_token = parsed
+                    else:
+                        sender_wa = str(parsed)
+                except Exception:
+                    sender_wa = raw_s
+            else:
+                sender_wa = raw_s
 
-        # 2. Opening the Flow (action can be INIT, navigate, or initial data_exchange)
+        if isinstance(flow_token, dict):
+            sender_wa = str(flow_token.get("sender_wa_number") or flow_token.get("wa_id") or flow_token.get("phone") or sender_wa or "").strip()
+            token_saved_addr = str(flow_token.get("saved_address") or flow_token.get("delivery_address") or "").strip()
+            token_saved_phone = str(flow_token.get("saved_phone") or flow_token.get("contact_phone") or "").strip()
+            token_cust_name = str(flow_token.get("customer_name") or "").strip()
+            token_is_registered = bool(flow_token.get("is_registered", False))
+
+        # 2. Opening the Flow (action can be INIT, navigate, or opening data_exchange)
         is_opening_request = (
             action in ["INIT", "navigate"] or
-            (action == "data_exchange" and not screen and not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and not data.get("use_previous") and not data.get("bulk_order_text"))
+            (action == "data_exchange" and (not screen or screen == "CONFIRM_ADDRESS_SCREEN") and
+             not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and
+             not data.get("use_previous") and not data.get("bulk_order_text") and not data.get("cart_packs"))
         )
         if is_opening_request:
-            saved_address = ""
-            saved_phone = sender_wa
-            has_previous = False
+            # Full lookup for registered user and past saved address
+            is_reg, cust_name, saved_address, saved_phone = await resolve_customer_details(sender_wa, db)
+            
+            # Merge with token data if available
+            is_registered = is_reg or token_is_registered
+            customer_name = cust_name or token_cust_name
+            saved_address = saved_address or token_saved_addr
+            saved_phone = saved_phone or token_saved_phone or sender_wa
 
-            if sender_wa:
-                try:
-                    q = (
-                        select(models.Orders)
-                        .where(models.Orders.sender_wa_number.like(f"%{sender_wa[-10:]}"))
-                        .where(models.Orders.dropoff_location_name.isnot(None))
-                        .order_by(models.Orders.created_at.desc())
-                        .limit(5)
-                    )
-                    res = await db.execute(q)
-                    orders_list = res.scalars().all()
-                    for ord_item in orders_list:
-                        addr = (ord_item.dropoff_location_name or "").strip()
-                        if addr and addr.lower() not in ["customer address", "none", "null", ""] and len(addr) >= 5:
-                            saved_address = addr
-                            saved_phone = (ord_item.recipient_phone_number or sender_wa).strip()
-                            has_previous = True
-                            break
-                except Exception as db_err:
-                    logger.warning(f"Error querying previous orders for {sender_wa}: {db_err}")
+            has_valid_saved_address = bool(saved_address and len(saved_address) >= 5 and saved_address.lower() not in ["customer address", "none", "null", "dropoff location", "undefined"])
 
-            if has_previous and saved_address:
-                # Returning customer with valid address -> Show address confirmation prompt
+            if has_valid_saved_address:
+                # Registered / returning customer with a saved address -> Show CONFIRM_ADDRESS_SCREEN
+                greeting = f"Welcome back, *{customer_name}*! 🍲" if customer_name else "Welcome back! 🍲"
+                address_display = (
+                    f"{greeting}\n\n"
+                    f"📍 Saved Address:\n{saved_address}\n\n"
+                    f"📞 Receiver's Phone: {saved_phone}"
+                )
                 resp_payload = {
                     "version": "3.0",
                     "screen": "CONFIRM_ADDRESS_SCREEN",
                     "data": {
                         "saved_address": saved_address,
                         "saved_phone": saved_phone,
-                        "address_display": f"📍 Saved Address: {saved_address}\n📞 Receiver's Phone: {saved_phone}",
+                        "delivery_address": saved_address,
+                        "contact_phone": saved_phone,
+                        "address_display": address_display,
                         "use_previous": "yes"
                     }
                 }
             else:
-                # New customer or no saved address -> Directly show RECOMMEND address input screen
+                # User has no saved address -> Route directly to RECOMMEND (Address Input screen)
                 resp_payload = {
                     "version": "3.0",
                     "screen": "RECOMMEND",
                     "data": {
                         "screen_0_HouseFlat_Number_0": "",
                         "screen_0_Street_Name_1": "",
-                        "screen_0_Receivers_Number_2": saved_phone
+                        "screen_0_Receivers_Number_2": saved_phone or sender_wa or "",
+                        "HouseFlat_Number_801bd0": "",
+                        "Street_Name_17f2ce": "",
+                        "Receivers_Number_eb5784": saved_phone or sender_wa or "",
+                        "contact_phone": saved_phone or sender_wa or ""
                     }
                 }
 
@@ -497,8 +655,17 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             if screen == "CONFIRM_ADDRESS_SCREEN":
                 use_prev = data.get("use_previous", "yes")
                 saved_addr = (data.get("saved_address") or data.get("delivery_address") or delivery_address or "").strip()
-                if use_prev == "yes" and len(saved_addr) >= 4:
-                    # Proceed directly to Restaurant selection (RATE)
+                
+                # If saved_addr is missing from client data, try resolving from database
+                if not saved_addr or len(saved_addr) < 5 or saved_addr.lower() in ["customer address", "none", "null", "undefined"]:
+                    _, _, db_addr, db_phone = await resolve_customer_details(sender_wa, db)
+                    if db_addr and len(db_addr) >= 5:
+                        saved_addr = db_addr
+                        if db_phone:
+                            contact_phone = db_phone
+
+                if use_prev == "yes" and len(saved_addr) >= 5 and saved_addr.lower() not in ["customer address", "none", "null", "undefined"]:
+                    # Proceed directly to Restaurant selection (RATE) with verified address
                     resp_payload = {
                         "version": "3.0",
                         "screen": "RATE",
@@ -511,14 +678,18 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         }
                     }
                 else:
-                    # User chose to enter new address OR had no saved address -> navigate to RECOMMEND
+                    # User chose "No, enter new address" OR had no valid address -> navigate to RECOMMEND
                     resp_payload = {
                         "version": "3.0",
                         "screen": "RECOMMEND",
                         "data": {
                             "screen_0_HouseFlat_Number_0": "",
                             "screen_0_Street_Name_1": "",
-                            "screen_0_Receivers_Number_2": contact_phone
+                            "screen_0_Receivers_Number_2": contact_phone or sender_wa or "",
+                            "HouseFlat_Number_801bd0": "",
+                            "Street_Name_17f2ce": "",
+                            "Receivers_Number_eb5784": contact_phone or sender_wa or "",
+                            "contact_phone": contact_phone or sender_wa or ""
                         }
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -526,8 +697,40 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: RECOMMEND (Address Entry) ---
             elif screen == "RECOMMEND":
-                if not delivery_address or delivery_address.lower() in ["customer address", "none", ""]:
-                    delivery_address = f"{house_num}, {street_name}".strip(", ")
+                house_num = (data.get("HouseFlat_Number_801bd0") or data.get("screen_0_HouseFlat_Number_0") or "").strip()
+                street_name = (data.get("Street_Name_17f2ce") or data.get("screen_0_Street_Name_1") or "").strip()
+                contact_phone = (
+                    data.get("Receivers_Number_eb5784") or 
+                    data.get("screen_0_Receivers_Number_2") or 
+                    data.get("contact_phone") or 
+                    sender_wa
+                )
+
+                if street_name:
+                    if house_num and house_num.lower() not in street_name.lower():
+                        delivery_address = f"{house_num}, {street_name}".strip(", ")
+                    else:
+                        delivery_address = street_name
+                elif not delivery_address:
+                    delivery_address = house_num or "Customer Address"
+
+                # Persist this address to models.User immediately so it is remembered permanently
+                if sender_wa and delivery_address and len(delivery_address) >= 5 and delivery_address != "Customer Address":
+                    try:
+                        variants = get_phone_variants(sender_wa)
+                        await db.execute(
+                            update(models.User)
+                            .where(
+                                (models.User.display_phone_number.in_(variants)) |
+                                (models.User.wa_id.in_(variants)) |
+                                (models.User.phone_number_id.in_(variants))
+                            )
+                            .values(address=delivery_address)
+                        )
+                        await db.commit()
+                    except Exception as cache_err:
+                        logger.warning(f"Failed to cache address for {sender_wa}: {cache_err}")
+
                 resp_payload = {
                     "version": "3.0",
                     "screen": "RATE",
@@ -535,7 +738,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "screen_0_HouseFlat_Number_0": house_num,
-                        "screen_0_Street_Name_1": street_name,
+                        "screen_0_Street_Name_1": street_name or delivery_address,
                         "screen_0_Receivers_Number_2": contact_phone
                     }
                 }
@@ -739,8 +942,13 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
                 delivery_fee = calculate_delivery_fee(total_pack_count)
                 grand_total = subtotal + delivery_fee
+                final_address = delivery_address or street_name or data.get("saved_address") or ""
+                if not final_address or final_address.lower() in ["customer address", "none", "null", "undefined", ""]:
+                    _, _, db_addr, _ = await resolve_customer_details(sender_wa, db)
+                    final_address = db_addr or "Address confirmed at delivery"
+
                 confirm_display = (
-                    f"📍 *Delivery:* {delivery_address}\n"
+                    f"📍 *Delivery:* {final_address}\n"
                     f"📞 *Receiver:* {contact_phone}\n"
                     f"🍲 *Restaurant:* {restaurant}\n"
                     f"📦 *Total Packs:* {total_pack_count} pack{'s' if total_pack_count > 1 else ''} (Delivery: ₦{delivery_fee:,})\n"
@@ -776,7 +984,11 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             "data": {
                 "screen_0_HouseFlat_Number_0": "",
                 "screen_0_Street_Name_1": "",
-                "screen_0_Receivers_Number_2": sender_wa or ""
+                "screen_0_Receivers_Number_2": sender_wa or "",
+                "HouseFlat_Number_801bd0": "",
+                "Street_Name_17f2ce": "",
+                "Receivers_Number_eb5784": sender_wa or "",
+                "contact_phone": sender_wa or ""
             }
         }
         enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)

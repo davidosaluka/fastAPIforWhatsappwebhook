@@ -254,7 +254,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         elif button_val in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
 
-            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL)
+            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL, db=db)
 
 
 
@@ -334,7 +334,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
 
-            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL)
+            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL, db=db)
 
             return
 
@@ -1007,6 +1007,22 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 await db.commit()
 
                 await db.refresh(new_food_order)
+
+                # Persist raw_address to models.User so customer's saved address is remembered
+                if raw_address and len(raw_address) >= 5 and raw_address != "Customer Address":
+                    try:
+                        await db.execute(
+                            update(models.User)
+                            .where(
+                                (models.User.display_phone_number.in_(possible_numbers)) |
+                                (models.User.wa_id.in_(possible_numbers)) |
+                                (models.User.phone_number_id.in_(possible_numbers))
+                            )
+                            .values(address=raw_address)
+                        )
+                        await db.commit()
+                    except Exception as addr_cache_err:
+                        print(f"Failed to update user address on food order: {addr_cache_err}")
 
 
 
@@ -2681,7 +2697,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
-async def createUser(name, wa_id, display_phone_number, phone_number_id, db: AsyncSession):
+async def createUser(name, wa_id, display_phone_number, phone_number_id, db: AsyncSession, address: str = None):
 
     clean_name = name or "Customer"
 
@@ -2690,6 +2706,8 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
     clean_display = re.sub(r'[^\d]', '', str(display_phone_number)) if display_phone_number else clean_wa_id
 
     clean_phone_id = str(phone_number_id) if phone_number_id else clean_wa_id
+
+    clean_address = address.strip() if address and len(address.strip()) >= 5 and address.strip().lower() not in ["customer address", "none", "null"] else None
 
 
 
@@ -2740,6 +2758,10 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         if clean_name and clean_name != "Customer":
 
             existing_user.name = clean_name
+
+        if clean_address:
+
+            existing_user.address = clean_address
 
         try:
 
@@ -2802,6 +2824,8 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         display_phone_number=clean_display,
 
         phone_number_id=clean_phone_id,
+
+        address=clean_address,
 
         is_deleted=False
 

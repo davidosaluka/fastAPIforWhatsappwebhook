@@ -118,9 +118,21 @@
         },
         "screen_0_Street_Name_1": {
           "type": "string",
-          "__example__": "Oworo Street beside Shukura Hosiptal"
+          "__example__": "Oworo Street beside Shukura Hospital"
         },
         "screen_0_Receivers_Number_2": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
+        "HouseFlat_Number_801bd0": {
+          "type": "string",
+          "__example__": "34"
+        },
+        "Street_Name_17f2ce": {
+          "type": "string",
+          "__example__": "Oworo Street beside Shukura Hospital"
+        },
+        "Receivers_Number_eb5784": {
           "type": "string",
           "__example__": "081234567890"
         }
@@ -138,14 +150,16 @@
                 "label": "House/Flat Number",
                 "required": false,
                 "input-type": "text",
-                "helper-text": "34/Flat 4"
+                "helper-text": "34/Flat 4",
+                "init-value": "${data.HouseFlat_Number_801bd0}"
               },
               {
                 "type": "TextArea",
                 "name": "Street_Name_17f2ce",
                 "label": "Street Name",
                 "required": true,
-                "helper-text": "Oworo Street beside Shukura Hospital"
+                "helper-text": "Oworo Street beside Shukura Hospital",
+                "init-value": "${data.Street_Name_17f2ce}"
               },
               {
                 "type": "TextInput",
@@ -153,7 +167,8 @@
                 "label": "Receiver's Number",
                 "required": true,
                 "input-type": "phone",
-                "helper-text": "081234567890"
+                "helper-text": "081234567890",
+                "init-value": "${data.Receivers_Number_eb5784}"
               },
               {
                 "type": "Footer",

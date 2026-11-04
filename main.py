@@ -74,13 +74,14 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             print(f"Migration note (orders add/alter cols): {e}")
 
-        # users.is_deleted (soft-delete flag)
+        # users.is_deleted (soft-delete flag) and address column
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;'))
-                print("🟢 [MIGRATION] users.is_deleted column ensured.")
+                await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;'))
+                print("🟢 [MIGRATION] users.is_deleted and users.address columns ensured.")
         except Exception as e:
-            print(f"Migration note (users is_deleted): {e}")
+            print(f"Migration note (users columns): {e}")
 
         # rider_ratings table
         try:
