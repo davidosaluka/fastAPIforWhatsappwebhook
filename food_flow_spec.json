@@ -71,7 +71,8 @@
               },
               {
                 "type": "TextBody",
-                "text": "${data.address_display}"
+                "text": "${data.address_display}",
+                "markdown": true
               },
               {
                 "type": "RadioButtonsGroup",
@@ -1410,7 +1411,8 @@
               },
               {
                 "type": "TextBody",
-                "text": "Paste your compiled WhatsApp list below. WhatsApp limits each box to 600 characters (~15 colleagues). If your list is long, continue pasting into Part 2 & Part 3!\n\nExample:\n1. Collins: Mixed rice, 1 beef, 1 egg - 2,100\n2. Hakam- jollof rice, salad, beef, water"
+                "text": "Paste your compiled WhatsApp list below. WhatsApp limits each box to 600 characters (~15 colleagues). If your list is long, continue pasting into Part 2 & Part 3!\n\nExample:\n1. Collins: Mixed rice, 1 beef, 1 egg - 2,100\n2. Hakam- jollof rice, salad, beef, water",
+                "markdown": true
               },
               {
                 "type": "TextArea",
@@ -1499,11 +1501,13 @@
               },
               {
                 "type": "TextBody",
-                "text": "${data.totals_display}"
+                "text": "${data.totals_display}",
+                "markdown": true
               },
               {
                 "type": "TextBody",
-                "text": "${data.cart_display}"
+                "text": "${data.cart_display}",
+                "markdown": true
               },
               {
                 "type": "Footer",
@@ -1600,7 +1604,8 @@
               },
               {
                 "type": "TextBody",
-                "text": "${data.confirm_display}"
+                "text": "${data.confirm_display}",
+                "markdown": true
               },
               {
                 "type": "Footer",
