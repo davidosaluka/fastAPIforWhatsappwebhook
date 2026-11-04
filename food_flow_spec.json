@@ -2,12 +2,38 @@
   "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "CONFIRM_ADDRESS_SCREEN": ["RATE", "RECOMMEND"],
-    "RECOMMEND": ["RATE"],
-    "RATE": ["PREDESIGNED_PACKS_SCREEN"],
-    "PREDESIGNED_PACKS_SCREEN": ["BUILD_CUSTOM_PACK_SCREEN", "CART_REVIEW_SCREEN"],
-    "BUILD_CUSTOM_PACK_SCREEN": ["CART_REVIEW_SCREEN"],
-    "CART_REVIEW_SCREEN": ["screen_itnvpz"],
+    "CONFIRM_ADDRESS_SCREEN": [
+      "RATE",
+      "RECOMMEND"
+    ],
+    "RECOMMEND": [
+      "RATE"
+    ],
+    "RATE": [
+      "PREDESIGNED_PACKS_SCREEN"
+    ],
+    "PREDESIGNED_PACKS_SCREEN": [
+      "BUILD_CUSTOM_PACK_SCREEN",
+      "CART_REVIEW_SCREEN"
+    ],
+    "BUILD_CUSTOM_PACK_SCREEN": [
+      "BUILD_CUSTOM_PACK_2",
+      "CART_REVIEW_SCREEN"
+    ],
+    "BUILD_CUSTOM_PACK_2": [
+      "BUILD_CUSTOM_PACK_3",
+      "CART_REVIEW_SCREEN"
+    ],
+    "BUILD_CUSTOM_PACK_3": [
+      "BUILD_CUSTOM_PACK_4",
+      "CART_REVIEW_SCREEN"
+    ],
+    "BUILD_CUSTOM_PACK_4": [
+      "CART_REVIEW_SCREEN"
+    ],
+    "CART_REVIEW_SCREEN": [
+      "screen_itnvpz"
+    ],
     "screen_itnvpz": []
   },
   "screens": [
@@ -17,7 +43,7 @@
       "data": {
         "address_display": {
           "type": "string",
-          "__example__": "📍 Saved Address: 34 Oworo Street beside Shukura Hospital\n📞 Receiver's Number: 081234567890"
+          "__example__": "📍 Saved Address: 34 Oworo Street beside Shukura Hospital\n📞 Receiver's Phone: 081234567890"
         },
         "saved_address": {
           "type": "string",
@@ -50,7 +76,7 @@
               {
                 "type": "RadioButtonsGroup",
                 "name": "use_previous",
-                "label": "Use this address?",
+                "label": "Use these details?",
                 "required": true,
                 "data-source": [
                   {
@@ -117,7 +143,7 @@
                 "name": "Street_Name_17f2ce",
                 "label": "Street Name",
                 "required": true,
-                "helper-text": "Oworo Street beside Shukura Hosiptal"
+                "helper-text": "Oworo Street beside Shukura Hospital"
               },
               {
                 "type": "TextInput",
@@ -179,7 +205,7 @@
               {
                 "type": "CheckboxGroup",
                 "name": "Restaurants_e39410",
-                "label": "Select Restaurant",
+                "label": "Restaurants",
                 "required": true,
                 "data-source": [
                   {
@@ -190,7 +216,7 @@
               },
               {
                 "type": "Footer",
-                "label": "Next",
+                "label": "Continue",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
@@ -210,16 +236,8 @@
     },
     {
       "id": "PREDESIGNED_PACKS_SCREEN",
-      "title": "Madam G Restaurant",
+      "title": "Popular Combos",
       "data": {
-        "delivery_address": {
-          "type": "string",
-          "__example__": "34 Oworo Street"
-        },
-        "contact_phone": {
-          "type": "string",
-          "__example__": "081234567890"
-        },
         "restaurant": {
           "type": "string",
           "__example__": "Madam G Restaurant"
@@ -228,16 +246,20 @@
           "type": "string",
           "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
         },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
         "cart_packs": {
           "type": "array",
           "items": {
             "type": "object"
           },
           "__example__": []
-        },
-        "pack_quantity": {
-          "type": "string",
-          "__example__": "1"
         }
       },
       "layout": {
@@ -249,61 +271,49 @@
             "children": [
               {
                 "type": "Image",
-                "src": "${data.restaurant_logo}"
+                "src": "${data.restaurant_logo}",
+                "scale-type": "contain",
+                "aspect-ratio": 1.0
               },
               {
                 "type": "TextHeading",
                 "text": "Chef's Special Packs 🍱"
               },
               {
-                "type": "TextBody",
-                "text": "Select a popular combo below, or choose 'Skip to Custom Pack' to customize your own meal:"
-              },
-              {
                 "type": "RadioButtonsGroup",
                 "name": "selected_pack",
-                "label": "Select a Meal Pack",
+                "label": "Choose a Pack",
                 "required": true,
                 "data-source": [
                   {
-                    "id": "pack_classic_jollof",
-                    "title": "Classic Jollof (₦5,300)",
-                    "description": "Jollof Rice + Medium Chicken + Fried Plantain"
+                    "id": "skip_to_custom",
+                    "title": "🛠️ Build Custom Pack"
                   },
                   {
-                    "id": "pack_swallow_combo",
-                    "title": "Swallow Special (₦1,400)",
-                    "description": "Semo + Egusi Soup + Goat Meat"
+                    "id": "pack_classic_jollof",
+                    "title": "Classic Jollof (₦5,300)"
+                  },
+                  {
+                    "id": "pack_swallow_special",
+                    "title": "Swallow Special (₦1,400)"
                   },
                   {
                     "id": "pack_fried_feast",
-                    "title": "Fried Feast (₦3,300)",
-                    "description": "Fried Rice + Big Beef (2 pcs) + Salad + Coke"
+                    "title": "Fried Feast (₦3,300)"
                   },
                   {
                     "id": "pack_rice_beans",
-                    "title": "Rice & Beans Combo (₦2,300)",
-                    "description": "White Rice and Beans + Big Beef (1 pc) + Plantain"
-                  },
-                  {
-                    "id": "skip_to_custom",
-                    "title": "🛠️ Build Custom Pack",
-                    "description": "Build your own meal: Rice/Swallow + Soup + Protein + Extras"
+                    "title": "Rice & Beans Combo (₦2,300)"
                   }
                 ]
               },
               {
-                "type": "Dropdown",
+                "type": "TextInput",
                 "name": "pack_quantity",
-                "label": "Pack Quantity",
-                "required": true,
-                "data-source": [
-                  { "id": "1", "title": "1 Pack" },
-                  { "id": "2", "title": "2 Packs" },
-                  { "id": "3", "title": "3 Packs" },
-                  { "id": "4", "title": "4 Packs" },
-                  { "id": "5", "title": "5 Packs" }
-                ]
+                "label": "Pack Multiplier",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Copies of this pack (default 1)"
               },
               {
                 "type": "TextInput",
@@ -311,7 +321,7 @@
                 "label": "Pack Note",
                 "required": false,
                 "input-type": "text",
-                "helper-text": "e.g. extra sauce, separate pack"
+                "helper-text": "e.g. extra spicy / no pepper"
               },
               {
                 "type": "Footer",
@@ -336,16 +346,8 @@
     },
     {
       "id": "BUILD_CUSTOM_PACK_SCREEN",
-      "title": "Custom Pack Builder",
+      "title": "Custom Pack 1 🍱",
       "data": {
-        "delivery_address": {
-          "type": "string",
-          "__example__": "34 Oworo Street"
-        },
-        "contact_phone": {
-          "type": "string",
-          "__example__": "081234567890"
-        },
         "restaurant": {
           "type": "string",
           "__example__": "Madam G Restaurant"
@@ -354,16 +356,20 @@
           "type": "string",
           "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
         },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
         "cart_packs": {
           "type": "array",
           "items": {
             "type": "object"
           },
           "__example__": []
-        },
-        "pack_quantity": {
-          "type": "string",
-          "__example__": "1"
         }
       },
       "layout": {
@@ -375,11 +381,13 @@
             "children": [
               {
                 "type": "Image",
-                "src": "${data.restaurant_logo}"
+                "src": "${data.restaurant_logo}",
+                "scale-type": "contain",
+                "aspect-ratio": 1.0
               },
               {
                 "type": "TextHeading",
-                "text": "Build Your Meal Pack 🛠️"
+                "text": "Custom Pack 1 🍱"
               },
               {
                 "type": "Dropdown",
@@ -387,14 +395,42 @@
                 "label": "1. Base Meal",
                 "required": true,
                 "data-source": [
-                  { "id": "rice_jollof", "title": "Jollof Rice (₦1,300)" },
-                  { "id": "rice_fried", "title": "Fried Rice (₦1,300)" },
-                  { "id": "rice_mixed", "title": "Mixed Rice (₦1,300)" },
-                  { "id": "rice_white", "title": "White Rice (₦1,300)" },
-                  { "id": "rice_white_beans", "title": "White Rice & Beans (₦1,300)" },
-                  { "id": "swallow_semo", "title": "Semo (₦700)" },
-                  { "id": "swallow_fufu", "title": "Fufu (₦700)" },
-                  { "id": "base_none", "title": "No Base Meal (₦0)" }
+                  {
+                    "id": "rice_jollof",
+                    "title": "Jollof Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_fried",
+                    "title": "Fried Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white",
+                    "title": "White Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_mixed",
+                    "title": "Mixed Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white_beans",
+                    "title": "White Rice & Beans (₦1,300)"
+                  },
+                  {
+                    "id": "swallow_semo",
+                    "title": "Semo (₦700)"
+                  },
+                  {
+                    "id": "swallow_fufu",
+                    "title": "Fufu (₦700)"
+                  },
+                  {
+                    "id": "base_moimoi",
+                    "title": "Moi Moi Base (₦1,000)"
+                  },
+                  {
+                    "id": "base_none",
+                    "title": "No Base Meal (₦0)"
+                  }
                 ]
               },
               {
@@ -403,30 +439,98 @@
                 "label": "2. Soup Choice",
                 "required": true,
                 "data-source": [
-                  { "id": "soup_none", "title": "No Soup (₦0)" },
-                  { "id": "soup_egusi", "title": "Egusi Soup (₦200)" },
-                  { "id": "soup_ogbono", "title": "Ogbono Soup (₦200)" },
-                  { "id": "soup_mixed", "title": "Mixed Ogbono & Egusi (₦200)" },
-                  { "id": "soup_efo", "title": "Vegetable: Efo Riro (₦500)" }
+                  {
+                    "id": "soup_stew",
+                    "title": "Stew (₦0)"
+                  },
+                  {
+                    "id": "soup_egusi",
+                    "title": "Egusi Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_ogbono",
+                    "title": "Ogbono Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_mixed",
+                    "title": "Mixed Egusi & Ogbono (₦200)"
+                  },
+                  {
+                    "id": "soup_efo",
+                    "title": "Vegetable/Efo Riro (₦500)"
+                  },
+                  {
+                    "id": "soup_none",
+                    "title": "No Soup (₦0)"
+                  }
                 ]
               },
               {
+                "type": "TextSubheading",
+                "text": "3. Proteins & Quantity"
+              },
+              {
+                "type": "TextInput",
+                "name": "beef_qty",
+                "label": "Beef (₦200/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of beef (e.g. 2, 10)"
+              },
+              {
+                "type": "TextInput",
+                "name": "egg_qty",
+                "label": "Egg (₦300/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Boiled eggs (e.g. 1)"
+              },
+              {
                 "type": "Dropdown",
-                "name": "protein",
-                "label": "3. Protein / Meat",
-                "required": true,
+                "name": "chicken",
+                "label": "Chicken Option",
+                "required": false,
                 "data-source": [
-                  { "id": "protein_none", "title": "No Protein (₦0)" },
-                  { "id": "protein_chicken_small", "title": "Small Chicken (₦3,000)" },
-                  { "id": "protein_chicken_med", "title": "Medium Chicken (₦3,500)" },
-                  { "id": "protein_chicken_big", "title": "Big Chicken (₦4,000)" },
-                  { "id": "protein_beef_big_1", "title": "Big Beef - 1 piece (₦500)" },
-                  { "id": "protein_beef_big_2", "title": "Big Beef - 2 pieces (₦1,000)" },
-                  { "id": "protein_beef_small_2", "title": "Small Beef - 2 pieces (₦400)" },
-                  { "id": "protein_goat", "title": "Goat Meat (₦500)" },
-                  { "id": "protein_goat_soup", "title": "Goat Meat Pepper Soup (₦2,000)" },
-                  { "id": "protein_egg_fried", "title": "Fried Egg (₦1,000)" },
-                  { "id": "protein_egg_boiled", "title": "Boiled Egg (₦300)" }
+                  {
+                    "id": "chicken_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_chicken_small",
+                    "title": "Small Chicken (₦3,000)"
+                  },
+                  {
+                    "id": "protein_chicken_med",
+                    "title": "Medium Chicken (₦3,500)"
+                  },
+                  {
+                    "id": "protein_chicken_big",
+                    "title": "Big Chicken (₦4,000)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "goat_qty",
+                "label": "Goat Meat (₦500/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of goat meat (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "fish",
+                "label": "Fish Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "fish_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_fish",
+                    "title": "Fried Fish (₦1,000)"
+                  }
                 ]
               },
               {
@@ -435,11 +539,30 @@
                 "label": "4. Sides & Extras",
                 "required": false,
                 "data-source": [
-                  { "id": "extra_plantain_1", "title": "Plantain 1 serv (₦500)" },
-                  { "id": "extra_plantain_2", "title": "Plantain 2 serv (₦1,000)" },
-                  { "id": "extra_moimoi_1", "title": "Moi Moi 1 wrap (₦1,000)" },
-                  { "id": "extra_moimoi_2", "title": "Moi Moi 2 wraps (₦2,000)" },
-                  { "id": "extra_salad", "title": "Salad (₦500)" }
+                  {
+                    "id": "extra_plantain_1",
+                    "title": "Plantain 1 serv (₦500)"
+                  },
+                  {
+                    "id": "extra_plantain_2",
+                    "title": "Plantain 2 serv (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_1",
+                    "title": "Moi Moi 1 wrap (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_2",
+                    "title": "Moi Moi 2 wraps (₦2,000)"
+                  },
+                  {
+                    "id": "extra_salad",
+                    "title": "Salad (₦500)"
+                  },
+                  {
+                    "id": "extra_pepper_sauce",
+                    "title": "Pepper Sauce (₦200)"
+                  }
                 ]
               },
               {
@@ -448,45 +571,995 @@
                 "label": "5. Drink Choice",
                 "required": false,
                 "data-source": [
-                  { "id": "drink_none", "title": "No Drink (₦0)" },
-                  { "id": "drink_coke", "title": "Coke (₦500)" },
-                  { "id": "drink_maltina", "title": "Maltina (₦700)" },
-                  { "id": "drink_water", "title": "Water (₦300)" }
-                ]
-              },
-              {
-                "type": "Dropdown",
-                "name": "pack_quantity",
-                "label": "Pack Quantity",
-                "required": true,
-                "data-source": [
-                  { "id": "1", "title": "1 Pack" },
-                  { "id": "2", "title": "2 Packs" },
-                  { "id": "3", "title": "3 Packs" },
-                  { "id": "4", "title": "4 Packs" }
+                  {
+                    "id": "drink_none",
+                    "title": "No Drink (₦0)"
+                  },
+                  {
+                    "id": "drink_water",
+                    "title": "Water (₦300)"
+                  },
+                  {
+                    "id": "drink_coke",
+                    "title": "Coke/Fanta/Sprite (₦500)"
+                  },
+                  {
+                    "id": "drink_malt",
+                    "title": "Maltina/Amstel (₦600)"
+                  },
+                  {
+                    "id": "drink_chivita",
+                    "title": "Chivita Juice (₦1,500)"
+                  }
                 ]
               },
               {
                 "type": "TextInput",
+                "name": "pack_quantity",
+                "label": "Pack Multiplier",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Copies of this pack (default 1)"
+              },
+              {
+                "type": "TextInput",
                 "name": "pack_note",
-                "label": "Kitchen Note",
+                "label": "Pack Note",
                 "required": false,
                 "input-type": "text",
-                "helper-text": "e.g. separate soup, extra pepper"
+                "helper-text": "e.g. Collins / separate stew"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "next_action",
+                "label": "Next Step",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "add_another",
+                    "title": "➕ Add Pack 2"
+                  },
+                  {
+                    "id": "review_cart",
+                    "title": "🛒 Review Cart"
+                  }
+                ]
               },
               {
                 "type": "Footer",
-                "label": "Review Order",
+                "label": "Continue",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
                     "base_meal": "${form.base_meal}",
                     "soup": "${form.soup}",
-                    "protein": "${form.protein}",
+                    "beef_qty": "${form.beef_qty}",
+                    "egg_qty": "${form.egg_qty}",
+                    "chicken": "${form.chicken}",
+                    "goat_qty": "${form.goat_qty}",
+                    "fish": "${form.fish}",
                     "extras": "${form.extras}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
+                    "next_action": "${form.next_action}",
+                    "restaurant": "${data.restaurant}",
+                    "delivery_address": "${data.delivery_address}",
+                    "contact_phone": "${data.contact_phone}",
+                    "cart_packs": "${data.cart_packs}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "BUILD_CUSTOM_PACK_2",
+      "title": "Custom Pack 2 🍱",
+      "data": {
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Restaurant"
+        },
+        "restaurant_logo": {
+          "type": "string",
+          "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+        },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
+        "cart_packs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "__example__": []
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "flow_path",
+            "children": [
+              {
+                "type": "Image",
+                "src": "${data.restaurant_logo}",
+                "scale-type": "contain",
+                "aspect-ratio": 1.0
+              },
+              {
+                "type": "TextHeading",
+                "text": "Custom Pack 2 🍱"
+              },
+              {
+                "type": "Dropdown",
+                "name": "base_meal",
+                "label": "1. Base Meal",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "rice_jollof",
+                    "title": "Jollof Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_fried",
+                    "title": "Fried Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white",
+                    "title": "White Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_mixed",
+                    "title": "Mixed Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white_beans",
+                    "title": "White Rice & Beans (₦1,300)"
+                  },
+                  {
+                    "id": "swallow_semo",
+                    "title": "Semo (₦700)"
+                  },
+                  {
+                    "id": "swallow_fufu",
+                    "title": "Fufu (₦700)"
+                  },
+                  {
+                    "id": "base_moimoi",
+                    "title": "Moi Moi Base (₦1,000)"
+                  },
+                  {
+                    "id": "base_none",
+                    "title": "No Base Meal (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "soup",
+                "label": "2. Soup Choice",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "soup_stew",
+                    "title": "Stew (₦0)"
+                  },
+                  {
+                    "id": "soup_egusi",
+                    "title": "Egusi Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_ogbono",
+                    "title": "Ogbono Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_mixed",
+                    "title": "Mixed Egusi & Ogbono (₦200)"
+                  },
+                  {
+                    "id": "soup_efo",
+                    "title": "Vegetable/Efo Riro (₦500)"
+                  },
+                  {
+                    "id": "soup_none",
+                    "title": "No Soup (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "TextSubheading",
+                "text": "3. Proteins & Quantity"
+              },
+              {
+                "type": "TextInput",
+                "name": "beef_qty",
+                "label": "Beef (₦200/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of beef (e.g. 2, 10)"
+              },
+              {
+                "type": "TextInput",
+                "name": "egg_qty",
+                "label": "Egg (₦300/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Boiled eggs (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "chicken",
+                "label": "Chicken Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "chicken_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_chicken_small",
+                    "title": "Small Chicken (₦3,000)"
+                  },
+                  {
+                    "id": "protein_chicken_med",
+                    "title": "Medium Chicken (₦3,500)"
+                  },
+                  {
+                    "id": "protein_chicken_big",
+                    "title": "Big Chicken (₦4,000)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "goat_qty",
+                "label": "Goat Meat (₦500/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of goat meat (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "fish",
+                "label": "Fish Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "fish_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_fish",
+                    "title": "Fried Fish (₦1,000)"
+                  }
+                ]
+              },
+              {
+                "type": "CheckboxGroup",
+                "name": "extras",
+                "label": "4. Sides & Extras",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "extra_plantain_1",
+                    "title": "Plantain 1 serv (₦500)"
+                  },
+                  {
+                    "id": "extra_plantain_2",
+                    "title": "Plantain 2 serv (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_1",
+                    "title": "Moi Moi 1 wrap (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_2",
+                    "title": "Moi Moi 2 wraps (₦2,000)"
+                  },
+                  {
+                    "id": "extra_salad",
+                    "title": "Salad (₦500)"
+                  },
+                  {
+                    "id": "extra_pepper_sauce",
+                    "title": "Pepper Sauce (₦200)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "drink",
+                "label": "5. Drink Choice",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "drink_none",
+                    "title": "No Drink (₦0)"
+                  },
+                  {
+                    "id": "drink_water",
+                    "title": "Water (₦300)"
+                  },
+                  {
+                    "id": "drink_coke",
+                    "title": "Coke/Fanta/Sprite (₦500)"
+                  },
+                  {
+                    "id": "drink_malt",
+                    "title": "Maltina/Amstel (₦600)"
+                  },
+                  {
+                    "id": "drink_chivita",
+                    "title": "Chivita Juice (₦1,500)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_quantity",
+                "label": "Pack Multiplier",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Copies of this pack (default 1)"
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_note",
+                "label": "Pack Note",
+                "required": false,
+                "input-type": "text",
+                "helper-text": "e.g. Collins / separate stew"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "next_action",
+                "label": "Next Step",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "add_another",
+                    "title": "➕ Add Pack 3"
+                  },
+                  {
+                    "id": "review_cart",
+                    "title": "🛒 Review Cart"
+                  }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "base_meal": "${form.base_meal}",
+                    "soup": "${form.soup}",
+                    "beef_qty": "${form.beef_qty}",
+                    "egg_qty": "${form.egg_qty}",
+                    "chicken": "${form.chicken}",
+                    "goat_qty": "${form.goat_qty}",
+                    "fish": "${form.fish}",
+                    "extras": "${form.extras}",
+                    "drink": "${form.drink}",
+                    "pack_quantity": "${form.pack_quantity}",
+                    "pack_note": "${form.pack_note}",
+                    "next_action": "${form.next_action}",
+                    "restaurant": "${data.restaurant}",
+                    "delivery_address": "${data.delivery_address}",
+                    "contact_phone": "${data.contact_phone}",
+                    "cart_packs": "${data.cart_packs}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "BUILD_CUSTOM_PACK_3",
+      "title": "Custom Pack 3 🍱",
+      "data": {
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Restaurant"
+        },
+        "restaurant_logo": {
+          "type": "string",
+          "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+        },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
+        "cart_packs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "__example__": []
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "flow_path",
+            "children": [
+              {
+                "type": "Image",
+                "src": "${data.restaurant_logo}",
+                "scale-type": "contain",
+                "aspect-ratio": 1.0
+              },
+              {
+                "type": "TextHeading",
+                "text": "Custom Pack 3 🍱"
+              },
+              {
+                "type": "Dropdown",
+                "name": "base_meal",
+                "label": "1. Base Meal",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "rice_jollof",
+                    "title": "Jollof Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_fried",
+                    "title": "Fried Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white",
+                    "title": "White Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_mixed",
+                    "title": "Mixed Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white_beans",
+                    "title": "White Rice & Beans (₦1,300)"
+                  },
+                  {
+                    "id": "swallow_semo",
+                    "title": "Semo (₦700)"
+                  },
+                  {
+                    "id": "swallow_fufu",
+                    "title": "Fufu (₦700)"
+                  },
+                  {
+                    "id": "base_moimoi",
+                    "title": "Moi Moi Base (₦1,000)"
+                  },
+                  {
+                    "id": "base_none",
+                    "title": "No Base Meal (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "soup",
+                "label": "2. Soup Choice",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "soup_stew",
+                    "title": "Stew (₦0)"
+                  },
+                  {
+                    "id": "soup_egusi",
+                    "title": "Egusi Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_ogbono",
+                    "title": "Ogbono Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_mixed",
+                    "title": "Mixed Egusi & Ogbono (₦200)"
+                  },
+                  {
+                    "id": "soup_efo",
+                    "title": "Vegetable/Efo Riro (₦500)"
+                  },
+                  {
+                    "id": "soup_none",
+                    "title": "No Soup (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "TextSubheading",
+                "text": "3. Proteins & Quantity"
+              },
+              {
+                "type": "TextInput",
+                "name": "beef_qty",
+                "label": "Beef (₦200/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of beef (e.g. 2, 10)"
+              },
+              {
+                "type": "TextInput",
+                "name": "egg_qty",
+                "label": "Egg (₦300/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Boiled eggs (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "chicken",
+                "label": "Chicken Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "chicken_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_chicken_small",
+                    "title": "Small Chicken (₦3,000)"
+                  },
+                  {
+                    "id": "protein_chicken_med",
+                    "title": "Medium Chicken (₦3,500)"
+                  },
+                  {
+                    "id": "protein_chicken_big",
+                    "title": "Big Chicken (₦4,000)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "goat_qty",
+                "label": "Goat Meat (₦500/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of goat meat (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "fish",
+                "label": "Fish Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "fish_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_fish",
+                    "title": "Fried Fish (₦1,000)"
+                  }
+                ]
+              },
+              {
+                "type": "CheckboxGroup",
+                "name": "extras",
+                "label": "4. Sides & Extras",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "extra_plantain_1",
+                    "title": "Plantain 1 serv (₦500)"
+                  },
+                  {
+                    "id": "extra_plantain_2",
+                    "title": "Plantain 2 serv (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_1",
+                    "title": "Moi Moi 1 wrap (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_2",
+                    "title": "Moi Moi 2 wraps (₦2,000)"
+                  },
+                  {
+                    "id": "extra_salad",
+                    "title": "Salad (₦500)"
+                  },
+                  {
+                    "id": "extra_pepper_sauce",
+                    "title": "Pepper Sauce (₦200)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "drink",
+                "label": "5. Drink Choice",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "drink_none",
+                    "title": "No Drink (₦0)"
+                  },
+                  {
+                    "id": "drink_water",
+                    "title": "Water (₦300)"
+                  },
+                  {
+                    "id": "drink_coke",
+                    "title": "Coke/Fanta/Sprite (₦500)"
+                  },
+                  {
+                    "id": "drink_malt",
+                    "title": "Maltina/Amstel (₦600)"
+                  },
+                  {
+                    "id": "drink_chivita",
+                    "title": "Chivita Juice (₦1,500)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_quantity",
+                "label": "Pack Multiplier",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Copies of this pack (default 1)"
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_note",
+                "label": "Pack Note",
+                "required": false,
+                "input-type": "text",
+                "helper-text": "e.g. Collins / separate stew"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "name": "next_action",
+                "label": "Next Step",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "add_another",
+                    "title": "➕ Add Pack 4"
+                  },
+                  {
+                    "id": "review_cart",
+                    "title": "🛒 Review Cart"
+                  }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "base_meal": "${form.base_meal}",
+                    "soup": "${form.soup}",
+                    "beef_qty": "${form.beef_qty}",
+                    "egg_qty": "${form.egg_qty}",
+                    "chicken": "${form.chicken}",
+                    "goat_qty": "${form.goat_qty}",
+                    "fish": "${form.fish}",
+                    "extras": "${form.extras}",
+                    "drink": "${form.drink}",
+                    "pack_quantity": "${form.pack_quantity}",
+                    "pack_note": "${form.pack_note}",
+                    "next_action": "${form.next_action}",
+                    "restaurant": "${data.restaurant}",
+                    "delivery_address": "${data.delivery_address}",
+                    "contact_phone": "${data.contact_phone}",
+                    "cart_packs": "${data.cart_packs}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "BUILD_CUSTOM_PACK_4",
+      "title": "Custom Pack 4 🍱",
+      "data": {
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Restaurant"
+        },
+        "restaurant_logo": {
+          "type": "string",
+          "__example__": "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+        },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
+        },
+        "cart_packs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "__example__": []
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "flow_path",
+            "children": [
+              {
+                "type": "Image",
+                "src": "${data.restaurant_logo}",
+                "scale-type": "contain",
+                "aspect-ratio": 1.0
+              },
+              {
+                "type": "TextHeading",
+                "text": "Custom Pack 4 🍱"
+              },
+              {
+                "type": "Dropdown",
+                "name": "base_meal",
+                "label": "1. Base Meal",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "rice_jollof",
+                    "title": "Jollof Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_fried",
+                    "title": "Fried Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white",
+                    "title": "White Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_mixed",
+                    "title": "Mixed Rice (₦1,300)"
+                  },
+                  {
+                    "id": "rice_white_beans",
+                    "title": "White Rice & Beans (₦1,300)"
+                  },
+                  {
+                    "id": "swallow_semo",
+                    "title": "Semo (₦700)"
+                  },
+                  {
+                    "id": "swallow_fufu",
+                    "title": "Fufu (₦700)"
+                  },
+                  {
+                    "id": "base_moimoi",
+                    "title": "Moi Moi Base (₦1,000)"
+                  },
+                  {
+                    "id": "base_none",
+                    "title": "No Base Meal (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "soup",
+                "label": "2. Soup Choice",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "soup_stew",
+                    "title": "Stew (₦0)"
+                  },
+                  {
+                    "id": "soup_egusi",
+                    "title": "Egusi Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_ogbono",
+                    "title": "Ogbono Soup (₦200)"
+                  },
+                  {
+                    "id": "soup_mixed",
+                    "title": "Mixed Egusi & Ogbono (₦200)"
+                  },
+                  {
+                    "id": "soup_efo",
+                    "title": "Vegetable/Efo Riro (₦500)"
+                  },
+                  {
+                    "id": "soup_none",
+                    "title": "No Soup (₦0)"
+                  }
+                ]
+              },
+              {
+                "type": "TextSubheading",
+                "text": "3. Proteins & Quantity"
+              },
+              {
+                "type": "TextInput",
+                "name": "beef_qty",
+                "label": "Beef (₦200/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of beef (e.g. 2, 10)"
+              },
+              {
+                "type": "TextInput",
+                "name": "egg_qty",
+                "label": "Egg (₦300/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Boiled eggs (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "chicken",
+                "label": "Chicken Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "chicken_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_chicken_small",
+                    "title": "Small Chicken (₦3,000)"
+                  },
+                  {
+                    "id": "protein_chicken_med",
+                    "title": "Medium Chicken (₦3,500)"
+                  },
+                  {
+                    "id": "protein_chicken_big",
+                    "title": "Big Chicken (₦4,000)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "goat_qty",
+                "label": "Goat Meat (₦500/pc)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of goat meat (e.g. 1)"
+              },
+              {
+                "type": "Dropdown",
+                "name": "fish",
+                "label": "Fish Option",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "fish_none",
+                    "title": "None (₦0)"
+                  },
+                  {
+                    "id": "protein_fish",
+                    "title": "Fried Fish (₦1,000)"
+                  }
+                ]
+              },
+              {
+                "type": "CheckboxGroup",
+                "name": "extras",
+                "label": "4. Sides & Extras",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "extra_plantain_1",
+                    "title": "Plantain 1 serv (₦500)"
+                  },
+                  {
+                    "id": "extra_plantain_2",
+                    "title": "Plantain 2 serv (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_1",
+                    "title": "Moi Moi 1 wrap (₦1,000)"
+                  },
+                  {
+                    "id": "extra_moimoi_2",
+                    "title": "Moi Moi 2 wraps (₦2,000)"
+                  },
+                  {
+                    "id": "extra_salad",
+                    "title": "Salad (₦500)"
+                  },
+                  {
+                    "id": "extra_pepper_sauce",
+                    "title": "Pepper Sauce (₦200)"
+                  }
+                ]
+              },
+              {
+                "type": "Dropdown",
+                "name": "drink",
+                "label": "5. Drink Choice",
+                "required": false,
+                "data-source": [
+                  {
+                    "id": "drink_none",
+                    "title": "No Drink (₦0)"
+                  },
+                  {
+                    "id": "drink_water",
+                    "title": "Water (₦300)"
+                  },
+                  {
+                    "id": "drink_coke",
+                    "title": "Coke/Fanta/Sprite (₦500)"
+                  },
+                  {
+                    "id": "drink_malt",
+                    "title": "Maltina/Amstel (₦600)"
+                  },
+                  {
+                    "id": "drink_chivita",
+                    "title": "Chivita Juice (₦1,500)"
+                  }
+                ]
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_quantity",
+                "label": "Pack Multiplier",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Copies of this pack (default 1)"
+              },
+              {
+                "type": "TextInput",
+                "name": "pack_note",
+                "label": "Pack Note",
+                "required": false,
+                "input-type": "text",
+                "helper-text": "e.g. Collins / separate stew"
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "base_meal": "${form.base_meal}",
+                    "soup": "${form.soup}",
+                    "beef_qty": "${form.beef_qty}",
+                    "egg_qty": "${form.egg_qty}",
+                    "chicken": "${form.chicken}",
+                    "goat_qty": "${form.goat_qty}",
+                    "fish": "${form.fish}",
+                    "extras": "${form.extras}",
+                    "drink": "${form.drink}",
+                    "pack_quantity": "${form.pack_quantity}",
+                    "pack_note": "${form.pack_note}",
+                    "next_action": "review_cart",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
@@ -503,17 +1576,17 @@
       "id": "CART_REVIEW_SCREEN",
       "title": "Cart & Review",
       "data": {
+        "restaurant": {
+          "type": "string",
+          "__example__": "Madam G Restaurant"
+        },
         "delivery_address": {
           "type": "string",
-          "__example__": "34 Oworo Street"
+          "__example__": "34 Oworo Street beside Shukura Hospital"
         },
         "contact_phone": {
           "type": "string",
           "__example__": "081234567890"
-        },
-        "restaurant": {
-          "type": "string",
-          "__example__": "Madam G Restaurant"
         },
         "cart_packs": {
           "type": "array",
@@ -524,19 +1597,11 @@
         },
         "cart_display": {
           "type": "string",
-          "__example__": "📦 Pack 1 (x1) - ₦5,300\n_Jollof + Medium Chicken + Plantain_"
+          "__example__": "📦 Pack 1 (x1) - ₦2,300\n_Mixed Rice + 1x Beef + 1x Boiled Egg + Salad_"
         },
-        "subtotal_text": {
+        "totals_display": {
           "type": "string",
-          "__example__": "₦5,300"
-        },
-        "delivery_text": {
-          "type": "string",
-          "__example__": "₦1,000"
-        },
-        "total_text": {
-          "type": "string",
-          "__example__": "₦6,300"
+          "__example__": "💵 Food Subtotal: ₦2,300\n🛵 Delivery Fee: ₦1,000\n💳 *Grand Total: ₦3,300*"
         }
       },
       "layout": {
@@ -556,15 +1621,11 @@
               },
               {
                 "type": "TextBody",
-                "text": "💵 Food Subtotal: ${data.subtotal_text}\n🛵 Delivery Fee: ${data.delivery_text}\n💳 *Grand Total: ${data.total_text}*"
-              },
-              {
-                "type": "TextBody",
-                "text": "Tap *Proceed* to finalize your order, or use the WhatsApp Back (←) button to adjust your items."
+                "text": "${data.totals_display}"
               },
               {
                 "type": "Footer",
-                "label": "Proceed",
+                "label": "Proceed to Checkout",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
@@ -583,28 +1644,20 @@
     },
     {
       "id": "screen_itnvpz",
-      "title": "Confirm Details",
       "terminal": true,
+      "title": "Confirm Details",
       "data": {
-        "delivery_address": {
+        "confirm_display": {
           "type": "string",
-          "__example__": "34 Oworo Street"
+          "__example__": "📍 *Delivery:* 34 Oworo Street beside Shukura Hospital\n📞 *Receiver:* 081234567890\n🍲 *Restaurant:* Madam G Restaurant\n💳 *Total Amount:* ₦3,300"
         },
-        "contact_phone": {
+        "cart_summary": {
           "type": "string",
-          "__example__": "081234567890"
-        },
-        "restaurant": {
-          "type": "string",
-          "__example__": "Madam G Restaurant"
-        },
-        "cart_packs": {
-          "type": "string",
-          "__example__": "[]"
+          "__example__": "Pack 1: Mixed Rice..."
         },
         "subtotal": {
           "type": "number",
-          "__example__": 5300
+          "__example__": 2300
         },
         "delivery_fee": {
           "type": "number",
@@ -612,18 +1665,28 @@
         },
         "total_amount": {
           "type": "number",
-          "__example__": 6300
+          "__example__": 3300
         },
-        "cart_summary": {
+        "restaurant": {
           "type": "string",
-          "__example__": "Pack 1: Jollof Rice"
+          "__example__": "Madam G Restaurant"
+        },
+        "delivery_address": {
+          "type": "string",
+          "__example__": "34 Oworo Street beside Shukura Hospital"
+        },
+        "contact_phone": {
+          "type": "string",
+          "__example__": "081234567890"
         },
         "screen_1_Restaurants_0": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "__example__": ["Madam G Restaurant"]
+          "__example__": [
+            "Madam G Restaurant"
+          ]
         },
         "screen_0_HouseFlat_Number_0": {
           "type": "string",
@@ -651,11 +1714,11 @@
               },
               {
                 "type": "TextBody",
-                "text": "Please confirm all details are correct, note that receiver's phone number is the number of the person collecting the package/food item. \n\nThank you!"
+                "text": "Please confirm all details are correct. Receiver's phone number is the person collecting the package/food.\n\nThank you!"
               },
               {
                 "type": "TextBody",
-                "text": "📍 *Delivery:* ${data.delivery_address}\n📞 *Receiver:* ${data.contact_phone}\n🍲 *Restaurant:* ${data.restaurant}\n💳 *Total Amount:* ₦${data.total_amount}"
+                "text": "${data.confirm_display}"
               },
               {
                 "type": "Footer",
@@ -670,11 +1733,10 @@
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
                     "restaurant": "${data.restaurant}",
-                    "cart_packs": "${data.cart_packs}",
+                    "cart_summary": "${data.cart_summary}",
                     "subtotal": "${data.subtotal}",
                     "delivery_fee": "${data.delivery_fee}",
-                    "total_amount": "${data.total_amount}",
-                    "cart_summary": "${data.cart_summary}"
+                    "total_amount": "${data.total_amount}"
                   }
                 }
               }

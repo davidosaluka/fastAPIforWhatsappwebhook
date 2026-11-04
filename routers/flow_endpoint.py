@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import base64
 from typing import Dict, Any, List
 from fastapi import APIRouter, Request, Response, HTTPException, Depends
 from sqlalchemy import select
@@ -23,120 +24,181 @@ MEAL_PRICES = {
     # Swallows
     "swallow_semo": {"name": "Semo", "price": 700},
     "swallow_fufu": {"name": "Fufu", "price": 700},
-    "base_none": {"name": "No Base Meal (Sides/Proteins only)", "price": 0},
+    "base_moimoi": {"name": "Moi Moi Base", "price": 1000},
+    "base_none": {"name": "No Base Meal", "price": 0},
     # Soups (Ogbono + Egusi mix is same single price ₦200)
+    "soup_stew": {"name": "Stew", "price": 0},
     "soup_egusi": {"name": "Egusi Soup", "price": 200},
     "soup_ogbono": {"name": "Ogbono Soup", "price": 200},
     "soup_mixed": {"name": "Mixed (Ogbono & Egusi)", "price": 200},
     "soup_efo": {"name": "Vegetable (Efo Riro)", "price": 500},
     "soup_none": {"name": "No Soup", "price": 0},
     # Proteins
+    "chicken_none": {"name": "No Chicken", "price": 0},
     "protein_chicken_small": {"name": "Small Chicken", "price": 3000},
     "protein_chicken_med": {"name": "Medium Chicken", "price": 3500},
     "protein_chicken_big": {"name": "Big Chicken", "price": 4000},
-    "protein_beef_big_1": {"name": "Big Beef (1 piece)", "price": 500},
-    "protein_beef_big_2": {"name": "Big Beef (2 pieces)", "price": 1000},
-    "protein_beef_small_2": {"name": "Small Beef (2 pieces)", "price": 400},
-    "protein_goat": {"name": "Goat Meat", "price": 500},
-    "protein_goat_soup": {"name": "Goat Meat Pepper Soup", "price": 2000},
-    "protein_egg_fried": {"name": "Fried Egg", "price": 1000},
-    "protein_egg_boiled": {"name": "Boiled Egg", "price": 300},
-    "protein_none": {"name": "No Protein", "price": 0},
+    "fish_none": {"name": "No Fish", "price": 0},
+    "protein_fish": {"name": "Fried Fish", "price": 1000},
     # Extras & Sides
-    "extra_plantain_1": {"name": "Fried Plantain (1 serving)", "price": 500},
-    "extra_plantain_2": {"name": "Fried Plantain (2 servings)", "price": 1000},
-    "extra_moimoi_1": {"name": "Moi Moi (1 wrap)", "price": 1000},
-    "extra_moimoi_2": {"name": "Moi Moi (2 wraps)", "price": 2000},
+    "extra_plantain_1": {"name": "Plantain 1 serv", "price": 500},
+    "extra_plantain_2": {"name": "Plantain 2 serv", "price": 1000},
+    "extra_moimoi_1": {"name": "Moi Moi 1 wrap", "price": 1000},
+    "extra_moimoi_2": {"name": "Moi Moi 2 wraps", "price": 2000},
     "extra_salad": {"name": "Salad", "price": 500},
+    "extra_pepper_sauce": {"name": "Pepper Sauce", "price": 200},
     # Drinks
-    "drink_coke": {"name": "Coke", "price": 500},
-    "drink_maltina": {"name": "Maltina", "price": 700},
+    "drink_coke": {"name": "Coke/Fanta/Sprite", "price": 500},
+    "drink_malt": {"name": "Maltina/Amstel", "price": 600},
     "drink_water": {"name": "Water", "price": 300},
+    "drink_chivita": {"name": "Chivita Juice", "price": 1500},
     "drink_none": {"name": "No Drink", "price": 0},
 }
 
 # Popular pre-designed packs
 PREDESIGNED_PACKS = {
     "pack_classic_jollof": {
-        "title": "Madam G Classic Jollof",
-        "description": "Jollof Rice + Medium Chicken + Fried Plantain",
+        "title": "Classic Jollof Pack",
+        "description": "Jollof Rice + Medium Chicken + Plantain",
         "price": 5300,
         "items": ["Jollof Rice (₦1,300)", "Medium Chicken (₦3,500)", "Plantain (₦500)"]
     },
-    "pack_swallow_combo": {
-        "title": "Madam G Swallow Special",
-        "description": "Semo + Egusi Soup + Goat Meat",
+    "pack_swallow_special": {
+        "title": "Swallow Special",
+        "description": "Semo + Egusi Soup + 1x Goat Meat",
         "price": 1400,
-        "items": ["Semo (₦700)", "Egusi Soup (₦200)", "Goat Meat (₦500)"]
+        "items": ["Semo (₦700)", "Egusi Soup (₦200)", "1x Goat Meat (₦500)"]
     },
     "pack_fried_feast": {
-        "title": "Madam G Fried Feast",
-        "description": "Fried Rice + Big Beef (2 pcs) + Salad + Coke",
+        "title": "Fried Feast",
+        "description": "Fried Rice + 2x Beef + Salad + Coke",
         "price": 3300,
-        "items": ["Fried Rice (₦1,300)", "Big Beef 2pcs (₦1,000)", "Salad (₦500)", "Coke (₦500)"]
+        "items": ["Fried Rice (₦1,300)", "2x Beef (₦400)", "Salad (₦500)", "Plantain 1 serv (₦500)", "Coke (₦500)"]
     },
     "pack_rice_beans": {
-        "title": "White Rice & Beans Special",
-        "description": "White Rice and Beans + Big Beef (1 pc) + Plantain",
+        "title": "Rice & Beans Combo",
+        "description": "White Rice and Beans + Stew + 2x Beef + Plantain",
         "price": 2300,
-        "items": ["White Rice and Beans (₦1,300)", "Big Beef 1pc (₦500)", "Plantain (₦500)"]
+        "items": ["White Rice & Beans (₦1,300)", "Stew (₦0)", "2x Beef (₦400)", "Plantain (₦500)"]
     }
 }
 
-LOGO_URL = "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+# Load Base64 logo data URI for fast and offline image rendering on mobile WhatsApp
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+LOGO_THUMB_PATH = os.path.join(STATIC_DIR, "madam_g_logo_thumb.jpg")
+LOGO_RAW_PATH = os.path.join(STATIC_DIR, "madam_g_logo.jpg")
+
+LOGO_DATA_URI = "https://fastapiforwhatsappwebhook-production.up.railway.app/static/madam_g_logo.jpg"
+for p in [LOGO_THUMB_PATH, LOGO_RAW_PATH]:
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                b64_str = base64.b64encode(f.read()).decode("utf-8")
+            LOGO_DATA_URI = f"data:image/jpeg;base64,{b64_str}"
+            break
+        except Exception as e:
+            logger.warning(f"Failed to encode logo from {p}: {e}")
 
 
-def calculate_pack_price(pack_data: dict) -> tuple[int, list[str]]:
-    """Calculates total price and item descriptions for a custom pack."""
-    total = 0
+def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
+    """Calculates total pack price, unit price, quantity, and item descriptions."""
+    unit_price = 0
     items = []
 
-    # Base
+    # 1. Base meal
     base_key = pack_data.get("base_meal")
     if base_key and base_key in MEAL_PRICES:
         item = MEAL_PRICES[base_key]
         if item["price"] > 0:
-            total += item["price"]
+            unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
+        elif item["name"] != "No Base Meal":
+            items.append(item["name"])
 
-    # Soup
+    # 2. Soup choice
     soup_key = pack_data.get("soup")
     if soup_key and soup_key in MEAL_PRICES:
         item = MEAL_PRICES[soup_key]
         if item["price"] > 0:
-            total += item["price"]
+            unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
+        elif item["name"] not in ["No Soup"]:
+            items.append(item["name"])
 
-    # Protein
-    protein_key = pack_data.get("protein")
-    if protein_key and protein_key in MEAL_PRICES:
-        item = MEAL_PRICES[protein_key]
+    # 3. Protein Quantities
+    # Beef (₦200/pc)
+    try:
+        beef_qty = int(str(pack_data.get("beef_qty") or "0").strip())
+    except (ValueError, TypeError):
+        beef_qty = 0
+    if beef_qty > 0:
+        beef_cost = beef_qty * 200
+        unit_price += beef_cost
+        items.append(f"{beef_qty}x Beef (₦{beef_cost:,})")
+
+    # Boiled Egg (₦300/pc)
+    try:
+        egg_qty = int(str(pack_data.get("egg_qty") or "0").strip())
+    except (ValueError, TypeError):
+        egg_qty = 0
+    if egg_qty > 0:
+        egg_cost = egg_qty * 300
+        unit_price += egg_cost
+        items.append(f"{egg_qty}x Egg (₦{egg_cost:,})")
+
+    # Goat Meat (₦500/pc)
+    try:
+        goat_qty = int(str(pack_data.get("goat_qty") or "0").strip())
+    except (ValueError, TypeError):
+        goat_qty = 0
+    if goat_qty > 0:
+        goat_cost = goat_qty * 500
+        unit_price += goat_cost
+        items.append(f"{goat_qty}x Goat Meat (₦{goat_cost:,})")
+
+    # Chicken (Small 3000, Med 3500, Big 4000)
+    chicken_key = pack_data.get("chicken")
+    if chicken_key and chicken_key in MEAL_PRICES:
+        item = MEAL_PRICES[chicken_key]
         if item["price"] > 0:
-            total += item["price"]
+            unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
-    # Extras (can be a list of keys)
+    # Fish (₦1,000)
+    fish_key = pack_data.get("fish")
+    if fish_key and fish_key in MEAL_PRICES:
+        item = MEAL_PRICES[fish_key]
+        if item["price"] > 0:
+            unit_price += item["price"]
+            items.append(f"{item['name']} (₦{item['price']:,})")
+
+    # 4. Sides & Extras
     extras = pack_data.get("extras", [])
     if isinstance(extras, str):
-        extras = [extras]
+        extras = [extras] if extras else []
     for ext_key in extras:
         if ext_key in MEAL_PRICES:
             item = MEAL_PRICES[ext_key]
             if item["price"] > 0:
-                total += item["price"]
+                unit_price += item["price"]
                 items.append(f"{item['name']} (₦{item['price']:,})")
 
-    # Drink
+    # 5. Drink
     drink_key = pack_data.get("drink")
     if drink_key and drink_key in MEAL_PRICES:
         item = MEAL_PRICES[drink_key]
         if item["price"] > 0:
-            total += item["price"]
+            unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
-    qty = int(pack_data.get("pack_quantity") or 1)
-    pack_total = total * max(1, qty)
-    return pack_total, items
+    # Pack multiplier
+    try:
+        multiplier = max(1, int(str(pack_data.get("pack_quantity") or "1").strip()))
+    except (ValueError, TypeError):
+        multiplier = 1
+
+    total_pack_price = unit_price * multiplier
+    return total_pack_price, unit_price, multiplier, items
 
 
 def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
@@ -145,42 +207,17 @@ def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
         return "Your cart is empty.", 0
 
     lines = []
-    grand_total = 0
+    subtotal = 0
     for idx, pack in enumerate(cart_packs, 1):
         name = pack.get("pack_name", f"Pack {idx}")
         qty = pack.get("quantity", 1)
-        price = pack.get("total_price", 0)
+        total = pack.get("total_price", 0)
         items_summary = " + ".join(pack.get("items", []))
-        instructions = f" (Note: {pack['note']})" if pack.get("note") else ""
-        lines.append(f"📦 *{name}* (x{qty}) - ₦{price:,}\n   _{items_summary}_{instructions}")
-        grand_total += price
+        note = f" (Note: {pack['note']})" if pack.get("note") else ""
+        lines.append(f"📦 *{name}* (x{qty}) - ₦{total:,}\n   _{items_summary}_{note}")
+        subtotal += total
 
-    return "\n\n".join(lines), grand_total
-
-
-def build_cart_action_options(cart_packs: list[dict], grand_total: int) -> list[dict]:
-    """Generates dynamic radio button options for CART_REVIEW_SCREEN."""
-    options = []
-    if cart_packs:
-        options.append({
-            "id": "place_order",
-            "title": f"✅ Proceed to Checkout (₦{grand_total:,})"
-        })
-    options.append({
-        "id": "add_predesigned",
-        "title": "🍱 Add Another Combo Pack"
-    })
-    options.append({
-        "id": "add_custom",
-        "title": "🛠️ Add Another Custom Pack"
-    })
-    for idx, pack in enumerate(cart_packs):
-        pname = pack.get("pack_name", f"Pack {idx + 1}")
-        options.append({
-            "id": f"delete_pack_{idx}",
-            "title": f"🗑️ Delete {pname}"
-        })
-    return options
+    return "\n\n".join(lines), subtotal
 
 
 @router.post("/flow/endpoint")
@@ -247,7 +284,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             if sender_wa:
                 try:
-                    # Query last food order from this customer
                     q = (
                         select(models.Orders)
                         .where(models.Orders.sender_wa_number.like(f"%{sender_wa[-10:]}"))
@@ -257,9 +293,9 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     )
                     res = await db.execute(q)
                     last_order = res.scalars().first()
-                    if last_order and last_order.dropoff_location_name:
-                        saved_address = last_order.dropoff_location_name
-                        saved_phone = last_order.recipient_phone_number or sender_wa
+                    if last_order and last_order.dropoff_location_name and last_order.dropoff_location_name.strip():
+                        saved_address = last_order.dropoff_location_name.strip()
+                        saved_phone = (last_order.recipient_phone_number or sender_wa).strip()
                         has_previous = True
                 except Exception as db_err:
                     logger.warning(f"Error querying previous orders for {sender_wa}: {db_err}")
@@ -294,8 +330,17 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         # 3. DATA_EXCHANGE action (User interacts with screens)
         if action == "data_exchange":
             user_action = data.get("user_action") or ""
-            current_cart = data.get("cart_packs", [])
             
+            # Safe parsing of cart
+            current_cart = data.get("cart_packs", [])
+            if isinstance(current_cart, str):
+                try:
+                    current_cart = json.loads(current_cart) if current_cart else []
+                except Exception:
+                    current_cart = []
+            if not isinstance(current_cart, list):
+                current_cart = []
+
             # Extract address fields from previous or current screens
             house_num = data.get("HouseFlat_Number_801bd0") or data.get("screen_0_HouseFlat_Number_0", "")
             street_name = data.get("Street_Name_17f2ce") or data.get("screen_0_Street_Name_1", "")
@@ -375,9 +420,8 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "restaurant": restaurant,
-                        "restaurant_logo": LOGO_URL,
-                        "cart_packs": current_cart,
-                        "pack_quantity": "1"
+                        "restaurant_logo": LOGO_DATA_URI,
+                        "cart_packs": current_cart
                     }
                 }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -385,7 +429,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: PREDESIGNED_PACKS_SCREEN ---
             elif screen == "PREDESIGNED_PACKS_SCREEN":
-                combo_key = data.get("selected_pack", "pack_classic_jollof")
+                combo_key = data.get("selected_pack", "skip_to_custom")
                 if combo_key == "skip_to_custom" or user_action == "switch_to_custom":
                     resp_payload = {
                         "version": "3.0",
@@ -394,15 +438,17 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
-                            "restaurant_logo": LOGO_URL,
-                            "cart_packs": current_cart,
-                            "pack_quantity": "1"
+                            "restaurant_logo": LOGO_DATA_URI,
+                            "cart_packs": current_cart
                         }
                     }
                 else:
                     combo_info = PREDESIGNED_PACKS.get(combo_key, PREDESIGNED_PACKS["pack_classic_jollof"])
-                    qty = int(data.get("pack_quantity") or 1)
-                    pack_note = data.get("pack_note", "")
+                    try:
+                        qty = max(1, int(str(data.get("pack_quantity") or "1").strip()))
+                    except (ValueError, TypeError):
+                        qty = 1
+                    pack_note = (data.get("pack_note") or "").strip()
 
                     new_pack = {
                         "pack_name": combo_info["title"],
@@ -417,7 +463,11 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     cart_text, subtotal = format_cart_display(current_cart)
                     est_delivery = 1000
                     grand_total = subtotal + est_delivery
-                    actions = build_cart_action_options(current_cart, grand_total)
+                    totals_display = (
+                        f"💵 Food Subtotal: ₦{subtotal:,}\n"
+                        f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
+                        f"💳 *Grand Total: ₦{grand_total:,}*"
+                    )
 
                     resp_payload = {
                         "version": "3.0",
@@ -428,27 +478,27 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "restaurant": restaurant,
                             "cart_packs": current_cart,
                             "cart_display": cart_text,
-                            "subtotal_text": f"₦{subtotal:,}",
-                            "delivery_text": f"₦{est_delivery:,}",
-                            "total_text": f"₦{grand_total:,}",
-                            "action_options": actions
+                            "totals_display": totals_display
                         }
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-            # --- SCREEN: BUILD_CUSTOM_PACK_SCREEN ---
-            elif screen == "BUILD_CUSTOM_PACK_SCREEN":
-                pack_name = f"Custom Pack {len(current_cart) + 1}"
-                qty = int(data.get("pack_quantity") or 1)
-                pack_price, items_list = calculate_pack_price(data)
-                pack_note = data.get("pack_note", "")
+            # --- SCREENS: CUSTOM PACK BUILDERS (Pack 1, 2, 3, 4) ---
+            elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_2", "BUILD_CUSTOM_PACK_3", "BUILD_CUSTOM_PACK_4"]:
+                pack_idx = len(current_cart) + 1
+                pack_note = (data.get("pack_note") or "").strip()
+                pack_total, unit_price, qty, items_list = calculate_pack_price(data)
+
+                pack_title = f"Pack {pack_idx}"
+                if pack_note:
+                    pack_title = f"Pack {pack_idx} ({pack_note[:15]})"
 
                 new_pack = {
-                    "pack_name": pack_name,
+                    "pack_name": pack_title,
                     "quantity": qty,
-                    "unit_price": pack_price // max(1, qty),
-                    "total_price": pack_price,
+                    "unit_price": unit_price,
+                    "total_price": pack_total,
                     "items": items_list,
                     "note": pack_note
                 }
@@ -457,23 +507,44 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 cart_text, subtotal = format_cart_display(current_cart)
                 est_delivery = 1000
                 grand_total = subtotal + est_delivery
-                actions = build_cart_action_options(current_cart, grand_total)
+                totals_display = (
+                    f"💵 Food Subtotal: ₦{subtotal:,}\n"
+                    f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
+                    f"💳 *Grand Total: ₦{grand_total:,}*"
+                )
 
-                resp_payload = {
-                    "version": "3.0",
-                    "screen": "CART_REVIEW_SCREEN",
-                    "data": {
-                        "delivery_address": delivery_address,
-                        "contact_phone": contact_phone,
-                        "restaurant": restaurant,
-                        "cart_packs": current_cart,
-                        "cart_display": cart_text,
-                        "subtotal_text": f"₦{subtotal:,}",
-                        "delivery_text": f"₦{est_delivery:,}",
-                        "total_text": f"₦{grand_total:,}",
-                        "action_options": actions
+                next_action = data.get("next_action")
+                if next_action == "add_another":
+                    next_screen_map = {
+                        "BUILD_CUSTOM_PACK_SCREEN": "BUILD_CUSTOM_PACK_2",
+                        "BUILD_CUSTOM_PACK_2": "BUILD_CUSTOM_PACK_3",
+                        "BUILD_CUSTOM_PACK_3": "BUILD_CUSTOM_PACK_4"
                     }
-                }
+                    target_screen = next_screen_map.get(screen, "CART_REVIEW_SCREEN")
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": target_screen,
+                        "data": {
+                            "restaurant": restaurant,
+                            "restaurant_logo": LOGO_DATA_URI,
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
+                            "cart_packs": current_cart
+                        }
+                    }
+                else:
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": "CART_REVIEW_SCREEN",
+                        "data": {
+                            "restaurant": restaurant,
+                            "delivery_address": delivery_address,
+                            "contact_phone": contact_phone,
+                            "cart_packs": current_cart,
+                            "cart_display": cart_text,
+                            "totals_display": totals_display
+                        }
+                    }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
@@ -482,6 +553,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 cart_text, subtotal = format_cart_display(current_cart)
                 est_delivery = 1000
                 grand_total = subtotal + est_delivery
+                confirm_display = (
+                    f"📍 *Delivery:* {delivery_address}\n"
+                    f"📞 *Receiver:* {contact_phone}\n"
+                    f"🍲 *Restaurant:* {restaurant}\n"
+                    f"💳 *Total Amount:* ₦{grand_total:,}"
+                )
 
                 resp_payload = {
                     "version": "3.0",
@@ -490,11 +567,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "restaurant": restaurant,
-                        "cart_packs": json.dumps(current_cart),
+                        "cart_packs": current_cart,
                         "subtotal": subtotal,
                         "delivery_fee": est_delivery,
                         "total_amount": grand_total,
                         "cart_summary": cart_text,
+                        "confirm_display": confirm_display,
                         "screen_1_Restaurants_0": [restaurant],
                         "screen_0_HouseFlat_Number_0": house_num,
                         "screen_0_Street_Name_1": street_name or delivery_address,
