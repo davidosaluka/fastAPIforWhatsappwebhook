@@ -484,10 +484,18 @@
               {
                 "type": "TextInput",
                 "name": "beef_qty",
-                "label": "Beef (₦200/pc)",
+                "label": "Small Beef (₦200)",
                 "required": false,
                 "input-type": "number",
-                "helper-text": "Pieces of beef (e.g. 2, 10)"
+                "helper-text": "Pieces of small beef (₦200/pc)"
+              },
+              {
+                "type": "TextInput",
+                "name": "big_beef_qty",
+                "label": "Big Beef (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of big beef (₦500/pc)"
               },
               {
                 "type": "TextInput",
@@ -674,7 +682,8 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "big_beef_qty": "${form.big_beef_qty}"
                   }
                 }
               }
@@ -811,10 +820,18 @@
               {
                 "type": "TextInput",
                 "name": "beef_qty",
-                "label": "Beef (₦200/pc)",
+                "label": "Small Beef (₦200)",
                 "required": false,
                 "input-type": "number",
-                "helper-text": "Pieces of beef (e.g. 2, 10)"
+                "helper-text": "Pieces of small beef (₦200/pc)"
+              },
+              {
+                "type": "TextInput",
+                "name": "big_beef_qty",
+                "label": "Big Beef (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of big beef (₦500/pc)"
               },
               {
                 "type": "TextInput",
@@ -1001,7 +1018,8 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "big_beef_qty": "${form.big_beef_qty}"
                   }
                 }
               }
@@ -1138,10 +1156,18 @@
               {
                 "type": "TextInput",
                 "name": "beef_qty",
-                "label": "Beef (₦200/pc)",
+                "label": "Small Beef (₦200)",
                 "required": false,
                 "input-type": "number",
-                "helper-text": "Pieces of beef (e.g. 2, 10)"
+                "helper-text": "Pieces of small beef (₦200/pc)"
+              },
+              {
+                "type": "TextInput",
+                "name": "big_beef_qty",
+                "label": "Big Beef (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Pieces of big beef (₦500/pc)"
               },
               {
                 "type": "TextInput",
@@ -1312,7 +1338,8 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "big_beef_qty": "${form.big_beef_qty}"
                   }
                 }
               }
