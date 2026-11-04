@@ -235,29 +235,36 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
         sender_wa = flow_token.get("sender_wa_number", "")
 
-        # 2. INIT action (Flow opens on user's phone)
-        if action == "INIT":
+        # 2. Opening the Flow (action can be INIT, navigate, or initial data_exchange)
+        is_opening_request = (
+            action in ["INIT", "navigate"] or
+            (action == "data_exchange" and not screen and not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and not data.get("use_previous"))
+        )
+        if is_opening_request:
             saved_address = ""
             saved_phone = sender_wa
             has_previous = False
 
             if sender_wa:
-                # Query last food order from this customer
-                q = (
-                    select(models.Orders)
-                    .where(models.Orders.sender_wa_number.like(f"%{sender_wa[-10:]}"))
-                    .where(models.Orders.dropoff_location_name.isnot(None))
-                    .order_by(models.Orders.created_at.desc())
-                    .limit(1)
-                )
-                res = await db.execute(q)
-                last_order = res.scalars().first()
-                if last_order and last_order.dropoff_location_name:
-                    saved_address = last_order.dropoff_location_name
-                    saved_phone = last_order.recipient_phone_number or sender_wa
-                    has_previous = True
+                try:
+                    # Query last food order from this customer
+                    q = (
+                        select(models.Orders)
+                        .where(models.Orders.sender_wa_number.like(f"%{sender_wa[-10:]}"))
+                        .where(models.Orders.dropoff_location_name.isnot(None))
+                        .order_by(models.Orders.created_at.desc())
+                        .limit(1)
+                    )
+                    res = await db.execute(q)
+                    last_order = res.scalars().first()
+                    if last_order and last_order.dropoff_location_name:
+                        saved_address = last_order.dropoff_location_name
+                        saved_phone = last_order.recipient_phone_number or sender_wa
+                        has_previous = True
+                except Exception as db_err:
+                    logger.warning(f"Error querying previous orders for {sender_wa}: {db_err}")
 
-            if has_previous:
+            if has_previous and saved_address:
                 # Returning customer -> Show address confirmation prompt
                 resp_payload = {
                     "version": "3.0",
@@ -497,14 +504,16 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
-                return Response(content=enc_response, media_type="text/plain")
-
-        # Fallback
+        # Fallback (Safe default with all required data keys so client never crashes)
         resp_payload = {
             "version": "3.0",
             "screen": "CONFIRM_ADDRESS_SCREEN",
-            "data": {"status": "ok"}
+            "data": {
+                "saved_address": "",
+                "saved_phone": sender_wa or "",
+                "address_display": "Please confirm or enter your delivery address to proceed.",
+                "use_previous": "no"
+            }
         }
         enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
         return Response(content=enc_response, media_type="text/plain")

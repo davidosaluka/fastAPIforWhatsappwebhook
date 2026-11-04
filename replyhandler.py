@@ -887,33 +887,21 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str)
 
 
     flow_token = {
-
         "action": "food_order_address",
-
         "sender_wa_number": sender_wa_number
-
     }
 
     await send_custom_flow(
-
         wa_number=sender_wa_number,
-
         flow_token=flow_token,
-
         message="Please select your restaurant and confirm your delivery address to browse the menu and order 🍲🛵💨",
-
         header="Order Food 🍲",
-
         flow_id=flow_id,
-
         flow_cta="Select Address",
-
-        screen_name="Your Address",
-
+        screen_name="CONFIRM_ADDRESS_SCREEN",
+        flow_action="data_exchange",
         auth=auth,
-
         graph_url=graph_url
-
     )
 
 
@@ -1270,9 +1258,26 @@ async def send_image(sender_wa_number, auth, graph_url, image_id):
 
 
 
-async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url):
+async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url, flow_action="navigate", mode=None):
 
     target_number = normalize_phone_number(wa_number) or wa_number
+
+    parameters = {
+        "flow_message_version": "3",
+        "flow_token": json.dumps(flow_token) if not isinstance(flow_token, str) else flow_token, 
+        "flow_id": flow_id,
+        "flow_cta": flow_cta,
+        "flow_action": flow_action,
+    }
+
+    if flow_action == "navigate":
+        parameters["flow_action_payload"] = {
+            "screen": screen_name
+        }
+
+    flow_mode = mode or os.getenv("FLOW_MODE", "").strip()
+    if flow_mode:
+        parameters["mode"] = flow_mode
 
     req_body = {
 
@@ -1282,45 +1287,27 @@ async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow
 
         "to": target_number,
 
-            "type": "interactive",
+        "type": "interactive",
 
-            "interactive": {
+        "interactive": {
 
-                "type": "flow",
+            "type": "flow",
 
-                "header": { "type": "text", "text": header },
+            "header": { "type": "text", "text": header },
 
-                "body": { "text": message },
+            "body": { "text": message },
 
-                "action": {
+            "action": {
 
                 "name": "flow",
 
-                "parameters": {
-
-                    "flow_message_version": "3",
-
-                    "flow_token": json.dumps(flow_token), 
-
-                    "flow_id": flow_id,
-
-                    "flow_cta": flow_cta,
-
-                    "flow_action": "navigate",
-
-                    "flow_action_payload": {
-
-                    "screen": screen_name
-
-                    }
-
-                }
-
-                }
+                "parameters": parameters
 
             }
 
         }
+
+    }
 
     
 
