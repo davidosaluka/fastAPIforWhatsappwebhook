@@ -289,27 +289,33 @@
                 "data-source": [
                   {
                     "id": "bulk_office_order",
-                    "title": "📋 Bulk Office Order"
+                    "title": "📋 Bulk Office Order",
+                    "description": "Paste WhatsApp list for all colleagues"
                   },
                   {
                     "id": "skip_to_custom",
-                    "title": "🛠️ Build Custom Pack"
+                    "title": "🛠️ Build Custom Pack",
+                    "description": "Customize base, soup, meats & extras"
                   },
                   {
                     "id": "pack_classic_jollof",
-                    "title": "Classic Jollof (₦5,300)"
+                    "title": "Classic Jollof (₦5,300)",
+                    "description": "Jollof Rice + Med Chicken + Plantain"
                   },
                   {
                     "id": "pack_swallow_special",
-                    "title": "Swallow Special (₦1,400)"
+                    "title": "Swallow Special (₦1,400)",
+                    "description": "Semo + Egusi Soup + 1x Goat Meat"
                   },
                   {
                     "id": "pack_fried_feast",
-                    "title": "Fried Feast (₦3,300)"
+                    "title": "Fried Feast (₦3,300)",
+                    "description": "Fried Rice + 2x Beef + Salad + Coke"
                   },
                   {
                     "id": "pack_rice_beans",
-                    "title": "Rice & Beans Combo (₦2,300)"
+                    "title": "Rice & Beans Combo (₦2,300)",
+                    "description": "White Rice & Beans + 2x Beef + Plantain"
                   }
                 ]
               },
