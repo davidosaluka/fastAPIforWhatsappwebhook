@@ -151,16 +151,14 @@
                 "label": "House/Flat Number",
                 "required": false,
                 "input-type": "text",
-                "helper-text": "34/Flat 4",
-                "init-value": "${data.HouseFlat_Number_801bd0}"
+                "helper-text": "34/Flat 4"
               },
               {
                 "type": "TextArea",
                 "name": "Street_Name_17f2ce",
                 "label": "Street Name",
                 "required": true,
-                "helper-text": "Oworo Street beside Shukura Hospital",
-                "init-value": "${data.Street_Name_17f2ce}"
+                "helper-text": "Oworo Street beside Shukura Hospital"
               },
               {
                 "type": "TextInput",
@@ -168,8 +166,7 @@
                 "label": "Receiver's Number",
                 "required": true,
                 "input-type": "phone",
-                "helper-text": "081234567890",
-                "init-value": "${data.Receivers_Number_eb5784}"
+                "helper-text": "081234567890"
               },
               {
                 "type": "Footer",
@@ -183,7 +180,12 @@
                   }
                 }
               }
-            ]
+            ],
+            "init-values": {
+              "HouseFlat_Number_801bd0": "${data.HouseFlat_Number_801bd0}",
+              "Street_Name_17f2ce": "${data.Street_Name_17f2ce}",
+              "Receivers_Number_eb5784": "${data.Receivers_Number_eb5784}"
+            }
           }
         ]
       }
