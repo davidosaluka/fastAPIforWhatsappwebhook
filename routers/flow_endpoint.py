@@ -74,7 +74,7 @@ PREDESIGNED_PACKS = {
         "title": "Fried Feast",
         "description": "Fried Rice + 2x Big Beef + Salad + Coke",
         "price": 3300,
-        "items": ["Fried Rice (₦1,300)", "2x Big Beef (₦500)", "Salad (₦500)", "Plantain 1 serv (₦500)", "Coke (₦500)"]
+        "items": ["Fried Rice (₦1,300)", "2x Big Beef (₦1,000)", "Salad (₦500)", "Coke (₦500)"]
     },
     "pack_rice_beans": {
         "title": "Rice & Beans Combo",
@@ -142,15 +142,25 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
             items.append(item["name"])
 
     # 3. Protein Quantities
-    # Beef (₦200/pc)
+    # Small Beef (₦200/pc)
     try:
-        beef_qty = int(str(pack_data.get("beef_qty") or "0").strip())
+        beef_qty = int(str(pack_data.get("beef_qty") or pack_data.get("small_beef_qty") or "0").strip())
     except (ValueError, TypeError):
         beef_qty = 0
     if beef_qty > 0:
         beef_cost = beef_qty * 200
         unit_price += beef_cost
-        items.append(f"{beef_qty}x Beef (₦{beef_cost:,})")
+        items.append(f"{beef_qty}x Small Beef (₦{beef_cost:,})")
+
+    # Big Beef (₦500/pc)
+    try:
+        big_beef_qty = int(str(pack_data.get("big_beef_qty") or "0").strip())
+    except (ValueError, TypeError):
+        big_beef_qty = 0
+    if big_beef_qty > 0:
+        big_beef_cost = big_beef_qty * 500
+        unit_price += big_beef_cost
+        items.append(f"{big_beef_qty}x Big Beef (₦{big_beef_cost:,})")
 
     # Boiled Egg (₦300/pc)
     try:
