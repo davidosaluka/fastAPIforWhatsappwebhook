@@ -98,8 +98,8 @@
                     "use_previous": "${form.use_previous}",
                     "saved_address": "${data.saved_address}",
                     "saved_phone": "${data.saved_phone}",
-                    "delivery_address": "",
-                    "contact_phone": ""
+                    "delivery_address": "${data.saved_address}",
+                    "contact_phone": "${data.saved_phone}"
                   }
                 }
               }
@@ -656,6 +656,11 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
+                    "plantain_qty": "${form.plantain_qty}",
+                    "moimoi_qty": "${form.moimoi_qty}",
+                    "salad_qty": "${form.salad_qty}",
+                    "pepper_soup_qty": "${form.pepper_soup_qty}",
+                    "sauce_qty": "${form.sauce_qty}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
@@ -663,12 +668,7 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}",
-                    "plantain_qty": "",
-                    "moimoi_qty": "",
-                    "salad_qty": "",
-                    "pepper_soup_qty": "",
-                    "sauce_qty": ""
+                    "cart_packs": "${data.cart_packs}"
                   }
                 }
               }
@@ -983,6 +983,11 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
+                    "plantain_qty": "${form.plantain_qty}",
+                    "moimoi_qty": "${form.moimoi_qty}",
+                    "salad_qty": "${form.salad_qty}",
+                    "pepper_soup_qty": "${form.pepper_soup_qty}",
+                    "sauce_qty": "${form.sauce_qty}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
@@ -990,12 +995,7 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}",
-                    "plantain_qty": "",
-                    "moimoi_qty": "",
-                    "salad_qty": "",
-                    "pepper_soup_qty": "",
-                    "sauce_qty": ""
+                    "cart_packs": "${data.cart_packs}"
                   }
                 }
               }
@@ -1294,19 +1294,19 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
+                    "plantain_qty": "${form.plantain_qty}",
+                    "moimoi_qty": "${form.moimoi_qty}",
+                    "salad_qty": "${form.salad_qty}",
+                    "pepper_soup_qty": "${form.pepper_soup_qty}",
+                    "sauce_qty": "${form.sauce_qty}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
-                    "next_action": "review_cart",
+                    "next_action": "${form.next_action}",
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}",
-                    "plantain_qty": "",
-                    "moimoi_qty": "",
-                    "salad_qty": "",
-                    "pepper_soup_qty": "",
-                    "sauce_qty": ""
+                    "cart_packs": "${data.cart_packs}"
                   }
                 }
               }
@@ -1434,12 +1434,12 @@
                 "text": "Your Food Cart 🛒"
               },
               {
-                "type": "TextSubheading",
-                "text": ""
+                "type": "TextBody",
+                "text": "${data.totals_display}"
               },
               {
                 "type": "TextBody",
-                "text": ""
+                "text": "${data.cart_display}"
               },
               {
                 "type": "Footer",
@@ -1448,10 +1448,10 @@
                   "name": "data_exchange",
                   "payload": {
                     "user_action": "place_order",
-                    "restaurant": "",
-                    "delivery_address": "",
-                    "contact_phone": "",
-                    "cart_packs": ""
+                    "restaurant": "${data.restaurant}",
+                    "delivery_address": "${data.delivery_address}",
+                    "contact_phone": "${data.contact_phone}",
+                    "cart_packs": "${data.cart_packs}"
                   }
                 }
               }
