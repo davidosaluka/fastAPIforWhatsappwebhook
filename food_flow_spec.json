@@ -305,17 +305,17 @@
                   {
                     "id": "pack_swallow_special",
                     "title": "Swallow Special (₦1,400)",
-                    "description": "Semo + Egusi Soup + 1x Goat Meat"
+                    "description": "1 Wrap Semo + Egusi Soup + 1x Goat Meat"
                   },
                   {
                     "id": "pack_fried_feast",
                     "title": "Fried Feast (₦3,300)",
-                    "description": "Fried Rice + 2x Beef + Salad + Coke"
+                    "description": "Fried Rice + 2x Big Beef + Salad + Coke"
                   },
                   {
                     "id": "pack_rice_beans",
-                    "title": "Rice & Beans Combo (₦2,300)",
-                    "description": "White Rice & Beans + 2x Beef + Plantain"
+                    "title": "Rice & Beans Combo (₦2,200)",
+                    "description": "White Rice & Beans + 2x Small Beef + Plantain"
                   }
                 ]
               },

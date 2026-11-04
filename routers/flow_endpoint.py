@@ -66,21 +66,21 @@ PREDESIGNED_PACKS = {
     },
     "pack_swallow_special": {
         "title": "Swallow Special",
-        "description": "Semo + Egusi Soup + 1x Goat Meat",
+        "description": "1 Wrap Semo + Egusi Soup + 1x Goat Meat",
         "price": 1400,
-        "items": ["Semo (₦700)", "Egusi Soup (₦200)", "1x Goat Meat (₦500)"]
+        "items": ["1 Wrap Semo (₦700)", "Egusi Soup (₦200)", "1x Goat Meat (₦500)"]
     },
     "pack_fried_feast": {
         "title": "Fried Feast",
-        "description": "Fried Rice + 2x Beef + Salad + Coke",
+        "description": "Fried Rice + 2x Big Beef + Salad + Coke",
         "price": 3300,
-        "items": ["Fried Rice (₦1,300)", "2x Beef (₦400)", "Salad (₦500)", "Plantain 1 serv (₦500)", "Coke (₦500)"]
+        "items": ["Fried Rice (₦1,300)", "2x Big Beef (₦500)", "Salad (₦500)", "Plantain 1 serv (₦500)", "Coke (₦500)"]
     },
     "pack_rice_beans": {
         "title": "Rice & Beans Combo",
-        "description": "White Rice and Beans + Stew + 2x Beef + Plantain",
-        "price": 2300,
-        "items": ["White Rice & Beans (₦1,300)", "Stew (₦0)", "2x Beef (₦400)", "Plantain (₦500)"]
+        "description": "White Rice and Beans + 2x Small Beef + Plantain",
+        "price": 2200,
+        "items": ["White Rice & Beans (₦1,300)", "Stew (₦0)", "2x Small Beef (₦400)", "Plantain (₦500)"]
     }
 }
 
