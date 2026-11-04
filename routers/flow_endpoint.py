@@ -101,6 +101,21 @@ for p in [LOGO_THUMB_PATH, LOGO_RAW_PATH]:
             logger.warning(f"Failed to encode logo from {p}: {e}")
 
 
+def calculate_delivery_fee(pack_count: int) -> int:
+    """
+    Tiered delivery fee:
+    - Up to 9 packs: ₦800
+    - 10 to 14 packs: ₦1,000
+    - 15 packs and above: ₦1,500
+    """
+    if pack_count <= 9:
+        return 800
+    elif 10 <= pack_count <= 14:
+        return 1000
+    else:
+        return 1500
+
+
 def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     """Calculates total pack price, unit price, quantity, and item descriptions."""
     unit_price = 0
@@ -173,7 +188,58 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
             unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
-    # 4. Sides & Extras
+    # 4. Sides & Extras (Numeric quantities)
+    # Plantain (₦500/serv)
+    try:
+        plantain_qty = int(str(pack_data.get("plantain_qty") or "0").strip())
+    except (ValueError, TypeError):
+        plantain_qty = 0
+    if plantain_qty > 0:
+        plantain_cost = plantain_qty * 500
+        unit_price += plantain_cost
+        items.append(f"{plantain_qty}x Plantain (₦{plantain_cost:,})")
+
+    # Moi Moi (₦1,000/wrap)
+    try:
+        moimoi_qty = int(str(pack_data.get("moimoi_qty") or "0").strip())
+    except (ValueError, TypeError):
+        moimoi_qty = 0
+    if moimoi_qty > 0:
+        moimoi_cost = moimoi_qty * 1000
+        unit_price += moimoi_cost
+        items.append(f"{moimoi_qty}x Moi Moi (₦{moimoi_cost:,})")
+
+    # Salad (₦500/portion)
+    try:
+        salad_qty = int(str(pack_data.get("salad_qty") or "0").strip())
+    except (ValueError, TypeError):
+        salad_qty = 0
+    if salad_qty > 0:
+        salad_cost = salad_qty * 500
+        unit_price += salad_cost
+        items.append(f"{salad_qty}x Salad (₦{salad_cost:,})")
+
+    # Goat Meat Pepper Soup (₦2,000/bowl)
+    try:
+        pepper_soup_qty = int(str(pack_data.get("pepper_soup_qty") or "0").strip())
+    except (ValueError, TypeError):
+        pepper_soup_qty = 0
+    if pepper_soup_qty > 0:
+        pepper_soup_cost = pepper_soup_qty * 2000
+        unit_price += pepper_soup_cost
+        items.append(f"{pepper_soup_qty}x Goat Pepper Soup (₦{pepper_soup_cost:,})")
+
+    # Pepper Sauce (₦200/portion)
+    try:
+        sauce_qty = int(str(pack_data.get("sauce_qty") or "0").strip())
+    except (ValueError, TypeError):
+        sauce_qty = 0
+    if sauce_qty > 0:
+        sauce_cost = sauce_qty * 200
+        unit_price += sauce_cost
+        items.append(f"{sauce_qty}x Pepper Sauce (₦{sauce_cost:,})")
+
+    # Backward compatibility with legacy extras checkbox list
     extras = pack_data.get("extras", [])
     if isinstance(extras, str):
         extras = [extras] if extras else []
@@ -251,7 +317,7 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
 
 
 def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
-    """Formats cart items into user-facing text and computes food subtotal."""
+    """Formats cart items into clean bulleted text and computes food subtotal."""
     if not cart_packs:
         return "Your cart is empty.", 0
 
@@ -261,9 +327,9 @@ def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:
         name = pack.get("pack_name", f"Pack {idx}")
         qty = pack.get("quantity", 1)
         total = pack.get("total_price", 0)
-        items_summary = " + ".join(pack.get("items", []))
+        items_summary = ", ".join(pack.get("items", []))
         note = f" (Note: {pack['note']})" if pack.get("note") else ""
-        lines.append(f"📦 *{name}* (x{qty}) - ₦{total:,}\n   _{items_summary}_{note}")
+        lines.append(f"📦 *{name}* (x{qty}) — ₦{total:,}\n• {items_summary}{note}")
         subtotal += total
 
     return "\n\n".join(lines), subtotal
@@ -338,19 +404,22 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         .where(models.Orders.sender_wa_number.like(f"%{sender_wa[-10:]}"))
                         .where(models.Orders.dropoff_location_name.isnot(None))
                         .order_by(models.Orders.created_at.desc())
-                        .limit(1)
+                        .limit(5)
                     )
                     res = await db.execute(q)
-                    last_order = res.scalars().first()
-                    if last_order and last_order.dropoff_location_name and last_order.dropoff_location_name.strip():
-                        saved_address = last_order.dropoff_location_name.strip()
-                        saved_phone = (last_order.recipient_phone_number or sender_wa).strip()
-                        has_previous = True
+                    orders_list = res.scalars().all()
+                    for ord_item in orders_list:
+                        addr = (ord_item.dropoff_location_name or "").strip()
+                        if addr and addr.lower() not in ["customer address", "none", "null", ""] and len(addr) >= 5:
+                            saved_address = addr
+                            saved_phone = (ord_item.recipient_phone_number or sender_wa).strip()
+                            has_previous = True
+                            break
                 except Exception as db_err:
                     logger.warning(f"Error querying previous orders for {sender_wa}: {db_err}")
 
             if has_previous and saved_address:
-                # Returning customer -> Show address confirmation prompt
+                # Returning customer with valid address -> Show address confirmation prompt
                 resp_payload = {
                     "version": "3.0",
                     "screen": "CONFIRM_ADDRESS_SCREEN",
@@ -362,7 +431,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     }
                 }
             else:
-                # New customer -> Directly show RECOMMEND address input screen
+                # New customer or no saved address -> Directly show RECOMMEND address input screen
                 resp_payload = {
                     "version": "3.0",
                     "screen": "RECOMMEND",
@@ -417,21 +486,22 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             # --- SCREEN: CONFIRM_ADDRESS_SCREEN ---
             if screen == "CONFIRM_ADDRESS_SCREEN":
                 use_prev = data.get("use_previous", "yes")
-                if use_prev == "yes":
+                saved_addr = (data.get("saved_address") or data.get("delivery_address") or delivery_address or "").strip()
+                if use_prev == "yes" and len(saved_addr) >= 4:
                     # Proceed directly to Restaurant selection (RATE)
                     resp_payload = {
                         "version": "3.0",
                         "screen": "RATE",
                         "data": {
-                            "delivery_address": delivery_address,
+                            "delivery_address": saved_addr,
                             "contact_phone": contact_phone,
-                            "screen_0_HouseFlat_Number_0": house_num,
-                            "screen_0_Street_Name_1": street_name or delivery_address,
+                            "screen_0_HouseFlat_Number_0": "",
+                            "screen_0_Street_Name_1": saved_addr,
                             "screen_0_Receivers_Number_2": contact_phone
                         }
                     }
                 else:
-                    # User chose to enter new address -> navigate to RECOMMEND
+                    # User chose to enter new address OR had no saved address -> navigate to RECOMMEND
                     resp_payload = {
                         "version": "3.0",
                         "screen": "RECOMMEND",
@@ -446,6 +516,8 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: RECOMMEND (Address Entry) ---
             elif screen == "RECOMMEND":
+                if not delivery_address or delivery_address.lower() in ["customer address", "none", ""]:
+                    delivery_address = f"{house_num}, {street_name}".strip(", ")
                 resp_payload = {
                     "version": "3.0",
                     "screen": "RATE",
@@ -524,12 +596,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     current_cart.append(new_pack)
 
                     cart_text, subtotal = format_cart_display(current_cart)
-                    est_delivery = 1000
-                    grand_total = subtotal + est_delivery
+                    total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
+                    delivery_fee = calculate_delivery_fee(total_pack_count)
+                    grand_total = subtotal + delivery_fee
                     totals_display = (
-                        f"💵 Food Subtotal: ₦{subtotal:,}\n"
-                        f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
-                        f"💳 *Grand Total: ₦{grand_total:,}*"
+                        f"💳 *Grand Total: ₦{grand_total:,}*\n"
+                        f"💵 Food: ₦{subtotal:,}  |  🛵 Delivery ({total_pack_count} pk{'s' if total_pack_count > 1 else ''}): ₦{delivery_fee:,}"
                     )
 
                     resp_payload = {
@@ -565,12 +637,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     })
 
                 cart_text, subtotal = format_cart_display(current_cart)
-                est_delivery = 1000
-                grand_total = subtotal + est_delivery
+                total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
+                delivery_fee = calculate_delivery_fee(total_pack_count)
+                grand_total = subtotal + delivery_fee
                 totals_display = (
-                    f"💵 Food Subtotal: ₦{subtotal:,}\n"
-                    f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
-                    f"💳 *Grand Total: ₦{grand_total:,}*"
+                    f"💳 *Grand Total: ₦{grand_total:,}*\n"
+                    f"💵 Food: ₦{subtotal:,}  |  🛵 Delivery ({total_pack_count} pk{'s' if total_pack_count > 1 else ''}): ₦{delivery_fee:,}"
                 )
 
                 resp_payload = {
@@ -609,12 +681,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 current_cart.append(new_pack)
 
                 cart_text, subtotal = format_cart_display(current_cart)
-                est_delivery = 1000
-                grand_total = subtotal + est_delivery
+                total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
+                delivery_fee = calculate_delivery_fee(total_pack_count)
+                grand_total = subtotal + delivery_fee
                 totals_display = (
-                    f"💵 Food Subtotal: ₦{subtotal:,}\n"
-                    f"🛵 Delivery Fee: ₦{est_delivery:,}\n"
-                    f"💳 *Grand Total: ₦{grand_total:,}*"
+                    f"💳 *Grand Total: ₦{grand_total:,}*\n"
+                    f"💵 Food: ₦{subtotal:,}  |  🛵 Delivery ({total_pack_count} pk{'s' if total_pack_count > 1 else ''}): ₦{delivery_fee:,}"
                 )
 
                 next_action = data.get("next_action")
@@ -654,13 +726,15 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             # --- SCREEN: CART_REVIEW_SCREEN ---
             elif screen == "CART_REVIEW_SCREEN":
                 cart_text, subtotal = format_cart_display(current_cart)
-                est_delivery = 1000
-                grand_total = subtotal + est_delivery
+                total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
+                delivery_fee = calculate_delivery_fee(total_pack_count)
+                grand_total = subtotal + delivery_fee
                 confirm_display = (
                     f"📍 *Delivery:* {delivery_address}\n"
                     f"📞 *Receiver:* {contact_phone}\n"
                     f"🍲 *Restaurant:* {restaurant}\n"
-                    f"💳 *Total Amount:* ₦{grand_total:,}"
+                    f"📦 *Total Packs:* {total_pack_count} pack{'s' if total_pack_count > 1 else ''} (Delivery: ₦{delivery_fee:,})\n"
+                    f"💳 *Grand Total:* *₦{grand_total:,}*"
                 )
 
                 resp_payload = {
@@ -672,7 +746,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "restaurant": restaurant,
                         "cart_packs": current_cart,
                         "subtotal": subtotal,
-                        "delivery_fee": est_delivery,
+                        "delivery_fee": delivery_fee,
                         "total_amount": grand_total,
                         "cart_summary": cart_text,
                         "confirm_display": confirm_display,
@@ -685,15 +759,14 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 
-        # Fallback (Safe default with all required data keys so client never crashes)
+        # Fallback (Safe default routing to address input screen if something was unexpected)
         resp_payload = {
             "version": "3.0",
-            "screen": "CONFIRM_ADDRESS_SCREEN",
+            "screen": "RECOMMEND",
             "data": {
-                "saved_address": "",
-                "saved_phone": sender_wa or "",
-                "address_display": "Please confirm or enter your delivery address to proceed.",
-                "use_previous": "no"
+                "screen_0_HouseFlat_Number_0": "",
+                "screen_0_Street_Name_1": "",
+                "screen_0_Receivers_Number_2": sender_wa or ""
             }
         }
         enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)

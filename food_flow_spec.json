@@ -97,7 +97,9 @@
                   "payload": {
                     "use_previous": "${form.use_previous}",
                     "saved_address": "${data.saved_address}",
-                    "saved_phone": "${data.saved_phone}"
+                    "saved_phone": "${data.saved_phone}",
+                    "delivery_address": "",
+                    "contact_phone": ""
                   }
                 }
               }
@@ -538,36 +540,48 @@
                 ]
               },
               {
-                "type": "CheckboxGroup",
-                "name": "extras",
-                "label": "4. Sides & Extras",
+                "type": "TextSubheading",
+                "text": "4. Sides & Extras (Qty)"
+              },
+              {
+                "type": "TextInput",
+                "name": "plantain_qty",
+                "label": "Plantain (₦500)",
                 "required": false,
-                "data-source": [
-                  {
-                    "id": "extra_plantain_1",
-                    "title": "Plantain 1 serv (₦500)"
-                  },
-                  {
-                    "id": "extra_plantain_2",
-                    "title": "Plantain 2 serv (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_1",
-                    "title": "Moi Moi 1 wrap (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_2",
-                    "title": "Moi Moi 2 wraps (₦2,000)"
-                  },
-                  {
-                    "id": "extra_salad",
-                    "title": "Salad (₦500)"
-                  },
-                  {
-                    "id": "extra_pepper_sauce",
-                    "title": "Pepper Sauce (₦200)"
-                  }
-                ]
+                "input-type": "number",
+                "helper-text": "Servings of plantain"
+              },
+              {
+                "type": "TextInput",
+                "name": "moimoi_qty",
+                "label": "Moi Moi (₦1k)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Wraps of moi moi (₦1,000)"
+              },
+              {
+                "type": "TextInput",
+                "name": "salad_qty",
+                "label": "Salad (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of fresh salad"
+              },
+              {
+                "type": "TextInput",
+                "name": "pepper_soup_qty",
+                "label": "Goat Pepper Soup",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Bowls of pepper soup (₦2k)"
+              },
+              {
+                "type": "TextInput",
+                "name": "sauce_qty",
+                "label": "Pepper Sauce (₦200)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of pepper sauce"
               },
               {
                 "type": "Dropdown",
@@ -642,7 +656,6 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
-                    "extras": "${form.extras}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
@@ -650,7 +663,12 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "plantain_qty": "",
+                    "moimoi_qty": "",
+                    "salad_qty": "",
+                    "pepper_soup_qty": "",
+                    "sauce_qty": ""
                   }
                 }
               }
@@ -849,36 +867,48 @@
                 ]
               },
               {
-                "type": "CheckboxGroup",
-                "name": "extras",
-                "label": "4. Sides & Extras",
+                "type": "TextSubheading",
+                "text": "4. Sides & Extras (Qty)"
+              },
+              {
+                "type": "TextInput",
+                "name": "plantain_qty",
+                "label": "Plantain (₦500)",
                 "required": false,
-                "data-source": [
-                  {
-                    "id": "extra_plantain_1",
-                    "title": "Plantain 1 serv (₦500)"
-                  },
-                  {
-                    "id": "extra_plantain_2",
-                    "title": "Plantain 2 serv (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_1",
-                    "title": "Moi Moi 1 wrap (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_2",
-                    "title": "Moi Moi 2 wraps (₦2,000)"
-                  },
-                  {
-                    "id": "extra_salad",
-                    "title": "Salad (₦500)"
-                  },
-                  {
-                    "id": "extra_pepper_sauce",
-                    "title": "Pepper Sauce (₦200)"
-                  }
-                ]
+                "input-type": "number",
+                "helper-text": "Servings of plantain"
+              },
+              {
+                "type": "TextInput",
+                "name": "moimoi_qty",
+                "label": "Moi Moi (₦1k)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Wraps of moi moi (₦1,000)"
+              },
+              {
+                "type": "TextInput",
+                "name": "salad_qty",
+                "label": "Salad (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of fresh salad"
+              },
+              {
+                "type": "TextInput",
+                "name": "pepper_soup_qty",
+                "label": "Goat Pepper Soup",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Bowls of pepper soup (₦2k)"
+              },
+              {
+                "type": "TextInput",
+                "name": "sauce_qty",
+                "label": "Pepper Sauce (₦200)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of pepper sauce"
               },
               {
                 "type": "Dropdown",
@@ -953,7 +983,6 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
-                    "extras": "${form.extras}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
@@ -961,7 +990,12 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "plantain_qty": "",
+                    "moimoi_qty": "",
+                    "salad_qty": "",
+                    "pepper_soup_qty": "",
+                    "sauce_qty": ""
                   }
                 }
               }
@@ -1160,36 +1194,48 @@
                 ]
               },
               {
-                "type": "CheckboxGroup",
-                "name": "extras",
-                "label": "4. Sides & Extras",
+                "type": "TextSubheading",
+                "text": "4. Sides & Extras (Qty)"
+              },
+              {
+                "type": "TextInput",
+                "name": "plantain_qty",
+                "label": "Plantain (₦500)",
                 "required": false,
-                "data-source": [
-                  {
-                    "id": "extra_plantain_1",
-                    "title": "Plantain 1 serv (₦500)"
-                  },
-                  {
-                    "id": "extra_plantain_2",
-                    "title": "Plantain 2 serv (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_1",
-                    "title": "Moi Moi 1 wrap (₦1,000)"
-                  },
-                  {
-                    "id": "extra_moimoi_2",
-                    "title": "Moi Moi 2 wraps (₦2,000)"
-                  },
-                  {
-                    "id": "extra_salad",
-                    "title": "Salad (₦500)"
-                  },
-                  {
-                    "id": "extra_pepper_sauce",
-                    "title": "Pepper Sauce (₦200)"
-                  }
-                ]
+                "input-type": "number",
+                "helper-text": "Servings of plantain"
+              },
+              {
+                "type": "TextInput",
+                "name": "moimoi_qty",
+                "label": "Moi Moi (₦1k)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Wraps of moi moi (₦1,000)"
+              },
+              {
+                "type": "TextInput",
+                "name": "salad_qty",
+                "label": "Salad (₦500)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of fresh salad"
+              },
+              {
+                "type": "TextInput",
+                "name": "pepper_soup_qty",
+                "label": "Goat Pepper Soup",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Bowls of pepper soup (₦2k)"
+              },
+              {
+                "type": "TextInput",
+                "name": "sauce_qty",
+                "label": "Pepper Sauce (₦200)",
+                "required": false,
+                "input-type": "number",
+                "helper-text": "Portions of pepper sauce"
               },
               {
                 "type": "Dropdown",
@@ -1248,7 +1294,6 @@
                     "chicken": "${form.chicken}",
                     "goat_qty": "${form.goat_qty}",
                     "fish": "${form.fish}",
-                    "extras": "${form.extras}",
                     "drink": "${form.drink}",
                     "pack_quantity": "${form.pack_quantity}",
                     "pack_note": "${form.pack_note}",
@@ -1256,7 +1301,12 @@
                     "restaurant": "${data.restaurant}",
                     "delivery_address": "${data.delivery_address}",
                     "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "cart_packs": "${data.cart_packs}",
+                    "plantain_qty": "",
+                    "moimoi_qty": "",
+                    "salad_qty": "",
+                    "pepper_soup_qty": "",
+                    "sauce_qty": ""
                   }
                 }
               }
@@ -1384,12 +1434,12 @@
                 "text": "Your Food Cart 🛒"
               },
               {
-                "type": "TextBody",
-                "text": "${data.cart_display}"
+                "type": "TextSubheading",
+                "text": ""
               },
               {
                 "type": "TextBody",
-                "text": "${data.totals_display}"
+                "text": ""
               },
               {
                 "type": "Footer",
@@ -1398,10 +1448,10 @@
                   "name": "data_exchange",
                   "payload": {
                     "user_action": "place_order",
-                    "restaurant": "${data.restaurant}",
-                    "delivery_address": "${data.delivery_address}",
-                    "contact_phone": "${data.contact_phone}",
-                    "cart_packs": "${data.cart_packs}"
+                    "restaurant": "",
+                    "delivery_address": "",
+                    "contact_phone": "",
+                    "cart_packs": ""
                   }
                 }
               }

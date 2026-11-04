@@ -890,9 +890,11 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
             raw_address = (
 
-                json_response.get("address") or 
-
                 json_response.get("delivery_address") or 
+
+                json_response.get("screen_0_Street_Name_1") or 
+
+                json_response.get("address") or 
 
                 json_response.get("dropoff_address") or 
 
@@ -902,9 +904,13 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                 json_response.get("your_address") or
 
-                next((str(v) for k, v in json_response.items() if "address" in str(k).lower() and v), "Customer Address")
+                next((str(v) for k, v in json_response.items() if "address" in str(k).lower() and v and str(v).lower() not in ["customer address", "none", "null"]), "Customer Address")
 
             )
+
+            house_flat = str(json_response.get("screen_0_HouseFlat_Number_0") or "").strip()
+            if house_flat and house_flat not in raw_address and raw_address != "Customer Address":
+                raw_address = f"{house_flat}, {raw_address}".strip(", ")
 
             selected_restaurant = (
 
@@ -942,7 +948,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
             if cart_summary or cart_packs_raw:
 
-                package_desc = f"Food Order from {selected_restaurant} | {cart_summary[:250]}"
+                package_desc = f"Food Order from {selected_restaurant} | {cart_summary[:1500]}"
 
                 grand_total = int(total_amount) if total_amount else int(subtotal) + int(delivery_fee)
 

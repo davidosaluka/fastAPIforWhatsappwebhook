@@ -68,8 +68,11 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS is_priority BOOLEAN DEFAULT FALSE;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS verification_code VARCHAR(10);'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS verification_attempts INTEGER DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ALTER COLUMN package_description TYPE TEXT;'))
+                await conn.execute(text('ALTER TABLE orders ALTER COLUMN dropoff_location_name TYPE TEXT;'))
+                print("🟢 [MIGRATION] orders.package_description and dropoff_location_name expanded to TEXT.")
         except Exception as e:
-            print(f"Migration note (orders add cols): {e}")
+            print(f"Migration note (orders add/alter cols): {e}")
 
         # users.is_deleted (soft-delete flag)
         try:

@@ -49,7 +49,7 @@ class Orders(Base):
     sender_wa_number:      Mapped[str] = mapped_column(String(50), nullable=False) 
     rider_wa_number:      Mapped[str] = mapped_column(String(50), nullable=True) 
     recipient_phone_number:      Mapped[str] = mapped_column(String(50), nullable=False)  
-    package_description: Mapped[str] = mapped_column(String(50), nullable=True)  
+    package_description: Mapped[str] = mapped_column(String, nullable=True)  
     customer_initial_offered_price: Mapped[str] = mapped_column(String, nullable=True)
     final_price_agreed_by_cust_and_rider: Mapped[str] = mapped_column(String, nullable=True)
     status:       Mapped[str] = mapped_column(String(50), nullable=False)             # "awaiting_pickup", "awaiting_dropoff", "confirmed" etc.
