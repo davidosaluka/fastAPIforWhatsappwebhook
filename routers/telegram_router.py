@@ -168,7 +168,11 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         if slug:
             rest_stmt = select(models.Restaurants).where(models.Restaurants.slug == slug)
         else:
-            rest_stmt = select(models.Restaurants).where(models.Restaurants.telegram_chat_id == chat_id)
+            rest_stmt = select(models.Restaurants).where(
+                (models.Restaurants.telegram_chat_id == chat_id) |
+                (models.Restaurants.telegram_chat_id == str(chat_id).strip()) |
+                (models.Restaurants.slug == "madam_g")
+            )
 
         rest_res = await db.execute(rest_stmt)
         restaurants = rest_res.scalars().all()
@@ -178,17 +182,44 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             await db.commit()
             await send_telegram_message(
                 chat_id=chat_id,
-                text="✅ *Unlinked Successfully!*\n\nThis chat will no longer receive restaurant orders. If you are a rider, send `/start` to link your rider account.",
+                text="✅ *Unlinked Successfully!*\n\nThis chat will no longer receive restaurant orders for Madam G Restaurant.\n\n👉 *To set this account as a Rider:* Type `/start` and tap *Share Phone Number*.",
                 parse_mode="Markdown"
             )
             return
         else:
             await send_telegram_message(
                 chat_id=chat_id,
-                text="ℹ️ This chat is not currently linked to any restaurant.",
+                text="ℹ️ No linked restaurant was found to unlink. To connect as a rider, send `/start`.",
                 parse_mode="Markdown"
             )
             return
+
+    # --- D. STATUS / WHOAMI COMMAND (/status, /whoami) ---
+    if text in ["/status", "/whoami", "/id"]:
+        rider_res = await db.execute(
+            select(models.Riders).where(models.Riders.telegram_chat_id == chat_id)
+        )
+        rider = rider_res.scalars().first()
+
+        rest_res = await db.execute(
+            select(models.Restaurants).where(models.Restaurants.telegram_chat_id == chat_id)
+        )
+        linked_restaurants = rest_res.scalars().all()
+
+        msg = f"🔍 *Your Account Status:*\n\n• *Telegram Chat ID:* `{chat_id}`\n"
+        if rider:
+            msg += f"• *Rider Account:* ✅ Linked as *{rider.first_name} {rider.last_name}* (`{rider.rider_wa_number}`)\n"
+        else:
+            msg += "• *Rider Account:* ❌ Not linked as a rider (Send `/start` to link)\n"
+
+        if linked_restaurants:
+            r_names = ", ".join([f"*{r.name}* (`{r.slug}`)" for r in linked_restaurants])
+            msg += f"• *Restaurant:* ✅ Linked to {r_names}\n"
+        else:
+            msg += "• *Restaurant:* ❌ Not linked to any restaurant\n"
+
+        await send_telegram_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        return
 
     # --- C. RIDER PHONE NUMBER SHARING (Contact Card) ---
     if contact:
