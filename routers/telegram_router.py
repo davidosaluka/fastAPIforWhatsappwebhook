@@ -12,6 +12,8 @@ from services.telegram_service import (
     send_telegram_message,
     edit_telegram_message,
     answer_callback_query,
+    send_telegram_audio,
+    RINGTONE_INSTRUCTIONS,
     get_bot_token,
     TELEGRAM_API_BASE
 )
@@ -109,6 +111,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 text=f"🎉 *New Restaurant Registered & Linked!*\n\nThis chat is now linked to receive incoming food orders for *{restaurant.name}* (`{slug}`)! 🍲✨\n\nYou will receive order pings with loud sound alerts right here.",
                 parse_mode="Markdown"
             )
+            await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
             return
         else:
             restaurant.telegram_chat_id = chat_id
@@ -118,6 +121,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 text=f"🎉 *Success!*\n\nThis chat is now linked to receive incoming food orders for *{restaurant.name}*! 🍲✨\n\nYou will receive order pings with loud sound alerts right here.",
                 parse_mode="Markdown"
             )
+            await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
             return
 
     # --- B. RESTAURANT GROUP LINK COMMAND (/link_restaurant <slug>) ---
@@ -148,6 +152,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     text=f"✅ *New Kitchen Registered & Linked!*\n\nIncoming orders for *{restaurant.name}* (`{slug}`) will now be dispatched to this chat. 🍲",
                     parse_mode="Markdown"
                 )
+                await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
                 return
             else:
                 restaurant.telegram_chat_id = chat_id
@@ -157,6 +162,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     text=f"✅ *Kitchen Chat Linked!*\n\nIncoming orders for *{restaurant.name}* will now be dispatched to this chat. 🍲",
                     parse_mode="Markdown"
                 )
+                await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
                 return
         else:
             await send_telegram_message(chat_id=chat_id, text="Usage: `/link_restaurant <slug>` (e.g. `/link_restaurant madam_g`)")
@@ -305,6 +311,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     text=f"✅ *Rider Profile Linked!*\n\nProfile for *{existing_rider.first_name} {existing_rider.last_name}* (`{formatted_arg_phone}`) is now linked to this chat! 🛵💨",
                     parse_mode="Markdown"
                 )
+                await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
             else:
                 new_r = models.Riders(
                     first_name=f_name,
@@ -322,6 +329,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     text=f"🎉 *Rider Onboarded Successfully!*\n\nWelcome *{f_name} {l_name}* (`{formatted_arg_phone}`)! You are now registered and will receive direct food delivery orders. 🛵💨",
                     parse_mode="Markdown"
                 )
+                await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
             return
         else:
             await send_telegram_message(
@@ -357,12 +365,12 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 text=(
                     f"✅ *Profile Linked Successfully!*\n\n"
                     f"Welcome aboard, *{rider.first_name} {rider.last_name}*! 🛵💨\n\n"
-                    f"You will now receive private 1-on-1 food delivery dispatch pings directly here.\n"
-                    f"💡 *Tip:* Set a loud custom notification sound for this bot in Telegram so orders stand out!"
+                    f"You will now receive private 1-on-1 food delivery dispatch pings directly here."
                 ),
                 parse_mode="Markdown",
                 reply_markup={"remove_keyboard": True}
             )
+            await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
         else:
             # Auto-register new rider from contact card!
             c_first = (contact.get("first_name") or from_user.get("first_name") or "InTime").strip()
@@ -392,15 +400,20 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     f"🎉 *Rider Onboarded Successfully!*\n\n"
                     f"Welcome aboard, *{new_rider.first_name} {new_rider.last_name}*! 🛵💨\n\n"
                     f"Your rider profile has been created and verified for phone `{formatted_phone}`.\n"
-                    f"You will now receive private 1-on-1 food delivery dispatch pings directly here!\n\n"
-                    f"💡 *Tip:* Set a loud custom notification sound for this bot in Telegram so new orders stand out!"
+                    f"You will now receive private 1-on-1 food delivery dispatch pings directly here!"
                 ),
                 parse_mode="Markdown",
                 reply_markup={"remove_keyboard": True}
             )
+            await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
         return
 
-    # --- D. NORMAL RIDER /start COMMAND ---
+    # --- G. CUSTOM RINGTONE COMMAND (/ringtone, /sound, /alert) ---
+    if text in ["/ringtone", "/sound", "/alert"]:
+        await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
+        return
+
+    # --- H. NORMAL RIDER /start COMMAND ---
     if text == "/start":
         # Check if already linked
         rider_res = await db.execute(
@@ -412,7 +425,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 chat_id=chat_id,
                 text=(
                     f"Welcome back, *{rider.first_name}*! 🛵\n\n"
-                    f"Your InTime rider account is active. You will receive direct 1-on-1 food delivery dispatch requests here."
+                    f"Your InTime rider account is active. You will receive direct 1-on-1 food delivery dispatch requests here.\n\n"
+                    f"💡 *Tip:* Send `/ringtone` anytime to get your custom InTime order notification sound!"
                 ),
                 parse_mode="Markdown"
             )

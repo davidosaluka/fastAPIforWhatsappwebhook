@@ -116,6 +116,92 @@ async def answer_callback_query(
         return None
 
 
+RINGTONE_INSTRUCTIONS = (
+    "🔔 *Custom InTime Order Alert Ringtone* 🎵\n\n"
+    "Set this unique sound as your Telegram notification tone so you never miss an InTime order!\n\n"
+    "📱 *How to set this as your ringtone:*\n"
+    "1️⃣ Tap the *three dots (⋮)* on the audio message above.\n"
+    "2️⃣ Select *\"Save for notifications\"* (or *Save sound*).\n"
+    "3️⃣ Tap **InTime Dispatch** at the very top of this chat.\n"
+    "4️⃣ Tap **Notifications** ➔ **Sound** (or *Customize*).\n"
+    "5️⃣ Select **\"InTime Order Alert\"** from the sound list! 🎉"
+)
+
+
+async def send_telegram_audio(
+    chat_id: str | int,
+    audio_path_or_url: Optional[str] = None,
+    caption: Optional[str] = None,
+    title: str = "InTime Order Alert",
+    performer: str = "InTime",
+    parse_mode: str = "Markdown"
+) -> Optional[Dict[str, Any]]:
+    """
+    Sends an MP3 audio file or link to a Telegram chat, which riders and restaurants
+    can save as their custom order notification sound in Telegram.
+    """
+    token = get_bot_token()
+    if not token or not chat_id:
+        logger.warning(f"Telegram sendAudio skipped: token missing or chat_id={chat_id}")
+        return None
+
+    if not audio_path_or_url:
+        audio_path_or_url = os.path.join(os.path.dirname(__file__), "..", "static", "intime_order_alert.mp3")
+
+    url = f"{TELEGRAM_API_BASE}{token}/sendAudio"
+
+    # 1. If it's a local file that exists on disk, upload it via multipart/form-data
+    if os.path.exists(audio_path_or_url):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                with open(audio_path_or_url, "rb") as f:
+                    file_bytes = f.read()
+                files = {
+                    "audio": ("intime_order_alert.mp3", file_bytes, "audio/mpeg")
+                }
+                data = {
+                    "chat_id": str(chat_id),
+                    "title": title,
+                    "performer": performer,
+                }
+                if caption:
+                    data["caption"] = caption
+                    data["parse_mode"] = parse_mode
+                resp = await client.post(url, data=data, files=files)
+                result = resp.json()
+                if not result.get("ok"):
+                    logger.error(f"Telegram sendAudio (file) failed to {chat_id}: {result}")
+                return result
+        except Exception as e:
+            logger.error(f"Error uploading Telegram audio file to {chat_id}: {e}", exc_info=True)
+            return None
+
+    # 2. Remote URL fallback
+    remote_url = audio_path_or_url
+    if not remote_url.startswith("http"):
+        remote_url = "https://fastapiforwhatsappwebhook-production.up.railway.app/static/intime_order_alert.mp3"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            payload = {
+                "chat_id": str(chat_id),
+                "audio": remote_url,
+                "title": title,
+                "performer": performer,
+            }
+            if caption:
+                payload["caption"] = caption
+                payload["parse_mode"] = parse_mode
+            resp = await client.post(url, json=payload)
+            result = resp.json()
+            if not result.get("ok"):
+                logger.error(f"Telegram sendAudio (URL) failed to {chat_id}: {result}")
+            return result
+    except Exception as e:
+        logger.error(f"Error sending Telegram audio URL to {chat_id}: {e}", exc_info=True)
+        return None
+
+
 async def notify_restaurant_food_order(
     order: models.Orders,
     restaurant_name: str,
