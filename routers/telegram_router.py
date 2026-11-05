@@ -614,11 +614,13 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 "👉 *Next Action:* Please stand by! You will receive an instant green light notification here as soon as the transfer is verified to collect the food package."
             )
 
+        recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
         winning_text = (
             f"✅ *YOU ACCEPTED THIS ORDER!* 🛵💨\n\n"
             f"*Order #:* `{order.order_number}`\n"
             f"📍 *Pickup Restaurant:* {order.pickup_location_name}\n"
-            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n\n"
+            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n"
+            f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
             f"📋 *Meal Checklist:*\n{clean_desc}\n\n"
             f"💳 *Total Order Amount:* *{fare_formatted}*\n\n"
             f"{payment_status_line}"

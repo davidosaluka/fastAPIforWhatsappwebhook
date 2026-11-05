@@ -128,11 +128,21 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     base_key = pack_data.get("base_meal")
     if base_key and base_key in MEAL_PRICES:
         item = MEAL_PRICES[base_key]
-        if item["price"] > 0:
-            unit_price += item["price"]
-            items.append(f"{item['name']} (₦{item['price']:,})")
-        elif item["name"] != "No Base Meal":
-            items.append(item["name"])
+        if base_key in ["swallow_semo", "swallow_fufu"] or "swallow" in base_key:
+            try:
+                wraps = int(str(pack_data.get("wrap_qty") or pack_data.get("swallow_wraps") or pack_data.get("semo_qty") or pack_data.get("fufu_qty") or pack_data.get("swallow_qty") or "1").strip())
+            except (ValueError, TypeError):
+                wraps = 1
+            wraps = max(1, wraps)
+            cost = wraps * item["price"]
+            unit_price += cost
+            items.append(f"{wraps} Wrap{'s' if wraps > 1 else ''} {item['name']} (₦{cost:,})")
+        else:
+            if item["price"] > 0:
+                unit_price += item["price"]
+                items.append(f"{item['name']} (₦{item['price']:,})")
+            elif item["name"] != "No Base Meal":
+                items.append(item["name"])
 
     # 2. Soup choice
     soup_key = pack_data.get("soup")
@@ -222,6 +232,16 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
         unit_price += moimoi_cost
         items.append(f"{moimoi_qty}x Moi Moi (₦{moimoi_cost:,})")
 
+    # Extra Swallow / Semo wraps (₦700/wrap)
+    try:
+        extra_swallow = int(str(pack_data.get("extra_swallow_qty") or pack_data.get("extra_semo_qty") or pack_data.get("extra_fufu_qty") or "0").strip())
+    except (ValueError, TypeError):
+        extra_swallow = 0
+    if extra_swallow > 0:
+        es_cost = extra_swallow * 700
+        unit_price += es_cost
+        items.append(f"{extra_swallow}x Extra Swallow Wrap(s) (₦{es_cost:,})")
+
     # Salad (₦500/portion)
     try:
         salad_qty = int(str(pack_data.get("salad_qty") or "0").strip())
@@ -310,12 +330,46 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
     return _estimate_single_plate_price(d)
 
 
+def _extract_swallows(d: str) -> list[tuple[str, int, int]]:
+    """
+    Extracts swallow items, wrap counts, and costs (₦700/wrap).
+    Handles multiple wraps e.g. '2 wraps of semo', '3 semo', '2 fufu', '1 semo, 1 fufu'.
+    """
+    results = []
+    clean_d = d
+    for kw in ["semovita", "semo", "pounded yam", "poundo", "fufu", "eba", "amala", "wheat", "swallow"]:
+        pattern = r'\b' + re.escape(kw) + r'\b'
+        if re.search(pattern, clean_d):
+            # 1. '2 wraps of semo', '2 wraps semo', '2 semo', '2x semo'
+            m1 = re.search(r'(\d+)\s*(?:x|-)?\s*(?:wraps?|wrap)?\s*(?:of\s*)?' + re.escape(kw) + r'\b', clean_d)
+            if m1:
+                wraps = int(m1.group(1))
+            else:
+                # 2. 'semo 2 wraps', 'semo 2'
+                m2 = re.search(re.escape(kw) + r'\s*(?:[-–—:]\s*)?(\d+)\s*(?:wraps?|wrap)?\b', clean_d)
+                if m2:
+                    wraps = int(m2.group(1))
+                else:
+                    # 3. '2 wraps' anywhere in line (if not moimoi wrap)
+                    m3 = re.search(r'(\d+)\s*(?:wraps?|wrap)\b', clean_d)
+                    if m3 and 'moimoi' not in clean_d and 'moi' not in clean_d:
+                        wraps = int(m3.group(1))
+                    else:
+                        wraps = 1
+            cost = wraps * 700
+            results.append((kw, wraps, cost))
+            clean_d = re.sub(pattern, '', clean_d)
+    return results
+
+
 def _estimate_single_plate_price(d: str) -> tuple[int, list[str]]:
     total = 0
     detected_items = []
 
     # Check if this line is ONLY protein/extras (e.g. "15 beef", "3 chicken")
-    has_base = any(k in d for k in ["rice", "semo", "fufu", "swallow", "moimoi", "moi moi", "moi-moi", "spag", "beans", "plate"])
+    has_base = any(k in d for k in ["rice", "semo", "fufu", "swallow", "eba", "amala", "poundo", "moimoi", "moi moi", "moi-moi", "spag", "beans", "plate"])
+    swallow_items = _extract_swallows(d)
+    has_rice = any(k in d for k in ["rice", "beans"])
 
     # 1. Base Meals
     if any(k in d for k in ["mixed rice", "fried & jollof", "fried and jollof"]):
@@ -333,15 +387,13 @@ def _estimate_single_plate_price(d: str) -> tuple[int, list[str]]:
     elif "white rice" in d:
         total += 1300
         detected_items.append("White Rice (₦1,300)")
-    elif any(k in d for k in ["semo", "semovita"]):
-        total += 700
-        detected_items.append("Semo (₦700)")
-    elif "fufu" in d:
-        total += 700
-        detected_items.append("Fufu (₦700)")
     elif "rice" in d:
         total += 1300
         detected_items.append("Rice Meal (₦1,300)")
+    elif swallow_items and not has_rice:
+        for kw, wraps, cost in swallow_items:
+            total += cost
+            detected_items.append(f"{wraps}x {kw.title()} Wrap{'s' if wraps > 1 else ''} (₦{cost:,})")
     elif any(k in d for k in ["moimoi", "moi moi", "moi-moi"]):
         # Moimoi can serve as base meal
         total += 1000
@@ -350,8 +402,14 @@ def _estimate_single_plate_price(d: str) -> tuple[int, list[str]]:
         total += 1300
         detected_items.append("Base Meal (₦1,300)")
 
-    # 2. Additional Moimoi if rice was already detected as base
-    if any(k in d for k in ["rice", "semo", "fufu"]) and any(k in d for k in ["moimoi", "moi moi", "moi-moi"]):
+    # 2. Additional Swallows if rice was already detected as base
+    if has_rice and swallow_items:
+        for kw, wraps, cost in swallow_items:
+            total += cost
+            detected_items.append(f"{wraps}x {kw.title()} Wrap{'s' if wraps > 1 else ''} (₦{cost:,})")
+
+    # 3. Additional Moimoi if rice or swallow was already detected as base
+    if (has_rice or swallow_items) and any(k in d for k in ["moimoi", "moi moi", "moi-moi"]):
         total += 1000
         detected_items.append("Moi Moi (₦1,000)")
 

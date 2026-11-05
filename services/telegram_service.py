@@ -294,11 +294,13 @@ async def dispatch_food_order_to_riders(
         logger.info(f"No active riders with linked Telegram found for order {order.order_number}.")
         return 0
 
+    recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
     dispatch_text = (
         f"🛵 *NEW FOOD DELIVERY AVAILABLE!* 🍲💨\n\n"
         f"*Order #:* `{order.order_number}`\n"
         f"📍 *Pickup:* {restaurant_name} ({pickup_address})\n"
         f"🏁 *Dropoff:* {dropoff_address}\n"
+        f"📞 *Recipient Phone:* `{recipient_phone}`\n"
         f"📦 *Size:* {pack_count} pack{'s' if pack_count > 1 else ''}\n\n"
         f"Tap below to claim this delivery:"
     )
@@ -391,12 +393,14 @@ async def notify_payment_confirmed(
             r_res = await db.execute(rider_stmt)
             rider_obj = r_res.scalars().first()
             if rider_obj and rider_obj.telegram_chat_id:
+                recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
                 rider_msg = (
                     f"🟢 *GREEN LIGHT: PAYMENT CONFIRMED!* 🍲💨\n\n"
                     f"*Order #:* `{order.order_number}`\n"
                     f"Customer transfer of *₦{paid_amount:,}* has been verified!\n\n"
                     f"📍 *Pickup:* {order.pickup_location_name}\n"
-                    f"🏁 *Dropoff:* {order.dropoff_location_name}\n\n"
+                    f"🏁 *Dropoff:* {order.dropoff_location_name}\n"
+                    f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
                     f"👉 *Next Action:* Proceed to the restaurant kitchen now to collect the food package and deliver to the customer!"
                 )
                 await send_telegram_message(chat_id=rider_obj.telegram_chat_id, text=rider_msg, parse_mode="Markdown")
