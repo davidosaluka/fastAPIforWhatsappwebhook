@@ -9,7 +9,7 @@ import models
 import json
 from database import Base, engine, get_db
 from schemas import apiPostRequestResponse, apiRequestCreate
-from routers import createAPIrequest, flow_endpoint
+from routers import createAPIrequest, flow_endpoint, telegram_router
 from scheduler import start_scheduler
 from fastapi.staticfiles import StaticFiles
 import os
@@ -100,6 +100,41 @@ async def lifespan(_app: FastAPI):
                 print("🟢 [MIGRATION] rider_ratings table ensured.")
         except Exception as e:
             print(f"Migration note (rider_ratings): {e}")
+        # riders.telegram_chat_id
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE riders ADD COLUMN IF NOT EXISTS telegram_chat_id VARCHAR(50);'))
+                await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_riders_telegram_chat_id ON riders (telegram_chat_id);'))
+                print("🟢 [MIGRATION] riders.telegram_chat_id column ensured.")
+        except Exception as e:
+            print(f"Migration note (riders telegram_chat_id): {e}")
+
+        # restaurants table
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS restaurants (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(100) NOT NULL UNIQUE,
+                        slug VARCHAR(50) NOT NULL UNIQUE,
+                        telegram_chat_id VARCHAR(50),
+                        address TEXT,
+                        phone_number VARCHAR(50),
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                '''))
+                await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_restaurants_slug ON restaurants (slug);'))
+                init_chat = os.getenv("TELEGRAM_RESTAURANT_CHAT_ID", "").strip() or None
+                await conn.execute(text('''
+                    INSERT INTO restaurants (name, slug, telegram_chat_id, address, is_active)
+                    VALUES ('Madam G Restaurant', 'madam_g', :chat_id, 'Madam G Kitchen, Lagos', TRUE)
+                    ON CONFLICT (slug) DO UPDATE SET telegram_chat_id = COALESCE(restaurants.telegram_chat_id, EXCLUDED.telegram_chat_id);
+                '''), {"chat_id": init_chat})
+                print("🟢 [MIGRATION] restaurants table ensured.")
+        except Exception as e:
+            print(f"Migration note (restaurants table): {e}")
+
 
     elif engine.dialect.name == "sqlite":
         try:
@@ -145,6 +180,28 @@ async def lifespan(_app: FastAPI):
         except Exception:
             pass
 
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE riders ADD COLUMN telegram_chat_id VARCHAR(50);'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS restaurants (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name VARCHAR(100) NOT NULL UNIQUE,
+                        slug VARCHAR(50) NOT NULL UNIQUE,
+                        telegram_chat_id VARCHAR(50),
+                        address TEXT,
+                        phone_number VARCHAR(50),
+                        is_active BOOLEAN NOT NULL DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                '''))
+        except Exception:
+            pass
+
     scheduler = start_scheduler()
     yield
     # Shutdown
@@ -158,6 +215,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.include_router(createAPIrequest.router, prefix="/webhook", tags=["createAPIrequest"])
 app.include_router(flow_endpoint.router, prefix="/api", tags=["flow_endpoint"])
+app.include_router(telegram_router.router, prefix="/telegram", tags=["telegram"])
 
 # Mount static directory for restaurant logos
 static_dir = os.path.join(os.path.dirname(__file__), "static")

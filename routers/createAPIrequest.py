@@ -37,6 +37,7 @@ import os
 from dotenv import load_dotenv
 
 import replyhandler
+from services import telegram_service
 
 
 
@@ -1059,14 +1060,33 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                 }
 
+                # 1. Ping the restaurant on Telegram with complete order breakdown
                 asyncio.create_task(
-
-                    replyhandler.fetch_and_distribute_orders_to_all_active_and_verified_riders(
-
-                        order_details, AUTH, GRAPH_URL
-
+                    telegram_service.notify_restaurant_food_order(
+                        order=new_food_order,
+                        restaurant_name=selected_restaurant,
+                        items_summary=cart_summary,
+                        subtotal=int(subtotal),
+                        delivery_fee=int(delivery_fee),
+                        grand_total=int(grand_total),
+                        customer_phone=contact_phone,
+                        dropoff_address=raw_address,
+                        db=db
                     )
+                )
 
+                # 2. Dispatch 1-on-1 to active riders on Telegram
+                calc_packs = max(1, cart_summary.count("📦")) if cart_summary else 1
+                asyncio.create_task(
+                    telegram_service.dispatch_food_order_to_riders(
+                        order=new_food_order,
+                        restaurant_name=selected_restaurant,
+                        pickup_address=new_food_order.pickup_location_name,
+                        dropoff_address=raw_address,
+                        pack_count=calc_packs,
+                        delivery_fee=int(delivery_fee),
+                        db=db
+                    )
                 )
 
                 return {"status": "dynamic_food_order_created", "order_number": new_food_order.order_number}

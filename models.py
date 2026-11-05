@@ -81,6 +81,7 @@ class Riders(Base):
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     kyc_status: Mapped[str] = mapped_column(String(50), nullable=False)
     availability_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    telegram_chat_id: Mapped[str] = mapped_column(String(50), nullable=True, index=True)
 
 
 class RiderOffer(Base):
@@ -113,4 +114,16 @@ class RiderRating(Base):
     rider_wa_number: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     order_number: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
     rating: Mapped[int] = mapped_column(Integer, nullable=False)   # 1–5
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+class Restaurants(Base):
+    __tablename__ = "restaurants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    telegram_chat_id: Mapped[str] = mapped_column(String(50), nullable=True, index=True)
+    address: Mapped[str] = mapped_column(String(255), nullable=True)
+    phone_number: Mapped[str] = mapped_column(String(50), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
