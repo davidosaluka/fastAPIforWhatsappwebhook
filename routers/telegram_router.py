@@ -280,14 +280,19 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
         except ValueError:
             fare_formatted = f"₦{fare_display}"
 
+        # Clean meal details: strip individual pack/item prices for rider checklist
+        raw_desc = order.package_description or ""
+        clean_desc = re.sub(r'^Food Order from [^|]+ \|\s*', '', raw_desc)
+        clean_desc = re.sub(r'\s*[-–—]\s*[₦N]?[\d,]+(?=\s*(?:\n|$))', '', clean_desc)
+        clean_desc = re.sub(r'\s*\([₦N]?[\d,]+\)', '', clean_desc)
+
         winning_text = (
             f"✅ *YOU ACCEPTED THIS ORDER!* 🛵💨\n\n"
             f"*Order #:* `{order.order_number}`\n"
             f"📍 *Pickup Restaurant:* {order.pickup_location_name}\n"
-            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n"
-            f"📞 *Customer Phone:* `{order.recipient_phone_number}`\n"
-            f"💵 *Your Delivery Payout:* *{fare_formatted}*\n\n"
-            f"📋 *Meal Details:*\n{order.package_description}\n\n"
+            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n\n"
+            f"📋 *Meal Checklist:*\n{clean_desc}\n\n"
+            f"💳 *Total Order Amount:* *{fare_formatted}*\n\n"
             f"👉 *Next Action:* Proceed to the restaurant now to collect the food package!"
         )
         if chat_id and message_id:
@@ -351,3 +356,4 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 await send_telegram_message(chat_id=rest_chat_id, text=rest_alert, parse_mode="Markdown")
         except Exception as r_alert_err:
             logger.warning(f"Failed to alert restaurant on TG rider claim: {r_alert_err}")
+

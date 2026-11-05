@@ -105,15 +105,15 @@ def calculate_delivery_fee(pack_count: int) -> int:
     """
     Tiered delivery fee:
     - Up to 9 packs: ₦800
-    - 10 to 14 packs: ₦1,000
-    - 15 to 24 packs: ₦1,500
+    - 10 to 15 packs: ₦1,000
+    - 16 to 24 packs: ₦1,500
     - 25 packs and above: ₦2,000
     """
     if pack_count <= 9:
         return 800
-    elif 10 <= pack_count <= 14:
+    elif 10 <= pack_count <= 15:
         return 1000
-    elif 15 <= pack_count <= 24:
+    elif 16 <= pack_count <= 24:
         return 1500
     else:
         return 2000
@@ -286,6 +286,34 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
     total = 0
     detected_items = []
 
+    # Check if this line has "N plates of ..." with items before/after
+    # Example: "moimoi, 2 plates of white rice, stew and 3 beef each"
+    plate_match = re.search(r'(\d+)\s*(?:plates?|packs?)\s*of\s*(.*?)(?:each)?$', d)
+    if plate_match:
+        qty_plates = int(plate_match.group(1))
+        plate_content = plate_match.group(2)
+        before_plates = d[:plate_match.start()].strip(' ,-–—:')
+
+        # Price before_plates (e.g. "moimoi")
+        side_price, side_items = (0, [])
+        if before_plates:
+            side_price, side_items = estimate_items_price(before_plates)
+
+        # Price plate_content (e.g. "white rice, stew and 3 beef")
+        plate_unit_price, plate_items = _estimate_single_plate_price(plate_content)
+
+        total_line = side_price + (qty_plates * plate_unit_price)
+        all_items = side_items + [f"{qty_plates}x Plate: {', '.join(plate_items)} (₦{qty_plates * plate_unit_price:,})"]
+        return total_line, all_items
+
+    # Otherwise, single plate / standard order
+    return _estimate_single_plate_price(d)
+
+
+def _estimate_single_plate_price(d: str) -> tuple[int, list[str]]:
+    total = 0
+    detected_items = []
+
     # Check if this line is ONLY protein/extras (e.g. "15 beef", "3 chicken")
     has_base = any(k in d for k in ["rice", "semo", "fufu", "swallow", "moimoi", "moi moi", "moi-moi", "spag", "beans", "plate"])
 
@@ -328,7 +356,8 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         detected_items.append("Moi Moi (₦1,000)")
 
     # 3. Soups
-    if any(k in d for k in ["vegetable", "vegetables", "efo"]):
+    has_vegetable = any(k in d for k in ["vegetable", "vegetables", "efo"])
+    if has_vegetable:
         total += 500
         detected_items.append("Vegetable Soup (₦500)")
     elif "egusi" in d:
@@ -431,8 +460,9 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 500
         detected_items.append("Salad (₦500)")
 
-    # Pepper Sauce (₦300)
-    if "pepper sauce" in d or "sauce" in d:
+    # Pepper Sauce (₦300) - Only if NOT "vegetable sauce"
+    # "vegetable sauce" is vegetable soup (₦500), not an extra ₦300 sauce!
+    if ("pepper sauce" in d or "sauce" in d) and not has_vegetable:
         total += 300
         detected_items.append("Pepper Sauce (₦300)")
 
@@ -456,10 +486,11 @@ def estimate_items_price(desc: str) -> tuple[int, list[str]]:
         total += 500
         detected_items.append("Soft Drink (₦500)")
 
-    # Check for multiplier like "2 plates of ..."
-    plate_match = re.search(r'(\d+)\s*(?:plates?|packs?)\b', d)
-    multiplier = int(plate_match.group(1)) if plate_match else 1
-    total *= multiplier
+    # Fallback multiplier if simple "2 plates of ..." with no extra side
+    if "of" not in d:
+        plate_match_simple = re.search(r'(\d+)\s*(?:plates?|packs?)\b', d)
+        multiplier = int(plate_match_simple.group(1)) if plate_match_simple else 1
+        total *= multiplier
 
     return total, detected_items
 
@@ -476,7 +507,7 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
             continue
 
         header_match = re.match(r'^(?:\d+[\.\)]\s*)?([A-Za-z0-9\s]+?)(?:[-–—:]\s*\d+\s*orders?)?:?$', line, re.IGNORECASE)
-        is_food_line = any(k in line.lower() for k in ["rice", "semo", "fufu", "beef", "chicken", "fish", "meat", "plantain", "salad", "water", "egg", "soup", "moimoi", "beans"])
+        is_food_line = any(k in line.lower() for k in ["rice", "semo", "fufu", "beef", "chicken", "fish", "meat", "plantain", "salad", "water", "egg", "soup", "moimoi", "beans", "vegetable"])
 
         if header_match and not is_food_line:
             current_person = header_match.group(1).strip()
@@ -519,7 +550,7 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
         else:
             estimated_price, _ = estimate_items_price(desc)
             price = estimated_price
-            items_list = [f"{desc} (₦{price:,})"]
+            items_list = [desc]
 
         subtotal += price
         pack_name = f"{person}: {desc}"
@@ -533,7 +564,6 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
         })
 
     return packs, subtotal
-
 
 
 def format_cart_display(cart_packs: list[dict]) -> tuple[str, int]:

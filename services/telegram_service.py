@@ -213,8 +213,7 @@ async def dispatch_food_order_to_riders(
         f"*Order #:* `{order.order_number}`\n"
         f"📍 *Pickup:* {restaurant_name} ({pickup_address})\n"
         f"🏁 *Dropoff:* {dropoff_address}\n"
-        f"📦 *Size:* {pack_count} pack{'s' if pack_count > 1 else ''}\n"
-        f"💵 *Your Delivery Payout:* *₦{delivery_fee:,}*\n\n"
+        f"📦 *Size:* {pack_count} pack{'s' if pack_count > 1 else ''}\n\n"
         f"Tap below to claim this delivery:"
     )
 
@@ -262,3 +261,4 @@ async def dispatch_food_order_to_riders(
 
     logger.info(f"Dispatched food order {order.order_number} to {sent_count} rider(s) on Telegram.")
     return sent_count
+
