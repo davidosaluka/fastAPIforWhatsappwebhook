@@ -161,6 +161,35 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             await send_telegram_message(chat_id=chat_id, text="Usage: `/link_restaurant <slug>` (e.g. `/link_restaurant madam_g`)")
             return
 
+    # --- C. RESTAURANT UNLINK COMMAND (/unlink_restaurant [slug]) ---
+    if text.startswith("/unlink_restaurant"):
+        parts = text.split()
+        slug = parts[1].strip().lower() if len(parts) >= 2 else None
+        if slug:
+            rest_stmt = select(models.Restaurants).where(models.Restaurants.slug == slug)
+        else:
+            rest_stmt = select(models.Restaurants).where(models.Restaurants.telegram_chat_id == chat_id)
+
+        rest_res = await db.execute(rest_stmt)
+        restaurants = rest_res.scalars().all()
+        if restaurants:
+            for r in restaurants:
+                r.telegram_chat_id = None
+            await db.commit()
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="✅ *Unlinked Successfully!*\n\nThis chat will no longer receive restaurant orders. If you are a rider, send `/start` to link your rider account.",
+                parse_mode="Markdown"
+            )
+            return
+        else:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="ℹ️ This chat is not currently linked to any restaurant.",
+                parse_mode="Markdown"
+            )
+            return
+
     # --- C. RIDER PHONE NUMBER SHARING (Contact Card) ---
     if contact:
         raw_phone = contact.get("phone_number", "")
