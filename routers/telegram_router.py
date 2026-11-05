@@ -79,6 +79,7 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
 async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
     chat = message.get("chat", {})
     chat_id = str(chat.get("id"))
+    from_user = message.get("from", {})
     text = (message.get("text") or "").strip()
     contact = message.get("contact")
 
@@ -221,7 +222,67 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         await send_telegram_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         return
 
-    # --- C. RIDER PHONE NUMBER SHARING (Contact Card) ---
+    # --- E. RIDER MANUAL REGISTRATION COMMAND (/register_rider <phone> [First] [Last]) ---
+    if text.startswith("/register_rider"):
+        parts = text.split(maxsplit=3)
+        if len(parts) >= 2:
+            phone_arg = parts[1].strip()
+            clean_arg_phone = re.sub(r'[^\d]', '', phone_arg)
+            if clean_arg_phone.startswith("0") and len(clean_arg_phone) == 11:
+                formatted_arg_phone = "234" + clean_arg_phone[1:]
+            elif len(clean_arg_phone) == 10:
+                formatted_arg_phone = "234" + clean_arg_phone
+            else:
+                formatted_arg_phone = clean_arg_phone
+
+            f_name = parts[2].strip() if len(parts) >= 3 else (from_user.get("first_name") or "InTime").strip()
+            l_name = parts[3].strip() if len(parts) >= 4 else (from_user.get("last_name") or "Rider").strip()
+
+            # Check if rider already exists
+            r_res = await db.execute(
+                select(models.Riders).where(
+                    (models.Riders.rider_wa_number.in_(replyhandler.get_phone_variants(formatted_arg_phone))) |
+                    (models.Riders.telegram_chat_id == chat_id)
+                )
+            )
+            existing_rider = r_res.scalars().first()
+            if existing_rider:
+                existing_rider.telegram_chat_id = chat_id
+                existing_rider.availability_status = "available"
+                existing_rider.kyc_status = "verified"
+                await db.commit()
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=f"✅ *Rider Profile Linked!*\n\nProfile for *{existing_rider.first_name} {existing_rider.last_name}* (`{formatted_arg_phone}`) is now linked to this chat! 🛵💨",
+                    parse_mode="Markdown"
+                )
+            else:
+                new_r = models.Riders(
+                    first_name=f_name,
+                    last_name=l_name,
+                    rider_wa_number=formatted_arg_phone,
+                    rider_phonenumber_2=formatted_arg_phone,
+                    availability_status="available",
+                    kyc_status="verified",
+                    telegram_chat_id=chat_id
+                )
+                db.add(new_r)
+                await db.commit()
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=f"🎉 *Rider Onboarded Successfully!*\n\nWelcome *{f_name} {l_name}* (`{formatted_arg_phone}`)! You are now registered and will receive direct food delivery orders. 🛵💨",
+                    parse_mode="Markdown"
+                )
+            return
+        else:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: `/register_rider <phone_number> [First_Name] [Last_Name]`\nExample: `/register_rider 08123456789 John Doe`",
+                parse_mode="Markdown"
+            )
+            return
+
+    # --- F. RIDER PHONE NUMBER SHARING (Contact Card) ---
     if contact:
         raw_phone = contact.get("phone_number", "")
         clean_phone = re.sub(r'[^\d]', '', str(raw_phone))
@@ -239,6 +300,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         rider = rider_res.scalars().first()
         if rider:
             rider.telegram_chat_id = chat_id
+            rider.availability_status = "available"
+            rider.kyc_status = "verified"
             await db.commit()
             await send_telegram_message(
                 chat_id=chat_id,
@@ -252,13 +315,39 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 reply_markup={"remove_keyboard": True}
             )
         else:
+            # Auto-register new rider from contact card!
+            c_first = (contact.get("first_name") or from_user.get("first_name") or "InTime").strip()
+            c_last = (contact.get("last_name") or from_user.get("last_name") or "Rider").strip()
+            formatted_phone = clean_phone
+            if clean_phone.startswith("0") and len(clean_phone) == 11:
+                formatted_phone = "234" + clean_phone[1:]
+            elif len(clean_phone) == 10:
+                formatted_phone = "234" + clean_phone
+
+            new_rider = models.Riders(
+                first_name=c_first,
+                last_name=c_last,
+                rider_wa_number=formatted_phone,
+                rider_phonenumber_2=formatted_phone,
+                availability_status="available",
+                kyc_status="verified",
+                telegram_chat_id=chat_id
+            )
+            db.add(new_rider)
+            await db.commit()
+            await db.refresh(new_rider)
+
             await send_telegram_message(
                 chat_id=chat_id,
                 text=(
-                    f"⚠️ No registered InTime rider was found for phone *{raw_phone}*.\n\n"
-                    f"Please ensure you are registered on InTime with this phone number or contact support at +234 815 103 3428."
+                    f"🎉 *Rider Onboarded Successfully!*\n\n"
+                    f"Welcome aboard, *{new_rider.first_name} {new_rider.last_name}*! 🛵💨\n\n"
+                    f"Your rider profile has been created and verified for phone `{formatted_phone}`.\n"
+                    f"You will now receive private 1-on-1 food delivery dispatch pings directly here!\n\n"
+                    f"💡 *Tip:* Set a loud custom notification sound for this bot in Telegram so new orders stand out!"
                 ),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup={"remove_keyboard": True}
             )
         return
 
