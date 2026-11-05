@@ -135,6 +135,28 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             print(f"Migration note (restaurants table): {e}")
 
+        # payment, credit_balance, and restaurant bank accounts
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_balance INTEGER NOT NULL DEFAULT 0;'))
+                await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'pending_payment';"))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_amount INTEGER DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_image_id TEXT;'))
+                await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_name VARCHAR(100);'))
+                await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_number VARCHAR(50);'))
+                await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS bank_name VARCHAR(100);'))
+                await conn.execute(text("""
+                    UPDATE restaurants 
+                    SET account_name = COALESCE(account_name, 'Christiana Adamu'),
+                        account_number = COALESCE(account_number, '5330778741'),
+                        bank_name = COALESCE(bank_name, 'Moniepoint')
+                    WHERE slug = 'madam_g';
+                """))
+                print("🟢 [MIGRATION] payment, credit_balance, and restaurant bank columns ensured.")
+        except Exception as e:
+            print(f"Migration note (payment cols): {e}")
+
+
 
     elif engine.dialect.name == "sqlite":
         try:
@@ -155,6 +177,13 @@ async def lifespan(_app: FastAPI):
             'ALTER TABLE orders ADD COLUMN is_priority BOOLEAN DEFAULT 0;',
             'ALTER TABLE orders ADD COLUMN verification_code VARCHAR(10);',
             'ALTER TABLE orders ADD COLUMN verification_attempts INTEGER DEFAULT 0;',
+            'ALTER TABLE users ADD COLUMN credit_balance INTEGER DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) DEFAULT "pending_payment";',
+            'ALTER TABLE orders ADD COLUMN paid_amount INTEGER DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN receipt_image_id TEXT;',
+            'ALTER TABLE restaurants ADD COLUMN account_name VARCHAR(100);',
+            'ALTER TABLE restaurants ADD COLUMN account_number VARCHAR(50);',
+            'ALTER TABLE restaurants ADD COLUMN bank_name VARCHAR(100);',
         ]:
             try:
                 async with engine.begin() as conn:

@@ -37,7 +37,7 @@ import os
 from dotenv import load_dotenv
 
 import replyhandler
-from services import telegram_service
+from services import telegram_service, receipt_service
 
 
 
@@ -975,38 +975,57 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
+                # Query customer credit balance from prior overpayments
+                user_res = await db.execute(
+                    select(models.User).where(
+                        (models.User.display_phone_number.in_(possible_numbers)) |
+                        (models.User.wa_id.in_(possible_numbers)) |
+                        (models.User.phone_number_id.in_(possible_numbers))
+                    )
+                )
+                user_obj = user_res.scalars().first()
+                user_credit = getattr(user_obj, "credit_balance", 0) or 0
+                credit_applied = 0
+                amount_to_pay = int(grand_total)
+
+                if user_credit > 0:
+                    credit_applied = min(user_credit, amount_to_pay)
+                    amount_to_pay -= credit_applied
+                    user_obj.credit_balance -= credit_applied
+                    await db.commit()
+
+                # Query restaurant bank account details
+                rest_clean = (selected_restaurant or "").replace(", Lagos", "").strip()
+                rest_db_res = await db.execute(
+                    select(models.Restaurants).where(
+                        (models.Restaurants.name.ilike(f"%{rest_clean}%")) |
+                        (models.Restaurants.slug == rest_clean.lower().replace(" ", "_"))
+                    )
+                )
+                rest_record = rest_db_res.scalars().first()
+                acct_name = rest_record.account_name if (rest_record and rest_record.account_name) else "Christiana Adamu"
+                acct_num = rest_record.account_number if (rest_record and rest_record.account_number) else "5330778741"
+                bank_name = rest_record.bank_name if (rest_record and rest_record.bank_name) else "Moniepoint"
+
                 new_food_order = models.Orders(
-
                     status="confirmed",
-
+                    payment_status="pending_payment",
+                    paid_amount=0,
                     sender_wa_number=sender_wa_number,
-
                     recipient_phone_number=contact_phone,
-
                     pickup_location_name=f"{selected_restaurant}, Lagos",
-
                     dropoff_location_name=raw_address,
-
                     package_description=package_desc,
-
-                    customer_initial_offered_price=str(int(grand_total)),
-
-                    final_price_agreed_by_cust_and_rider=str(int(grand_total)),
-
+                    customer_initial_offered_price=str(int(amount_to_pay)),
+                    final_price_agreed_by_cust_and_rider=str(int(amount_to_pay)),
                     package_image_id="FOOD_ORDER",
-
                     is_drug=False,
-
                     is_urgent=True,
-
                     is_priority=True
-
                 )
 
                 db.add(new_food_order)
-
                 await db.commit()
-
                 await db.refresh(new_food_order)
 
                 # Persist raw_address to models.User so customer's saved address is remembered
@@ -1025,7 +1044,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     except Exception as addr_cache_err:
                         print(f"Failed to update user address on food order: {addr_cache_err}")
 
-
+                credit_line = f"🎁 *Previous Overpayment Credit Applied:* -₦{credit_applied:,}\n" if credit_applied > 0 else ""
 
                 receipt_msg = (
                     f"🍽️ *Order Confirmed from {selected_restaurant}!* 🍲✨\n\n"
@@ -1035,9 +1054,17 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     f"📋 *Your Meal Packs:*\n{cart_summary}\n\n"
                     f"💵 *Food Subtotal:* ₦{int(subtotal):,}\n"
                     f"🛵 *Delivery Fee:* ₦{int(delivery_fee):,}\n"
-                    f"💳 *Grand Total:* *₦{int(grand_total):,}*\n\n"
-                    f"🛵 *Searching for nearby InTime riders...*\n"
-                    f"{selected_restaurant} is preparing your meal! We will notify you as soon as a rider accepts. 🍲💨"
+                    f"{credit_line}"
+                    f"💳 *Total Amount to Pay:* *₦{int(amount_to_pay):,}*\n\n"
+                    f"⚠️ *Payment confirms order.*\n"
+                    f"*(Please note: Packages will only move from the restaurant after receipt confirmation!)*\n\n"
+                    f"🏦 *Account Details*\n"
+                    f"Name: {acct_name}\n"
+                    f"Account Number: `{acct_num}`\n"
+                    f"Bank: {bank_name}\n\n"
+                    f"Please send a receipt of the transfer after transaction for confirmation. Thank you for choosing {selected_restaurant}.\n\n"
+                    f"You can please send your address as well.\n\n"
+                    f"Powered by *InTime.*"
                 )
 
                 await replyhandler.send_custom_message(sender_wa_number, receipt_msg, AUTH, GRAPH_URL)
@@ -2584,43 +2611,192 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         else:
 
             if message["type"] == "text":
-
                 text_body = message.get("text", {}).get("body", "")
-
                 contacts = value.get("contacts", [{}])
-
                 profile = contacts[0].get("profile", {}) if contacts else {}
-
                 username = profile.get("name", "User")
+
+                # Check if this customer has an active food order awaiting payment
+                f_ord_res = await db.execute(
+                    select(models.Orders)
+                    .where(models.Orders.sender_wa_number.in_(possible_numbers))
+                    .where(models.Orders.package_image_id == "FOOD_ORDER")
+                    .where(models.Orders.payment_status.in_(["pending_payment", "partial_payment"]))
+                    .where(models.Orders.status.in_(["confirmed", "rider_accepted"]))
+                    .order_by(models.Orders.created_at.desc())
+                )
+                pending_food = f_ord_res.scalars().first()
+
+                if pending_food and any(kw in text_body.lower() for kw in ["paid", "pay", "transfer", "sent", "receipt", "naira", "₦"]) and receipt_service.extract_amount_from_text(text_body):
+                    txt_amt = receipt_service.extract_amount_from_text(text_body)
+                    quote_amt = int(float(pending_food.customer_initial_offered_price or pending_food.final_price_agreed_by_cust_and_rider or "0"))
+                    prev_paid = getattr(pending_food, "paid_amount", 0) or 0
+                    amt_due = max(0, quote_amt - prev_paid)
+                    r_name = (pending_food.pickup_location_name or "Madam G Restaurant").replace(", Lagos", "").strip()
+
+                    if txt_amt >= amt_due:
+                        excess = txt_amt - amt_due
+                        pending_food.paid_amount = prev_paid + txt_amt
+                        pending_food.payment_status = "paid"
+                        if excess > 0:
+                            u_res = await db.execute(
+                                select(models.User).where(
+                                    (models.User.display_phone_number.in_(possible_numbers)) |
+                                    (models.User.wa_id.in_(possible_numbers)) |
+                                    (models.User.phone_number_id.in_(possible_numbers))
+                                )
+                            )
+                            u_rec = u_res.scalars().first()
+                            if u_rec:
+                                u_rec.credit_balance = (getattr(u_rec, "credit_balance", 0) or 0) + excess
+                        await db.commit()
+
+                        if excess > 0:
+                            c_msg = (
+                                f"✅ *Payment Confirmed & Credit Saved!* 🍲✨\n\n"
+                                f"Order #: *{pending_food.order_number}*\n"
+                                f"We recorded your transfer of *₦{txt_amt:,}* (Amount due: ₦{amt_due:,}).\n\n"
+                                f"🎁 *Extra balance of ₦{excess:,}* has been credited to your InTime account! It will be automatically deducted from your next order.\n\n"
+                                f"🛵 Your dispatch rider and {r_name} have been notified that your food package is cleared for pickup!"
+                            )
+                        else:
+                            c_msg = (
+                                f"✅ *Payment Confirmed!* 🍲✨\n\n"
+                                f"Order #: *{pending_food.order_number}*\n"
+                                f"We recorded your payment of *₦{txt_amt:,}*.\n\n"
+                                f"🛵 Your dispatch rider and {r_name} have been given the green light! Your meal is cleared for delivery."
+                            )
+                        await replyhandler.send_custom_message(sender_wa_number, c_msg, AUTH, GRAPH_URL)
+                        await telegram_service.notify_payment_confirmed(pending_food, txt_amt, db)
+                        return Response(status_code=200)
 
                 await replyhandler.handle_text_message(sender_wa_number, text_body, username, db, AUTH, GRAPH_URL)
 
 
 
-    elif message["type"] == "image":
-
+    elif message["type"] in ["image", "document"]:
         sender_wa_number = message["from"]
-
         possible_numbers = replyhandler.get_phone_variants(sender_wa_number)
 
-
-
-        result = await db.execute(
-
-        select(models.Orders)
-
-        .where(models.Orders.sender_wa_number.in_(possible_numbers))
-
-        .where(models.Orders.customer_initial_offered_price.is_not(None))
-
-        .where(models.Orders.package_image_id.is_(None))
-
-        .where(models.Orders.sla_expires_by > datetime.now(UTC))
-
-        .order_by(models.Orders.created_at.desc())
-
+        # 1. Check for Active Food Order awaiting payment receipt
+        food_ord_res = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.sender_wa_number.in_(possible_numbers))
+            .where(models.Orders.package_image_id == "FOOD_ORDER")
+            .where(models.Orders.payment_status.in_(["pending_payment", "partial_payment"]))
+            .where(models.Orders.status.in_(["confirmed", "rider_accepted"]))
+            .order_by(models.Orders.created_at.desc())
         )
+        active_food_order = food_ord_res.scalars().first()
 
+        if active_food_order:
+            media_id = message.get("image", {}).get("id") or message.get("document", {}).get("id")
+            caption = message.get("image", {}).get("caption", "") or message.get("document", {}).get("caption", "")
+
+            # Download media and parse transfer receipt
+            img_bytes = await receipt_service.download_whatsapp_media(media_id, AUTH) if media_id else None
+            transferred_amt, _ = receipt_service.parse_transfer_receipt(image_bytes=img_bytes, text_content=caption)
+
+            quote_amt = int(float(active_food_order.customer_initial_offered_price or active_food_order.final_price_agreed_by_cust_and_rider or "0"))
+            previously_paid = getattr(active_food_order, "paid_amount", 0) or 0
+            amount_due = max(0, quote_amt - previously_paid)
+
+            rest_name = (active_food_order.pickup_location_name or "Madam G Restaurant").replace(", Lagos", "").strip()
+            rest_db_res = await db.execute(
+                select(models.Restaurants).where(
+                    (models.Restaurants.name.ilike(f"%{rest_name}%")) |
+                    (models.Restaurants.slug == rest_name.lower().replace(" ", "_"))
+                )
+            )
+            r_rec = rest_db_res.scalars().first()
+            acct_n = r_rec.account_name if r_rec and r_rec.account_name else "Christiana Adamu"
+            acct_num = r_rec.account_number if r_rec and r_rec.account_number else "5330778741"
+            bank_n = r_rec.bank_name if r_rec and r_rec.bank_name else "Moniepoint"
+
+            if not transferred_amt:
+                await replyhandler.send_custom_message(
+                    sender_wa_number,
+                    f"⚠️ We received your receipt for Order *#{active_food_order.order_number}*, but could not automatically detect the transfer amount.\n\n"
+                    f"Please reply with the exact amount you transferred (e.g. *₦{amount_due:,}*) or re-upload a clear receipt screenshot.",
+                    AUTH,
+                    GRAPH_URL
+                )
+                return Response(status_code=200)
+
+            # Case A: Exact payment or overpayment
+            if transferred_amt >= amount_due:
+                excess = transferred_amt - amount_due
+                active_food_order.paid_amount = previously_paid + transferred_amt
+                active_food_order.payment_status = "paid"
+                active_food_order.receipt_image_id = media_id
+
+                if excess > 0:
+                    u_res = await db.execute(
+                        select(models.User).where(
+                            (models.User.display_phone_number.in_(possible_numbers)) |
+                            (models.User.wa_id.in_(possible_numbers)) |
+                            (models.User.phone_number_id.in_(possible_numbers))
+                        )
+                    )
+                    user_record = u_res.scalars().first()
+                    if user_record:
+                        user_record.credit_balance = (getattr(user_record, "credit_balance", 0) or 0) + excess
+
+                await db.commit()
+
+                if excess > 0:
+                    confirm_text = (
+                        f"✅ *Payment Confirmed & Credit Saved!* 🍲✨\n\n"
+                        f"Order #: *{active_food_order.order_number}*\n"
+                        f"We received your transfer of *₦{transferred_amt:,}* (Amount due: ₦{amount_due:,}).\n\n"
+                        f"🎁 *Extra balance of ₦{excess:,}* has been credited to your InTime account! It will be automatically deducted from your next order.\n\n"
+                        f"🛵 Your dispatch rider and {rest_name} have been notified that your food package is cleared for pickup!"
+                    )
+                else:
+                    confirm_text = (
+                        f"✅ *Payment Confirmed!* 🍲✨\n\n"
+                        f"Order #: *{active_food_order.order_number}*\n"
+                        f"We have verified your transfer of *₦{transferred_amt:,}*.\n\n"
+                        f"🛵 Your dispatch rider and {rest_name} have been given the green light! Your meal is being prepared and will be en route shortly."
+                    )
+                await replyhandler.send_custom_message(sender_wa_number, confirm_text, AUTH, GRAPH_URL)
+
+                # Alert restaurant and rider on Telegram
+                await telegram_service.notify_payment_confirmed(active_food_order, transferred_amt, db)
+                return Response(status_code=200)
+
+            # Case B: Underpayment
+            else:
+                shortfall = amount_due - transferred_amt
+                active_food_order.paid_amount = previously_paid + transferred_amt
+                active_food_order.payment_status = "partial_payment"
+                active_food_order.receipt_image_id = media_id
+                await db.commit()
+
+                shortfall_msg = (
+                    f"⚠️ *Partial Payment Received*\n\n"
+                    f"Order #: *{active_food_order.order_number}*\n"
+                    f"We received: *₦{transferred_amt:,}*\n"
+                    f"Total order quote: *₦{quote_amt:,}*\n\n"
+                    f"👉 Please transfer the remaining balance of *₦{shortfall:,}* to complete your order.\n\n"
+                    f"🏦 *Account Details*\n"
+                    f"• Name: {acct_n}\n"
+                    f"• Account: `{acct_num}`\n"
+                    f"• Bank: {bank_n}\n\n"
+                    f"*(Please send your receipt once the balance is transferred to clear your meal for pickup!)*"
+                )
+                await replyhandler.send_custom_message(sender_wa_number, shortfall_msg, AUTH, GRAPH_URL)
+                return Response(status_code=200)
+
+        # 2. Package delivery parcel image (original logic)
+        result = await db.execute(
+            select(models.Orders)
+            .where(models.Orders.sender_wa_number.in_(possible_numbers))
+            .where(models.Orders.customer_initial_offered_price.is_not(None))
+            .where(models.Orders.package_image_id.is_(None))
+            .where(models.Orders.sla_expires_by > datetime.now(UTC))
+            .order_by(models.Orders.created_at.desc())
+        )
         result = result.scalars().first()
 
 

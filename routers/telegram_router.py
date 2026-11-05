@@ -195,7 +195,53 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             )
             return
 
-    # --- D. STATUS / WHOAMI COMMAND (/status, /whoami) ---
+    # --- D. RESTAURANT SET BANK COMMAND (/set_bank <bank_name> <account_number> <account_name>) ---
+    if text.startswith("/set_bank"):
+        parts = text.split(maxsplit=3)
+        if len(parts) >= 4:
+            b_name = parts[1].strip()
+            a_num = parts[2].strip()
+            a_name = parts[3].strip()
+
+            rest_res = await db.execute(
+                select(models.Restaurants).where(
+                    (models.Restaurants.telegram_chat_id == chat_id) |
+                    (models.Restaurants.slug == "madam_g")
+                )
+            )
+            restaurant = rest_res.scalars().first()
+            if restaurant:
+                restaurant.bank_name = b_name
+                restaurant.account_number = a_num
+                restaurant.account_name = a_name
+                await db.commit()
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"✅ *Bank Details Updated for {restaurant.name}!* 🏦\n\n"
+                        f"• *Bank:* {b_name}\n"
+                        f"• *Account Number:* `{a_num}`\n"
+                        f"• *Account Name:* {a_name}\n\n"
+                        f"Customers ordering from {restaurant.name} will now see these payment details on WhatsApp."
+                    ),
+                    parse_mode="Markdown"
+                )
+            else:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="⚠️ This chat is not currently linked to any restaurant. First send `/link_restaurant <slug>` to link.",
+                    parse_mode="Markdown"
+                )
+            return
+        else:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: `/set_bank <Bank_Name> <Account_Number> <Account_Name>`\nExample: `/set_bank Moniepoint 5330778741 Christiana Adamu`",
+                parse_mode="Markdown"
+            )
+            return
+
+    # --- E. STATUS / WHOAMI COMMAND (/status, /whoami) ---
     if text in ["/status", "/whoami", "/id"]:
         rider_res = await db.execute(
             select(models.Riders).where(models.Riders.telegram_chat_id == chat_id)
@@ -214,8 +260,11 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             msg += "• *Rider Account:* ❌ Not linked as a rider (Send `/start` to link)\n"
 
         if linked_restaurants:
-            r_names = ", ".join([f"*{r.name}* (`{r.slug}`)" for r in linked_restaurants])
-            msg += f"• *Restaurant:* ✅ Linked to {r_names}\n"
+            r_details = []
+            for r in linked_restaurants:
+                b_info = f" (Bank: {r.bank_name or 'Moniepoint'}, Acct: {r.account_number or '5330778741'})"
+                r_details.append(f"*{r.name}*{b_info}")
+            msg += f"• *Restaurant:* ✅ Linked to {', '.join(r_details)}\n"
         else:
             msg += "• *Restaurant:* ❌ Not linked to any restaurant\n"
 
@@ -466,6 +515,18 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
         clean_desc = re.sub(r'\s*[-–—]\s*[₦N]?[\d,]+(?=\s*(?:\n|$))', '', clean_desc)
         clean_desc = re.sub(r'\s*\([₦N]?[\d,]+\)', '', clean_desc)
 
+        is_paid = (getattr(order, "payment_status", "pending_payment") == "paid")
+        if is_paid:
+            payment_status_line = (
+                "🟢 *Payment Status:* PAID & CONFIRMED\n\n"
+                "👉 *Next Action:* Proceed to the restaurant now to collect the food package!"
+            )
+        else:
+            payment_status_line = (
+                "⏳ *Payment Status:* Awaiting customer bank transfer\n\n"
+                "👉 *Next Action:* Please stand by! You will receive an instant green light notification here as soon as the transfer is verified to collect the food package."
+            )
+
         winning_text = (
             f"✅ *YOU ACCEPTED THIS ORDER!* 🛵💨\n\n"
             f"*Order #:* `{order.order_number}`\n"
@@ -473,7 +534,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
             f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n\n"
             f"📋 *Meal Checklist:*\n{clean_desc}\n\n"
             f"💳 *Total Order Amount:* *{fare_formatted}*\n\n"
-            f"👉 *Next Action:* Proceed to the restaurant now to collect the food package!"
+            f"{payment_status_line}"
         )
         if chat_id and message_id:
             await edit_telegram_message(

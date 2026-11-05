@@ -22,6 +22,7 @@ class User(Base):
     wa_id : Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name : Mapped[str] = mapped_column(String, unique=False, nullable=False)
     address: Mapped[str] = mapped_column(Text, nullable=True)
+    credit_balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
     #api_requests: Mapped[list[apiRequest]] = relationship(back_populates="author") 
@@ -68,6 +69,9 @@ class Orders(Base):
     is_urgent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     is_priority: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
     sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
+    payment_status: Mapped[str] = mapped_column(String(50), default="pending_payment", nullable=True)
+    paid_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    receipt_image_id: Mapped[str] = mapped_column(String, nullable=True)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 class Riders(Base):
@@ -125,5 +129,8 @@ class Restaurants(Base):
     telegram_chat_id: Mapped[str] = mapped_column(String(50), nullable=True, index=True)
     address: Mapped[str] = mapped_column(String(255), nullable=True)
     phone_number: Mapped[str] = mapped_column(String(50), nullable=True)
+    account_name: Mapped[str] = mapped_column(String(100), nullable=True)
+    account_number: Mapped[str] = mapped_column(String(50), nullable=True)
+    bank_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

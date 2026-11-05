@@ -262,3 +262,59 @@ async def dispatch_food_order_to_riders(
     logger.info(f"Dispatched food order {order.order_number} to {sent_count} rider(s) on Telegram.")
     return sent_count
 
+
+async def notify_payment_confirmed(
+    order: models.Orders,
+    paid_amount: int,
+    db: AsyncSession
+):
+    """
+    Alerts the restaurant and assigned rider on Telegram that the customer's
+    transfer has been verified and food package is cleared for pickup.
+    """
+    # 1. Alert Restaurant
+    try:
+        clean_name = (order.pickup_location_name or "").replace(", Lagos", "").strip()
+        slug_guess = clean_name.lower().replace(" ", "_").replace("'", "")
+        rest_stmt = select(models.Restaurants).where(
+            (models.Restaurants.name.ilike(f"%{clean_name}%")) |
+            (models.Restaurants.slug == slug_guess)
+        )
+        res = await db.execute(rest_stmt)
+        restaurant_obj = res.scalars().first()
+        rest_chat = restaurant_obj.telegram_chat_id if restaurant_obj else get_fallback_restaurant_chat_id()
+        if rest_chat:
+            rest_msg = (
+                f"🟢 *PAYMENT CONFIRMED FOR ORDER #{order.order_number}!* 🍲✨\n\n"
+                f"Customer transfer of *₦{paid_amount:,}* has been verified!\n"
+                f"Status: *Cleared for rider pickup!* 🍳📦"
+            )
+            await send_telegram_message(chat_id=rest_chat, text=rest_msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Error alerting restaurant of payment confirmation: {e}")
+
+    # 2. Alert Assigned Rider
+    try:
+        rider_wa = order.rider_wa_number
+        if rider_wa:
+            import replyhandler
+            rider_stmt = select(models.Riders).where(
+                (models.Riders.rider_wa_number == rider_wa) |
+                (models.Riders.rider_wa_number.in_(replyhandler.get_phone_variants(rider_wa)))
+            )
+            r_res = await db.execute(rider_stmt)
+            rider_obj = r_res.scalars().first()
+            if rider_obj and rider_obj.telegram_chat_id:
+                rider_msg = (
+                    f"🟢 *GREEN LIGHT: PAYMENT CONFIRMED!* 🍲💨\n\n"
+                    f"*Order #:* `{order.order_number}`\n"
+                    f"Customer transfer of *₦{paid_amount:,}* has been verified!\n\n"
+                    f"📍 *Pickup:* {order.pickup_location_name}\n"
+                    f"🏁 *Dropoff:* {order.dropoff_location_name}\n\n"
+                    f"👉 *Next Action:* Proceed to the restaurant kitchen now to collect the food package and deliver to the customer!"
+                )
+                await send_telegram_message(chat_id=rider_obj.telegram_chat_id, text=rider_msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Error alerting rider of payment confirmation: {e}")
+
+
