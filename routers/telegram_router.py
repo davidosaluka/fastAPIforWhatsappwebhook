@@ -201,6 +201,71 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             )
             return
 
+    # --- C2. RIDER UNLINK COMMAND (/unlink_rider [phone]) ---
+    if text.startswith("/unlink_rider"):
+        parts = text.split()
+        phone_arg = parts[1].strip() if len(parts) >= 2 else None
+        if phone_arg:
+            phone_variants = replyhandler.get_phone_variants(phone_arg)
+            rider_stmt = select(models.Riders).where(
+                (models.Riders.rider_wa_number.in_(phone_variants)) |
+                (models.Riders.rider_phonenumber_2.in_(phone_variants))
+            )
+        else:
+            rider_stmt = select(models.Riders).where(models.Riders.telegram_chat_id == chat_id)
+
+        r_res = await db.execute(rider_stmt)
+        riders_to_unlink = r_res.scalars().all()
+        if riders_to_unlink:
+            for r in riders_to_unlink:
+                r.telegram_chat_id = None
+            await db.commit()
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="✅ *Rider Profile Unlinked!*\n\nThis Telegram chat will no longer receive rider delivery orders.\n\n👉 Send `/start` at any time to link again or link a new phone number.",
+                parse_mode="Markdown"
+            )
+            return
+        else:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="ℹ️ This chat is not currently linked to any rider account. Send `/start` to link as a rider.",
+                parse_mode="Markdown"
+            )
+            return
+
+    # --- C3. MASTER UNLINK COMMAND (/unlink) ---
+    if text == "/unlink":
+        # Unlink restaurants
+        rest_stmt = select(models.Restaurants).where(
+            (models.Restaurants.telegram_chat_id == chat_id) |
+            (models.Restaurants.slug == "madam_g")
+        )
+        r_res = await db.execute(rest_stmt)
+        restaurants = r_res.scalars().all()
+        for r in restaurants:
+            r.telegram_chat_id = None
+
+        # Unlink riders
+        rider_stmt = select(models.Riders).where(models.Riders.telegram_chat_id == chat_id)
+        rd_res = await db.execute(rider_stmt)
+        riders_to_unlink = rd_res.scalars().all()
+        for rd in riders_to_unlink:
+            rd.telegram_chat_id = None
+
+        await db.commit()
+        await send_telegram_message(
+            chat_id=chat_id,
+            text=(
+                "✅ *Account Reset & Unlinked Successfully!*\n\n"
+                "This Telegram chat is now cleared of all linked roles.\n\n"
+                "• To connect as a **Rider:** Send `/start` and tap *Share Phone Number*.\n"
+                "• To connect as a **Restaurant:** Open your onboarding link (e.g. `/start restaurant_madam_g`)."
+            ),
+            parse_mode="Markdown"
+        )
+        return
+
     # --- D. RESTAURANT SET BANK COMMAND (/set_bank <bank_name> <account_number> <account_name>) ---
     if text.startswith("/set_bank"):
         parts = text.split(maxsplit=3)
@@ -273,6 +338,14 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             msg += f"• *Restaurant:* ✅ Linked to {', '.join(r_details)}\n"
         else:
             msg += "• *Restaurant:* ❌ Not linked to any restaurant\n"
+
+        msg += "\n💡 *Useful Commands:*\n"
+        msg += "• `/ringtone` — Get your custom InTime order alarm audio\n"
+        msg += "• `/unlink` — Clear this chat from all roles\n"
+        if rider:
+            msg += "• `/unlink_rider` — Disconnect your rider profile\n"
+        if linked_restaurants:
+            msg += "• `/unlink_restaurant` — Disconnect restaurant kitchen alerts\n"
 
         await send_telegram_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         return
@@ -425,11 +498,11 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 chat_id=chat_id,
                 text=(
                     f"Welcome back, *{rider.first_name}*! 🛵\n\n"
-                    f"Your InTime rider account is active. You will receive direct 1-on-1 food delivery dispatch requests here.\n\n"
-                    f"💡 *Tip:* Send `/ringtone` anytime to get your custom InTime order notification sound!"
+                    f"Your InTime rider account is active. You will receive direct 1-on-1 food delivery dispatch requests here."
                 ),
                 parse_mode="Markdown"
             )
+            await send_telegram_audio(chat_id=chat_id, caption=RINGTONE_INSTRUCTIONS)
         else:
             # Prompt rider to share phone number with 1 tap
             contact_keyboard = {

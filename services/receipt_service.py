@@ -132,3 +132,4 @@ def parse_transfer_receipt(image_bytes: Optional[bytes] = None, text_content: Op
             return amt, "successful"
 
     return None, "unknown"
+
