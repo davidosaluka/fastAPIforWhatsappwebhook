@@ -89,7 +89,27 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             select(models.Restaurants).where(models.Restaurants.slug == slug)
         )
         restaurant = rest_res.scalars().first()
-        if restaurant:
+        if not restaurant:
+            # Auto-create restaurant if new
+            pretty_name = slug.replace("_", " ").title()
+            if "restaurant" not in pretty_name.lower():
+                pretty_name += " Restaurant"
+            restaurant = models.Restaurants(
+                name=pretty_name,
+                slug=slug,
+                telegram_chat_id=chat_id,
+                is_active=True
+            )
+            db.add(restaurant)
+            await db.commit()
+            await db.refresh(restaurant)
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"🎉 *New Restaurant Registered & Linked!*\n\nThis chat is now linked to receive incoming food orders for *{restaurant.name}* (`{slug}`)! 🍲✨\n\nYou will receive order pings with loud sound alerts right here.",
+                parse_mode="Markdown"
+            )
+            return
+        else:
             restaurant.telegram_chat_id = chat_id
             await db.commit()
             await send_telegram_message(
@@ -97,13 +117,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 text=f"🎉 *Success!*\n\nThis chat is now linked to receive incoming food orders for *{restaurant.name}*! 🍲✨\n\nYou will receive order pings with loud sound alerts right here.",
                 parse_mode="Markdown"
             )
-        else:
-            await send_telegram_message(
-                chat_id=chat_id,
-                text=f"⚠️ Restaurant slug `{slug}` was not found in the database. Please verify the link or contact InTime admin.",
-                parse_mode="Markdown"
-            )
-        return
+            return
 
     # --- B. RESTAURANT GROUP LINK COMMAND (/link_restaurant <slug>) ---
     if text.startswith("/link_restaurant"):
@@ -114,7 +128,27 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                 select(models.Restaurants).where(models.Restaurants.slug == slug)
             )
             restaurant = rest_res.scalars().first()
-            if restaurant:
+            if not restaurant:
+                # Auto-create restaurant if new
+                pretty_name = slug.replace("_", " ").title()
+                if "restaurant" not in pretty_name.lower():
+                    pretty_name += " Restaurant"
+                restaurant = models.Restaurants(
+                    name=pretty_name,
+                    slug=slug,
+                    telegram_chat_id=chat_id,
+                    is_active=True
+                )
+                db.add(restaurant)
+                await db.commit()
+                await db.refresh(restaurant)
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=f"✅ *New Kitchen Registered & Linked!*\n\nIncoming orders for *{restaurant.name}* (`{slug}`) will now be dispatched to this chat. 🍲",
+                    parse_mode="Markdown"
+                )
+                return
+            else:
                 restaurant.telegram_chat_id = chat_id
                 await db.commit()
                 await send_telegram_message(
@@ -122,9 +156,6 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
                     text=f"✅ *Kitchen Chat Linked!*\n\nIncoming orders for *{restaurant.name}* will now be dispatched to this chat. 🍲",
                     parse_mode="Markdown"
                 )
-                return
-            else:
-                await send_telegram_message(chat_id=chat_id, text=f"⚠️ Restaurant with slug `{slug}` not found.")
                 return
         else:
             await send_telegram_message(chat_id=chat_id, text="Usage: `/link_restaurant <slug>` (e.g. `/link_restaurant madam_g`)")
