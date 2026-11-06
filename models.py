@@ -72,6 +72,8 @@ class Orders(Base):
     payment_status: Mapped[str] = mapped_column(String(50), default="pending_payment", nullable=True)
     paid_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
     receipt_image_id: Mapped[str] = mapped_column(String, nullable=True)
+    transaction_reference: Mapped[str] = mapped_column(String(100), nullable=True, index=True)
+    kitchen_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=True)
     created_at : Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 class Riders(Base):

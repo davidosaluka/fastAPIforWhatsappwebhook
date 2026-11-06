@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from typing import Optional, List, Dict, Any
 import httpx
 from sqlalchemy import select, update
@@ -87,6 +88,39 @@ async def edit_telegram_message(
         return None
 
 
+async def edit_telegram_caption(
+    chat_id: str | int,
+    message_id: int,
+    caption: str,
+    parse_mode: str = "Markdown",
+    reply_markup: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Edits the caption of an existing Telegram photo/media message in place.
+    """
+    token = get_bot_token()
+    if not token:
+        return None
+
+    url = f"{TELEGRAM_API_BASE}{token}/editMessageCaption"
+    payload: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "caption": caption,
+        "parse_mode": parse_mode
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error editing Telegram caption {message_id} in {chat_id}: {e}")
+        return None
+
+
 async def answer_callback_query(
     callback_query_id: str,
     text: Optional[str] = None,
@@ -113,6 +147,45 @@ async def answer_callback_query(
             return resp.json()
     except Exception as e:
         logger.error(f"Error answering callback query {callback_query_id}: {e}")
+        return None
+
+
+async def send_telegram_photo(
+    chat_id: str | int,
+    photo_bytes: bytes,
+    caption: Optional[str] = None,
+    parse_mode: str = "Markdown",
+    reply_markup: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Sends a photo to a Telegram chat using multipart/form-data.
+    """
+    token = get_bot_token()
+    if not token or not chat_id or not photo_bytes:
+        return None
+
+    url = f"{TELEGRAM_API_BASE}{token}/sendPhoto"
+    files = {
+        "photo": ("receipt.jpg", photo_bytes, "image/jpeg")
+    }
+    data: Dict[str, Any] = {
+        "chat_id": str(chat_id),
+    }
+    if caption:
+        data["caption"] = caption
+        data["parse_mode"] = parse_mode
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, data=data, files=files)
+            result = resp.json()
+            if not result.get("ok"):
+                logger.error(f"Telegram sendPhoto failed to {chat_id}: {result}")
+            return result
+    except Exception as e:
+        logger.error(f"Error sending photo to Telegram {chat_id}: {e}")
         return None
 
 
@@ -255,16 +328,88 @@ async def notify_restaurant_food_order(
         f"💵 *Food Subtotal:* ₦{subtotal:,}\n"
         f"🛵 *Delivery Fee:* ₦{delivery_fee:,}\n"
         f"💳 *Grand Total:* *₦{grand_total:,}*\n\n"
-        f"Status: *Preparing Meal 🍳*"
+        f"Status: *Awaiting Kitchen Acceptance 🍳*"
     )
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "🍳 Accept & Start Cooking",
+                    "callback_data": f"rest_accept:{order.order_number}"
+                }
+            ]
+        ]
+    }
 
     resp = await send_telegram_message(
         chat_id=chat_id,
         text=msg,
         parse_mode="Markdown",
+        reply_markup=keyboard,
         disable_notification=False
     )
     return bool(resp and resp.get("ok"))
+
+
+async def forward_receipt_to_restaurant(
+    order: models.Orders,
+    photo_bytes: bytes,
+    amount: int,
+    reference: Optional[str],
+    customer_phone: str,
+    db: AsyncSession
+) -> bool:
+    """
+    Sends the customer's transfer receipt image directly to the restaurant's Telegram chat
+    with 1-tap confirmation / dispute buttons.
+    """
+    try:
+        clean_name = (order.pickup_location_name or "").replace(", Lagos", "").strip()
+        slug_guess = clean_name.lower().replace(" ", "_").replace("'", "")
+        rest_stmt = select(models.Restaurants).where(
+            (models.Restaurants.name.ilike(f"%{clean_name}%")) |
+            (models.Restaurants.slug == slug_guess)
+        )
+        res = await db.execute(rest_stmt)
+        restaurant_obj = res.scalars().first()
+        rest_chat = restaurant_obj.telegram_chat_id if restaurant_obj else get_fallback_restaurant_chat_id()
+        if not rest_chat:
+            return False
+
+        ref_str = f"• *Ref:* `{reference}`\n" if reference else ""
+        caption = (
+            f"📸 *TRANSFER RECEIPT UPLOADED!* 🏦\n\n"
+            f"• *Order #:* `{order.order_number}`\n"
+            f"• *Amount:* *₦{amount:,}*\n"
+            f"• *Customer Phone:* `{customer_phone}`\n"
+            f"{ref_str}\n"
+            f"Check your Moniepoint app/SMS to confirm credit:"
+        )
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "✅ Confirm Credited",
+                        "callback_data": f"receipt_confirm:{order.order_number}"
+                    },
+                    {
+                        "text": "❌ Not Credited",
+                        "callback_data": f"receipt_reject:{order.order_number}"
+                    }
+                ]
+            ]
+        }
+        resp = await send_telegram_photo(
+            chat_id=rest_chat,
+            photo_bytes=photo_bytes,
+            caption=caption,
+            reply_markup=keyboard
+        )
+        return bool(resp and resp.get("ok"))
+    except Exception as e:
+        logger.warning(f"Failed to forward receipt photo to restaurant Telegram: {e}")
+        return False
 
 
 async def dispatch_food_order_to_riders(
@@ -403,7 +548,22 @@ async def notify_payment_confirmed(
                     f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
                     f"👉 *Next Action:* Proceed to the restaurant kitchen now to collect the food package and deliver to the customer!"
                 )
-                await send_telegram_message(chat_id=rider_obj.telegram_chat_id, text=rider_msg, parse_mode="Markdown")
+                rider_keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "📍 I Have Arrived at Kitchen",
+                                "callback_data": f"rider_at_kitchen:{order.order_number}"
+                            }
+                        ]
+                    ]
+                }
+                await send_telegram_message(
+                    chat_id=rider_obj.telegram_chat_id,
+                    text=rider_msg,
+                    parse_mode="Markdown",
+                    reply_markup=rider_keyboard
+                )
     except Exception as e:
         logger.warning(f"Error alerting rider of payment confirmation: {e}")
 

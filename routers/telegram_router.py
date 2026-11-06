@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+import string
+import random
 from typing import Dict, Any
 from fastapi import APIRouter, Request, Response, Depends
 from sqlalchemy import select, update
@@ -11,6 +13,7 @@ import httpx
 from services.telegram_service import (
     send_telegram_message,
     edit_telegram_message,
+    edit_telegram_caption,
     answer_callback_query,
     send_telegram_audio,
     RINGTONE_INSTRUCTIONS,
@@ -528,6 +531,124 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             )
         return
 
+    # --- I. RIDER DELIVERY CONFIRMATION CODE COMMAND (/code <5-digit> or plain 5 digits) ---
+    code_match = re.search(r'\b(\d{5})\b', text)
+    if code_match and (text.startswith("/code") or len(text.strip()) == 5):
+        submitted_code = code_match.group(1).strip()
+        # Find active rider
+        r_stmt = select(models.Riders).where(models.Riders.telegram_chat_id == chat_id)
+        r_res = await db.execute(r_stmt)
+        rider_record = r_res.scalars().first()
+        if not rider_record:
+            await send_telegram_message(chat_id=chat_id, text="⚠️ You are not registered as an active rider.")
+            return
+
+        # Find in-transit food order assigned to this rider
+        rider_phones = replyhandler.get_phone_variants(rider_record.rider_wa_number)
+        ord_stmt = select(models.Orders).where(
+            (models.Orders.rider_wa_number.in_(rider_phones)) |
+            (models.Orders.rider_wa_number == f"TG:@{from_user.get('username') or chat_id}") |
+            (models.Orders.rider_wa_number == rider_record.rider_wa_number)
+        ).where(
+            models.Orders.status.in_(["rider_accepted", "in_transit", "awaiting_pickup"])
+        ).order_by(models.Orders.created_at.desc())
+
+        ord_res = await db.execute(ord_stmt)
+        active_order = ord_res.scalars().first()
+        if not active_order:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="ℹ️ No active in-transit delivery found assigned to you to verify."
+            )
+            return
+
+        expected_code = str(active_order.verification_code or "").strip()
+        if not expected_code:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="⚠️ This order does not have an active verification code set yet. Please make sure you tapped *Food Collected* first!"
+            )
+            return
+
+        if submitted_code == expected_code:
+            active_order.delivery_progression_status = "package_delivered"
+            active_order.status = "completed"
+            await db.commit()
+
+            # 1. Notify rider on Telegram
+            rider_success_msg = (
+                f"🎉 *DELIVERY COMPLETED SUCCESSFULLY!* 🛵💨\n\n"
+                f"*Order #:* `{active_order.order_number}`\n"
+                f"Code `{submitted_code}` verified successfully! The customer has been notified and prompted for rating.\n\n"
+                f"Thank you for your fantastic hustle! 💪✨"
+            )
+            await send_telegram_message(chat_id=chat_id, text=rider_success_msg, parse_mode="Markdown")
+
+            # 2. Send Customer WhatsApp Prompt #5 (Delivered & Rating)
+            cust_complete_msg = (
+                f"🎉🥳 *Order Delivered!* 🍲✨\n\n"
+                f"Your meal from *{active_order.pickup_location_name or 'Madam G'}* (Order *#{active_order.order_number}*) has been safely delivered! Enjoy your meal! 😋\n\n"
+                f"⭐ *Rate Your Rider*\n"
+                f"How was your delivery service today? Please reply with a rating from *1* to *5* ⭐ to rate your rider."
+            )
+            await replyhandler.send_custom_message(active_order.sender_wa_number, cust_complete_msg, AUTH, GRAPH_URL)
+
+            # If recipient phone is distinct from sender, notify recipient too
+            if active_order.recipient_phone_number:
+                norm_recip = replyhandler.normalize_phone_number(active_order.recipient_phone_number) or active_order.recipient_phone_number
+                sender_norm = replyhandler.normalize_phone_number(active_order.sender_wa_number)
+                if norm_recip and norm_recip != sender_norm:
+                    await replyhandler.send_details_to_recipients(
+                        sender_wa_number=norm_recip,
+                        message=cust_complete_msg,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+
+            # 3. Alert Restaurant on Telegram that delivery is finished
+            try:
+                clean_rname = (active_order.pickup_location_name or "").replace(", Lagos", "").strip()
+                r_stmt = select(models.Restaurants).where(models.Restaurants.name.ilike(f"%{clean_rname}%"))
+                r_res = await db.execute(r_stmt)
+                r_obj = r_res.scalars().first()
+                r_chat = r_obj.telegram_chat_id if r_obj else os.getenv("TELEGRAM_RESTAURANT_CHAT_ID")
+                if r_chat:
+                    await send_telegram_message(
+                        chat_id=r_chat,
+                        text=f"✅ *DELIVERY COMPLETED!* 🍲🎉\n\nOrder *#{active_order.order_number}* has been verified and successfully delivered to the customer.",
+                        parse_mode="Markdown"
+                    )
+            except Exception as r_done_err:
+                logger.warning(f"Failed to alert kitchen on delivery complete: {r_done_err}")
+
+            return
+        else:
+            attempts = (getattr(active_order, "verification_attempts", 0) or 0) + 1
+            active_order.verification_attempts = attempts
+            await db.commit()
+            remaining = max(0, 3 - attempts)
+            if remaining > 0:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"❌ *Incorrect Verification Code!* (Attempt {attempts}/3)\n\n"
+                        f"Code `{submitted_code}` did not match.\n"
+                        f"👉 You have *{remaining}* attempt{'s' if remaining > 1 else ''} remaining.\n"
+                        f"Please ask the customer to check the 5-digit code sent to their WhatsApp and reply `/code <5-digit>`."
+                    ),
+                    parse_mode="Markdown"
+                )
+            else:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"🚫 *Maximum Verification Attempts Reached (3/3)!*\n\n"
+                        f"Order *#{active_order.order_number}* code verification is locked. Please contact support or have customer confirm reception."
+                    ),
+                    parse_mode="Markdown"
+                )
+            return
+
 
 async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSession):
     cq_id = callback_query["id"]
@@ -608,11 +729,22 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 "🟢 *Payment Status:* PAID & CONFIRMED\n\n"
                 "👉 *Next Action:* Proceed to the restaurant now to collect the food package!"
             )
+            rider_action_keyboard = {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "📍 I Have Arrived at Kitchen",
+                            "callback_data": f"rider_at_kitchen:{order.order_number}"
+                        }
+                    ]
+                ]
+            }
         else:
             payment_status_line = (
                 "⏳ *Payment Status:* Awaiting customer bank transfer\n\n"
                 "👉 *Next Action:* Please stand by! You will receive an instant green light notification here as soon as the transfer is verified to collect the food package."
             )
+            rider_action_keyboard = None
 
         recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
         winning_text = (
@@ -630,7 +762,8 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 chat_id=chat_id,
                 message_id=message_id,
                 text=winning_text,
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=rider_action_keyboard
             )
 
         # 4. Edit other riders' messages who also received this offer
@@ -655,20 +788,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
         except Exception as edit_err:
             logger.warning(f"Failed to edit peer rider messages for order {order_num}: {edit_err}")
 
-        # 5. Notify Customer on WhatsApp
-        try:
-            rest_clean = order.pickup_location_name.replace(", Lagos", "")
-            cust_msg = (
-                f"🛵 *Rider Assigned to Your Food Order!* 🍲💨\n\n"
-                f"Great news! Dispatch rider *{rider_display_name}* has accepted your order from *{rest_clean}* and is on the way to pick it up.\n\n"
-                f"Order #: *{order.order_number}*\n"
-                f"We will notify you as soon as the meal is picked up and en route to your address!"
-            )
-            await replyhandler.send_custom_message(order.sender_wa_number, cust_msg, AUTH, GRAPH_URL)
-        except Exception as cust_err:
-            logger.warning(f"Failed to send customer WhatsApp notification on TG claim: {cust_err}")
-
-        # 6. Ping Restaurant on Telegram
+        # 5. Ping Restaurant on Telegram
         try:
             # Query restaurant chat ID
             rest_name_clean = order.pickup_location_name.replace(", Lagos", "").strip()
@@ -686,4 +806,399 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 await send_telegram_message(chat_id=rest_chat_id, text=rest_alert, parse_mode="Markdown")
         except Exception as r_alert_err:
             logger.warning(f"Failed to alert restaurant on TG rider claim: {r_alert_err}")
+
+    # --- II. RIDER AT KITCHEN CALLBACK ---
+    elif data.startswith("rider_at_kitchen:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        order.delivery_progression_status = "rider_at_kitchen"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="📍 Arrived at restaurant! Tap below once meal is collected.")
+
+        recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
+        kitchen_msg = (
+            f"📍 *ARRIVED AT KITCHEN* 🍲\n\n"
+            f"*Order #:* `{order.order_number}`\n"
+            f"📍 *Restaurant:* {order.pickup_location_name}\n"
+            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n"
+            f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
+            f"👉 *Next Action:* Once the kitchen gives you the packed meal, tap *Food Collected & On The Way* below!"
+        )
+        next_keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📦 Food Collected & On The Way",
+                        "callback_data": f"rider_picked_up:{order.order_number}"
+                    }
+                ]
+            ]
+        }
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=kitchen_msg,
+                parse_mode="Markdown",
+                reply_markup=next_keyboard
+            )
+
+        # Alert restaurant on Telegram
+        try:
+            rest_name_clean = (order.pickup_location_name or "").replace(", Lagos", "").strip()
+            rest_db_res = await db.execute(
+                select(models.Restaurants).where(models.Restaurants.name.ilike(f"%{rest_name_clean}%"))
+            )
+            rest_obj = rest_db_res.scalars().first()
+            rest_chat_id = rest_obj.telegram_chat_id if rest_obj else os.getenv("TELEGRAM_RESTAURANT_CHAT_ID")
+            if rest_chat_id:
+                await send_telegram_message(
+                    chat_id=rest_chat_id,
+                    text=f"🛵 *RIDER AT KITCHEN!* 🍲\n\nDispatch rider {user_display} has arrived at the kitchen to pick up *Order #{order.order_number}*.",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to alert kitchen of rider arrival: {e}")
+
+    # --- III. RIDER PICKED UP & EN ROUTE CALLBACK ---
+    elif data.startswith("rider_picked_up:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        # Generate 5-digit verification code if not set
+        code_to_set = order.verification_code or ''.join(random.choices(string.digits, k=5))
+        order.verification_code = code_to_set
+        order.delivery_progression_status = "package_picked_up"
+        order.status = "in_transit"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="📦 Food collected! Safe delivery.")
+
+        recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
+        depart_msg = (
+            f"📦 *FOOD COLLECTED & ON THE WAY!* 🛵💨\n\n"
+            f"*Order #:* `{order.order_number}`\n"
+            f"🏁 *Dropoff Destination:* {order.dropoff_location_name}\n"
+            f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
+            f"👉 *Next Action:*\n"
+            f"• Head to the customer's delivery location.\n"
+            f"• When you arrive at the address, tap *Arrived at Dropoff* below!"
+        )
+        dropoff_keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📍 Arrived at Dropoff",
+                        "callback_data": f"rider_at_dropoff:{order.order_number}"
+                    }
+                ]
+            ]
+        }
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=depart_msg,
+                parse_mode="Markdown",
+                reply_markup=dropoff_keyboard
+            )
+
+        # WhatsApp Prompt #3 to Customer (Food en route + 5-digit verification code)
+        try:
+            rest_clean = (order.pickup_location_name or "Madam G").replace(", Lagos", "").strip()
+            prompt3_msg = (
+                f"🛵💨 *Your Meal is On The Way!* 🍲✨\n\n"
+                f"Your dispatch rider has picked up your food order from *{rest_clean}* (Order *#{order.order_number}*) and is en route to your delivery address!\n\n"
+                f"🔐 *Your Delivery Verification Code:*\n"
+                f"👉  *{code_to_set}*  👈\n\n"
+                f"📋 *Instructions:*\n"
+                f"• Share this *5-digit code* with the rider when they arrive to securely receive your food package. 🤝\n\n"
+                f"Thank you for choosing *InTime*! 🌟"
+            )
+            await replyhandler.send_custom_message(order.sender_wa_number, prompt3_msg, AUTH, GRAPH_URL)
+
+            if order.recipient_phone_number:
+                norm_recip = replyhandler.normalize_phone_number(order.recipient_phone_number) or order.recipient_phone_number
+                sender_norm = replyhandler.normalize_phone_number(order.sender_wa_number)
+                if norm_recip and norm_recip != sender_norm:
+                    await replyhandler.send_details_to_recipients(
+                        sender_wa_number=norm_recip,
+                        message=prompt3_msg,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+        except Exception as p3_err:
+            logger.warning(f"Failed to send customer Prompt #3 on rider pickup: {p3_err}")
+
+        # Notify Restaurant on Telegram
+        try:
+            rest_name_clean = (order.pickup_location_name or "").replace(", Lagos", "").strip()
+            rest_db_res = await db.execute(
+                select(models.Restaurants).where(models.Restaurants.name.ilike(f"%{rest_name_clean}%"))
+            )
+            rest_obj = rest_db_res.scalars().first()
+            rest_chat_id = rest_obj.telegram_chat_id if rest_obj else os.getenv("TELEGRAM_RESTAURANT_CHAT_ID")
+            if rest_chat_id:
+                await send_telegram_message(
+                    chat_id=rest_chat_id,
+                    text=f"🛵💨 *ORDER DEPARTED!* 🍲\n\nRider has collected *Order #{order.order_number}* and is en route to the customer.",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to alert kitchen of order departure: {e}")
+
+    # --- IV. RIDER ARRIVED AT DROPOFF CALLBACK ---
+    elif data.startswith("rider_at_dropoff:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        order.delivery_progression_status = "arrived_at_dropoff"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="📍 Arrived at dropoff! Ask customer for their 5-digit code.")
+
+        recipient_phone = getattr(order, "recipient_phone_number", None) or getattr(order, "sender_wa_number", None) or "Not provided"
+        arrived_msg = (
+            f"📍 *ARRIVED AT DROPOFF LOCATION!* 🛵🏠\n\n"
+            f"*Order #:* `{order.order_number}`\n"
+            f"🏁 *Address:* {order.dropoff_location_name}\n"
+            f"📞 *Recipient Phone:* `{recipient_phone}`\n\n"
+            f"🔐 *Final Step to Complete Delivery:*\n"
+            f"1️⃣ Meet customer / call `{recipient_phone}`\n"
+            f"2️⃣ Ask them for the *5-digit verification code* sent to their WhatsApp\n"
+            f"3️⃣ Reply here with: `/code <5-digit>` (e.g. `/code {order.verification_code or '12345'}` or simply the 5 digits)\n\n"
+            f"⚠️ *Note:* You have 3 attempts to enter the correct code."
+        )
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=arrived_msg,
+                parse_mode="Markdown",
+                reply_markup=None
+            )
+
+        # WhatsApp Prompt #4 to Customer (Rider has arrived)
+        try:
+            rest_clean = (order.pickup_location_name or "Madam G").replace(", Lagos", "").strip()
+            prompt4_msg = (
+                f"📍 *Rider Has Arrived!* 🛵🍲\n\n"
+                f"Your dispatch rider has arrived at your delivery address with your meal from *{rest_clean}* (Order *#{order.order_number}*)!\n\n"
+                f"👉 Please meet the rider and provide your *5-digit verification code* (*{order.verification_code}*) to receive your delicious meal. 😋✨"
+            )
+            await replyhandler.send_custom_message(order.sender_wa_number, prompt4_msg, AUTH, GRAPH_URL)
+
+            if order.recipient_phone_number:
+                norm_recip = replyhandler.normalize_phone_number(order.recipient_phone_number) or order.recipient_phone_number
+                sender_norm = replyhandler.normalize_phone_number(order.sender_wa_number)
+                if norm_recip and norm_recip != sender_norm:
+                    await replyhandler.send_details_to_recipients(
+                        sender_wa_number=norm_recip,
+                        message=prompt4_msg,
+                        auth=AUTH,
+                        graph_url=GRAPH_URL
+                    )
+        except Exception as p4_err:
+            logger.warning(f"Failed to send customer Prompt #4 on rider dropoff: {p4_err}")
+
+    # --- V. RESTAURANT KITCHEN STATUS BUTTONS ---
+    elif data.startswith("rest_accept:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        order.kitchen_status = "preparing"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="🍳 Order accepted! Kitchen preparing.")
+
+        packed_keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "📦 Meal Packed & Ready",
+                        "callback_data": f"rest_packed:{order.order_number}"
+                    }
+                ]
+            ]
+        }
+        orig_text = msg.get("text", "")
+        updated_text = (
+            f"{orig_text}\n\n"
+            f"🍳 *Kitchen Status:* PREPARING MEAL...\n"
+            f"Tap below once meal is packed and ready for pickup!"
+        ) if "Kitchen Status:" not in orig_text else orig_text
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=updated_text,
+                parse_mode="Markdown",
+                reply_markup=packed_keyboard
+            )
+
+    elif data.startswith("rest_packed:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        order.kitchen_status = "ready_for_pickup"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="📦 Marked as packed & ready!")
+
+        handed_keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "🤝 Handed to Rider",
+                        "callback_data": f"rest_handed:{order.order_number}"
+                    }
+                ]
+            ]
+        }
+        orig_text = msg.get("text", "")
+        updated_text = re.sub(
+            r'🍳 \*Kitchen Status:\*.*',
+            '📦 *Kitchen Status:* PACKED & READY FOR PICKUP!',
+            orig_text,
+            flags=re.DOTALL
+        )
+        if "Kitchen Status:" not in updated_text:
+            updated_text = f"{orig_text}\n\n📦 *Kitchen Status:* PACKED & READY FOR PICKUP!"
+
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=updated_text,
+                parse_mode="Markdown",
+                reply_markup=handed_keyboard
+            )
+
+        # Alert assigned rider on Telegram that food is packed
+        try:
+            if order.rider_wa_number:
+                r_stmt = select(models.Riders).where(
+                    (models.Riders.rider_wa_number == order.rider_wa_number) |
+                    (models.Riders.rider_wa_number.in_(replyhandler.get_phone_variants(order.rider_wa_number)))
+                )
+                r_res = await db.execute(r_stmt)
+                rider_obj = r_res.scalars().first()
+                if rider_obj and rider_obj.telegram_chat_id:
+                    await send_telegram_message(
+                        chat_id=rider_obj.telegram_chat_id,
+                        text=f"🍳 *Kitchen Update:* Order *#{order.order_number}* is packed and ready for pickup at the counter!",
+                        parse_mode="Markdown"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to alert rider of packed food: {e}")
+
+    elif data.startswith("rest_handed:"):
+        order_num = data.split(":", 1)[1].strip()
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number == order_num)
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await answer_callback_query(cq_id, text="⚠️ Order not found.", show_alert=True)
+            return
+
+        order.kitchen_status = "handed_to_rider"
+        await db.commit()
+
+        await answer_callback_query(cq_id, text="🤝 Handed to rider!")
+
+        orig_text = msg.get("text", "")
+        updated_text = re.sub(
+            r'📦 \*Kitchen Status:\*.*',
+            '🤝 *Kitchen Status:* HANDED TO RIDER ✅',
+            orig_text,
+            flags=re.DOTALL
+        )
+        if "Kitchen Status:" not in updated_text:
+            updated_text = f"{orig_text}\n\n🤝 *Kitchen Status:* HANDED TO RIDER ✅"
+
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=updated_text,
+                parse_mode="Markdown",
+                reply_markup=None
+            )
+
+    # --- VI. KITCHEN RECEIPT CONFIRMATION / DISPUTE BUTTONS ---
+    elif data.startswith("receipt_confirm:"):
+        order_num = data.split(":", 1)[1].strip()
+        await answer_callback_query(cq_id, text="✅ Receipt confirmed credited! Thank you.")
+        caption = msg.get("caption", "")
+        updated_caption = f"{caption}\n\n✅ *RECEIPT CONFIRMED CREDITED BY KITCHEN* (Verified by {user_display})"
+        if chat_id and message_id:
+            await edit_telegram_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=updated_caption,
+                parse_mode="Markdown",
+                reply_markup=None
+            )
+
+    elif data.startswith("receipt_reject:"):
+        order_num = data.split(":", 1)[1].strip()
+        await answer_callback_query(
+            cq_id,
+            text="⚠️ Receipt flagged as NOT credited. Support has been alerted for manual review.",
+            show_alert=True
+        )
+        caption = msg.get("caption", "")
+        updated_caption = f"{caption}\n\n❌ *DISPUTE: KITCHEN FLAGGED AS NOT CREDITED* (Reported by {user_display})"
+        if chat_id and message_id:
+            await edit_telegram_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=updated_caption,
+                parse_mode="Markdown",
+                reply_markup=None
+            )
+        admin_chat = os.getenv("TELEGRAM_ADMIN_CHAT_ID") or os.getenv("TELEGRAM_FALLBACK_CHAT_ID")
+        if admin_chat:
+            await send_telegram_message(
+                chat_id=admin_chat,
+                text=(
+                    f"🚨 *RECEIPT DISPUTE ALERT!* 🚨\n\n"
+                    f"Restaurant kitchen flagged that transfer for *Order #{order_num}* was *NOT CREDITED* to their Moniepoint account!\n"
+                    f"Please investigate immediately."
+                ),
+                parse_mode="Markdown"
+            )
 

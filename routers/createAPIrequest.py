@@ -2695,7 +2695,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
             # Download media and parse transfer receipt
             img_bytes = await receipt_service.download_whatsapp_media(media_id, AUTH) if media_id else None
-            transferred_amt, _ = receipt_service.parse_transfer_receipt(image_bytes=img_bytes, text_content=caption)
+            parsed_receipt = receipt_service.parse_transfer_receipt(image_bytes=img_bytes, text_content=caption)
+            transferred_amt = parsed_receipt.get("amount")
 
             quote_amt = int(float(active_food_order.customer_initial_offered_price or active_food_order.final_price_agreed_by_cust_and_rider or "0"))
             previously_paid = getattr(active_food_order, "paid_amount", 0) or 0
@@ -2712,6 +2713,32 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
             acct_n = r_rec.account_name if r_rec and r_rec.account_name else "Christiana Adamu"
             acct_num = r_rec.account_number if r_rec and r_rec.account_number else "5330778741"
             bank_n = r_rec.bank_name if r_rec and r_rec.bank_name else "Moniepoint"
+
+            # Security validation: checks for duplicate references, wrong beneficiary, or failed transfers
+            is_valid, rejection_reason = await receipt_service.validate_receipt_security(
+                parsed_receipt=parsed_receipt,
+                active_order=active_food_order,
+                restaurant=r_rec,
+                db=db
+            )
+            if not is_valid:
+                await replyhandler.send_custom_message(sender_wa_number, rejection_reason, AUTH, GRAPH_URL)
+                return Response(status_code=200)
+
+            ref_code = parsed_receipt.get("transaction_reference")
+            if ref_code:
+                active_food_order.transaction_reference = ref_code
+
+            # Forward receipt screenshot to restaurant Telegram kitchen for real-time human verification
+            if img_bytes and transferred_amt:
+                await telegram_service.forward_receipt_to_restaurant(
+                    order=active_food_order,
+                    photo_bytes=img_bytes,
+                    amount=transferred_amt,
+                    reference=ref_code,
+                    customer_phone=sender_wa_number,
+                    db=db
+                )
 
             if not transferred_amt:
                 await replyhandler.send_custom_message(

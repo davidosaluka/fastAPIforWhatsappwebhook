@@ -112,6 +112,16 @@ async def lifespan(_app: FastAPI):
         # restaurants table
         try:
             async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN transaction_reference VARCHAR(100);'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE orders ADD COLUMN kitchen_status VARCHAR(50) DEFAULT 'pending';"))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
                 await conn.execute(text('''
                     CREATE TABLE IF NOT EXISTS restaurants (
                         id SERIAL PRIMARY KEY,
@@ -142,6 +152,9 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'pending_payment';"))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_amount INTEGER DEFAULT 0;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_image_id TEXT;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS transaction_reference VARCHAR(100);'))
+                await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_orders_transaction_reference ON orders (transaction_reference);'))
+                await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS kitchen_status VARCHAR(50) DEFAULT 'pending';"))
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_name VARCHAR(100);'))
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_number VARCHAR(50);'))
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS bank_name VARCHAR(100);'))
@@ -212,6 +225,16 @@ async def lifespan(_app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE riders ADD COLUMN telegram_chat_id VARCHAR(50);'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN transaction_reference VARCHAR(100);'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE orders ADD COLUMN kitchen_status VARCHAR(50) DEFAULT 'pending';"))
         except Exception:
             pass
         try:
