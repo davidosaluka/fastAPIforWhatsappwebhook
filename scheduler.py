@@ -41,6 +41,11 @@ def get_auth_token() -> str:
 
 async def send_daily_rider_templates():
     """Sends WhatsApp check-in template to all riders daily at 7:00 AM and sets their status to offline until they check in."""
+    enable_checkin = os.getenv("ENABLE_RIDER_CHECKIN_SCHEDULER", "false").lower() in ("true", "1", "yes")
+    if not enable_checkin:
+        logger.info("Daily rider check-in worker is currently PAUSED. Skipping execution.")
+        return
+
     global LAST_CHECKIN_DATE
     lagos_tz = datetime.now(UTC).date()
     if LAST_CHECKIN_DATE == lagos_tz:
@@ -80,11 +85,17 @@ async def send_daily_rider_templates():
 
 def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
-    scheduler.add_job(
-        send_daily_rider_templates,
-        trigger=CronTrigger(hour=7, minute=0, timezone="Africa/Lagos"),
-        id="daily_rider_template",
-        replace_existing=True,
-    )
+    enable_checkin = os.getenv("ENABLE_RIDER_CHECKIN_SCHEDULER", "false").lower() in ("true", "1", "yes")
+    if enable_checkin:
+        scheduler.add_job(
+            send_daily_rider_templates,
+            trigger=CronTrigger(hour=7, minute=0, timezone="Africa/Lagos"),
+            id="daily_rider_template",
+            replace_existing=True,
+        )
+        logger.info("Daily rider check-in scheduler is ACTIVE (7:00 AM Lagos).")
+    else:
+        logger.info("Daily rider check-in scheduler worker is currently PAUSED.")
+
     scheduler.start()
     return scheduler
