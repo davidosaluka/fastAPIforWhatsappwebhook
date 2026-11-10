@@ -1012,9 +1012,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     )
                 )
                 rest_record = rest_db_res.scalars().first()
-                acct_name = rest_record.account_name if (rest_record and rest_record.account_name) else "Christiana Adamu"
-                acct_num = rest_record.account_number if (rest_record and rest_record.account_number) else "5330778741"
-                bank_name = rest_record.bank_name if (rest_record and rest_record.bank_name) else "Moniepoint"
+                acct_name = rest_record.account_name if (rest_record and rest_record.account_name) else "INTIME TECHNOLOGIES LIMITED"
+                acct_num = rest_record.account_number if (rest_record and rest_record.account_number) else "3004582800"
+                bank_name = rest_record.bank_name if (rest_record and rest_record.bank_name) else "KUDA"
 
                 new_food_order = models.Orders(
                     status="confirmed",
@@ -2719,9 +2719,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                 )
             )
             r_rec = rest_db_res.scalars().first()
-            acct_n = r_rec.account_name if r_rec and r_rec.account_name else "Christiana Adamu"
-            acct_num = r_rec.account_number if r_rec and r_rec.account_number else "5330778741"
-            bank_n = r_rec.bank_name if r_rec and r_rec.bank_name else "Moniepoint"
+            acct_n = r_rec.account_name if r_rec and r_rec.account_name else "INTIME TECHNOLOGIES LIMITED"
+            acct_num = r_rec.account_number if r_rec and r_rec.account_number else "3004582800"
+            bank_n = r_rec.bank_name if r_rec and r_rec.bank_name else "KUDA"
 
             # Security validation: checks for duplicate references, wrong beneficiary, or failed transfers
             is_valid, rejection_reason = await receipt_service.validate_receipt_security(

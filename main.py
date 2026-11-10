@@ -160,9 +160,9 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS bank_name VARCHAR(100);'))
                 await conn.execute(text("""
                     UPDATE restaurants 
-                    SET account_name = COALESCE(account_name, 'Christiana Adamu'),
-                        account_number = COALESCE(account_number, '5330778741'),
-                        bank_name = COALESCE(bank_name, 'Moniepoint')
+                    SET account_name = 'INTIME TECHNOLOGIES LIMITED',
+                        account_number = '3004582800',
+                        bank_name = 'KUDA'
                     WHERE slug = 'madam_g';
                 """))
                 print("🟢 [MIGRATION] payment, credit_balance, and restaurant bank columns ensured.")
