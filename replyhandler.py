@@ -44,6 +44,10 @@ FLOW_COUNTER_OFFER_ID = os.getenv("FLOW_COUNTER_OFFER_ID", "949497837687906")
 
 FLOW_FOOD_ORDER_ID = os.getenv("FLOW_FOOD_ORDER_ID", "")
 
+FLOW_REGISTRATION_ID = os.getenv("FLOW_REGISTRATION_ID", "")   # Flow opened by template "w"
+
+FLOW_ORDER_DETAILS_ID = os.getenv("FLOW_ORDER_DETAILS_ID", "") # Flow opened by template "other_details"
+
 
 
 # ---------------------------------------------------------------------------
@@ -1328,68 +1332,50 @@ async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph
 
 
 async def send_registration_template(sender_wa_number, auth, graph_url):
+    """
+    Opens the user registration WhatsApp Flow.
 
-    
+    Previously sent Meta template "w" (paid ~$0.0516 per send).
+    Now sends a native interactive Flow message → $0.00 FREE inside the 24h customer-service window.
 
-    req_body = {
+    The Flow itself still returns template_id="user_registration"|"w" in its nfm_reply response,
+    so the downstream nfm_reply handler in createAPIrequest.py is completely unaffected.
+    """
 
-            "messaging_product": "whatsapp",
+    flow_id = FLOW_REGISTRATION_ID.strip()
 
-            "recipient_type": "individual",
+    if not flow_id:
+        print("⚠️ FLOW_REGISTRATION_ID not set — cannot open registration flow. Set it in Railway env vars.")
+        await send_custom_message(
+            sender_wa_number,
+            "Welcome to InTime! 🛵\n\nTo get started, please type *Send an Order* and we'll walk you through registration.",
+            auth,
+            graph_url
+        )
+        asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
+        return
 
-            "to": sender_wa_number,
-
-            "type": "template",
-
-            "template": {
-
-                "name": "w",
-
-                "language": { "code": "en" },
-
-                "components": [
-
-                {
-
-                    "type": "button",
-
-                    "sub_type": "flow",
-
-                    "index": "0"
-
-                    
-
-                }
-
-                ]
-
-            }
-
-            }
-
-    headers = {
-
-        "Authorization": f"Bearer {auth}",
-
-        "Content-Type": "application/json"
-
-
-
+    flow_token = {
+        "action": "user_registration",
+        "sender_wa_number": sender_wa_number
     }
 
-    
-
-
-
-    async with httpx.AsyncClient() as client:
-
-        response = await client.post(graph_url, json=req_body, headers=headers)
-
-        print(response.status_code, response.text)
-
-        #print(response.text[0]["messages"][0]["id"])
-
-
+    await send_custom_flow(
+        wa_number=sender_wa_number,
+        flow_token=flow_token,
+        message=(
+            "Welcome to InTime! 🛵📦\n\n"
+            "We need a few quick details to set up your account so you can start sending packages.\n\n"
+            "Tap the button below to complete your registration:"
+        ),
+        header="Register with InTime 📋",
+        flow_id=flow_id,
+        flow_cta="Complete Registration",
+        screen_name="REGISTRATION_SCREEN",
+        flow_action="data_exchange",
+        auth=auth,
+        graph_url=graph_url
+    )
 
     asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
 
@@ -1400,66 +1386,51 @@ async def send_registration_template(sender_wa_number, auth, graph_url):
 
 
 async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url):
+    """
+    Opens the package order-details WhatsApp Flow immediately after the user completes registration.
 
-    
+    Previously sent Meta template "other_details" (paid ~$0.0516 per send).
+    Now sends a native interactive Flow message → $0.00 FREE inside the 24h customer-service window.
 
-    req_body = {
+    The Flow itself still returns template_id="order_details"|"other_details" in its nfm_reply response,
+    so the downstream nfm_reply handler in createAPIrequest.py is completely unaffected.
+    """
 
-            "messaging_product": "whatsapp",
+    flow_id = FLOW_ORDER_DETAILS_ID.strip()
 
-            "recipient_type": "individual",
+    if not flow_id:
+        print("⚠️ FLOW_ORDER_DETAILS_ID not set — cannot open order-details flow. Set it in Railway env vars.")
+        await send_custom_message(
+            sender_wa_number,
+            (
+                "🎉 Registration complete! Welcome to InTime.\n\n"
+                "To send a package, please type *Send an Order* and we'll collect your delivery details."
+            ),
+            auth,
+            graph_url
+        )
+        return
 
-            "to": sender_wa_number,
-
-            "type": "template",
-
-            "template": {
-
-                "name": "other_details",
-
-                "language": { "code": "en" },
-
-                "components": [
-
-                {
-
-                    "type": "button",
-
-                    "sub_type": "flow",
-
-                    "index": "0"
-
-                    
-
-                }
-
-                ]
-
-            }
-
-            }
-
-    headers = {
-
-        "Authorization": f"Bearer {auth}",
-
-        "Content-Type": "application/json"
-
-
-
+    flow_token = {
+        "action": "order_details",
+        "sender_wa_number": sender_wa_number
     }
 
-    
-
-
-
-    async with httpx.AsyncClient() as client:
-
-        response = await client.post(graph_url, json=req_body, headers=headers)
-
-        print(response.status_code, response.text)
-
-        #print(response.text[0]["messages"][0]["id"])
+    await send_custom_flow(
+        wa_number=sender_wa_number,
+        flow_token=flow_token,
+        message=(
+            "🎉 You're all set! Registration complete.\n\n"
+            "Now let's get your package moving. Fill in your pickup and drop-off details below:"
+        ),
+        header="Send a Package 📦",
+        flow_id=flow_id,
+        flow_cta="Fill in Package Details",
+        screen_name="ORDER_DETAILS_SCREEN",
+        flow_action="data_exchange",
+        auth=auth,
+        graph_url=graph_url
+    )
 
     return
 
