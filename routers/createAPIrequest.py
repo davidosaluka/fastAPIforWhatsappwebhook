@@ -245,10 +245,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                 await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
 
-        elif button_val == "Contact Support":
-
-            custom_message = "Please contact support throught this email: intimesender@gmail.com \n Send any message to restart this flow"
-
+        elif button_val in ["Contact Support", "Customer Care", "contact support", "customer care"]:
+            custom_message = "Please contact support through this email: intimesender@gmail.com \n Send any message to restart this flow"
             await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
 
 
@@ -333,10 +331,21 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
-        if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
-
+        if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD", "order_food"] or button_title in ["Order Food", "Order food"]:
             await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL, db=db)
+            return
 
+        if button_id in ["Send an Order", "send_an_order", "SEND_AN_ORDER"] or button_title in ["Send an Order", "Send an order"]:
+            is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
+            if is_existing_user:
+                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
+            else:
+                await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
+            return
+
+        if button_id in ["Customer Care", "customer_care", "CUSTOMER_CARE", "Contact Support", "contact_support"] or button_title in ["Customer Care", "Contact Support"]:
+            custom_message = "Please contact support through this email: intimesender@gmail.com \n Send any message to restart this flow"
+            await replyhandler.send_custom_message(sender_wa_number, custom_message, AUTH, GRAPH_URL)
             return
 
 

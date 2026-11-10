@@ -535,234 +535,96 @@ async def show_typing_indicator(message_id: str, auth: str, graph_url):
 
 
 async def send_default_template(sender_wa_number, username, auth, graph_url):
+    """
+    Sends the official InTime welcome card with 3 interactive action buttons:
+    1. Send an Order (parcel delivery)
+    2. Customer Care (support)
+    3. Order Food (launches food order flow)
 
-    """Sends the official default_message_ template with quick-reply / flow action buttons."""
-
+    Uses native WhatsApp interactive buttons (type: "interactive") to deliver inside
+    the customer service window for $0.00 (100% FREE), preventing Meta marketing template charges.
+    Falls back gracefully if interactive messages fail.
+    """
     target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-
     display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
-
-    template_name = os.getenv("DEFAULT_MESSAGE_TEMPLATE", "default_message_").strip()
-
-
+    header_text = f"Welcome Back {display_name}!" if display_name != "there" else "Welcome to InTime!"
 
     headers = {
-
         "Authorization": f"Bearer {auth}",
-
         "Content-Type": "application/json"
-
     }
 
+    body_text = (
+        "Hi there 👋 !\n\n"
+        "I'm Femi, your personal assistant at InTime.\n\n"
+        "Whether you need to send a package safely across town or craving a hot meal delivered to your doorstep, we've got you covered 📦 🍔.\n"
+        "How can we help you today? Tap an option below to get started:"
+    )
 
-
-    # Flow token payload for templates with Flow buttons
-
-    flow_token_data = json.dumps({"action": "food_order_address", "sender_wa_number": target_number})
-
-
-
-    # Permutations of components to match Meta template configurations:
-
-    # default_message_ has {{1}} in the HEADER (Welcome Back {{1}}!) and the 3rd button (index 2) is a Flow button:
-
-    component_variations = [
-
-        # Variation 1 (Exact match for screenshot): Header variable + Flow button at index 2
-
-        [
-
-            {
-
-                "type": "header",
-
-                "parameters": [{"type": "text", "text": display_name}]
-
+    interactive_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "header": {
+                "type": "text",
+                "text": header_text[:60]
             },
-
-            {
-
-                "type": "button",
-
-                "sub_type": "flow",
-
-                "index": "2",
-
-                "parameters": [
-
-                    {"type": "action", "action": {"flow_token": flow_token_data}}
-
-                ]
-
-            }
-
-        ],
-
-        # Variation 2: Header variable only (if Meta template has static flow definition)
-
-        [
-
-            {
-
-                "type": "header",
-
-                "parameters": [{"type": "text", "text": display_name}]
-
-            }
-
-        ],
-
-        # Variation 3: Body variable + Flow button at index 0 (legacy templates)
-
-        [
-
-            {
-
-                "type": "body",
-
-                "parameters": [{"type": "text", "text": display_name}]
-
+            "body": {
+                "text": body_text
             },
-
-            {
-
-                "type": "button",
-
-                "sub_type": "flow",
-
-                "index": "0",
-
-                "parameters": [
-
-                    {"type": "action", "action": {"flow_token": flow_token_data}}
-
-                ]
-
-            }
-
-        ],
-
-        # Variation 4: Body variable only (legacy templates)
-
-        [
-
-            {
-
-                "type": "body",
-
-                "parameters": [{"type": "text", "text": display_name}]
-
-            }
-
-        ],
-
-        # Variation 5: No components
-
-        []
-
-    ]
-
-
-
-    names_to_try = [template_name]
-
-    if template_name != "default_message":
-
-        names_to_try.append("default_message")
-
-
-
-    languages_to_try = ["en_US", "en"]
-
-
-
-    response = None
-
-    async with httpx.AsyncClient() as client:
-
-        for t_name in names_to_try:
-
-            for lang in languages_to_try:
-
-                for comp in component_variations:
-
-                    req_body = {
-
-                        "messaging_product": "whatsapp",
-
-                        "recipient_type": "individual",
-
-                        "to": target_number,
-
-                        "type": "template",
-
-                        "template": {
-
-                            "name": t_name,
-
-                            "language": {"code": lang}
-
+            "footer": {
+                "text": "OnTime, EveryTime."
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Send an Order",
+                            "title": "Send an Order"
                         }
-
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Customer Care",
+                            "title": "Customer Care"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Order Food",
+                            "title": "Order Food"
+                        }
                     }
+                ]
+            }
+        }
+    }
 
-                    if comp:
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(graph_url, json=interactive_body, headers=headers)
+            print(f"Native interactive welcome response -> {res.status_code}: {res.text}")
+            if res.status_code in [200, 201]:
+                print(f"✅ Dispatched native 3-button welcome message successfully to {target_number}: 200 OK ($0.00 free tier)")
+                return res
+    except Exception as e:
+        print(f"Error dispatching native interactive welcome message: {e}")
 
-                        req_body["template"]["components"] = comp
-
-
-
-                    try:
-
-                        res = await client.post(graph_url, json=req_body, headers=headers)
-
-                        print(f"Template attempt ({t_name}, {lang}, comp_len={len(comp)}) -> {res.status_code}: {res.text}")
-
-                        if res.status_code == 200:
-
-                            print(f"✅ Dispatched template '{t_name}' ({lang}) successfully: 200 OK")
-
-                            return res
-
-                        else:
-
-                            if "132001" in res.text or "does not exist" in res.text.lower():
-
-                                # Template does not exist under this name or language code, skip remaining component tries
-
-                                break
-
-                    except Exception as e:
-
-                        print(f"Error trying template {t_name}: {e}")
-
-                        continue
-
-
-
-        # Fallback 3: If template still fails (e.g. template not created/approved on new WABA), send interactive text menu
-
-        print("Default template failed or not found on WABA, sending text welcome fallback...")
-
-        welcome_text = (
-
-            f"👋 Hello {display_name}! Welcome to *InTime* 🛵📦\n\n"
-
-            f"How can we help you today?\n\n"
-
-            f"• Reply *Send an Order* to book a package delivery\n"
-
-            f"• Reply *Order Food* to view the Madam G food menu\n"
-
-            f"• Reply *Contact Support* if you need assistance"
-
-        )
-
-        await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
-
-
-
-    return response
+    # Fallback to plain text if interactive fails
+    welcome_text = (
+        f"👋 Welcome to *InTime*, {display_name}!\n\n"
+        f"How can we help you today?\n\n"
+        f"• Reply *Send an Order* to book a package delivery\n"
+        f"• Reply *Order Food* to view the Madam G food menu\n"
+        f"• Reply *Customer Care* if you need assistance"
+    )
+    return await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
 
 
 
