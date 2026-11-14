@@ -71,6 +71,8 @@ class Orders(Base):
     sla_expires_by: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC) + timedelta(minutes=30))
     payment_status: Mapped[str] = mapped_column(String(50), default="pending_payment", nullable=True)
     paid_amount: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    food_subtotal: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
+    delivery_fee: Mapped[int] = mapped_column(Integer, default=0, nullable=True)
     receipt_image_id: Mapped[str] = mapped_column(String, nullable=True)
     transaction_reference: Mapped[str] = mapped_column(String(100), nullable=True, index=True)
     kitchen_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=True)

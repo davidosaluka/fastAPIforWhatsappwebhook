@@ -3,6 +3,7 @@ import re
 import logging
 import string
 import random
+from datetime import date
 from typing import Dict, Any
 from fastapi import APIRouter, Request, Response, Depends
 from sqlalchemy import select, update
@@ -18,7 +19,9 @@ from services.telegram_service import (
     send_telegram_audio,
     RINGTONE_INSTRUCTIONS,
     get_bot_token,
-    TELEGRAM_API_BASE
+    TELEGRAM_API_BASE,
+    send_daily_restaurant_sales_report,
+    send_weekly_restaurant_sales_report
 )
 import replyhandler
 
@@ -371,6 +374,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         msg += "• `/ringtone` — Get your custom InTime order alarm audio\n"
         msg += "• `/order_code [order_no]` — View 5-digit verification code for an order\n"
         msg += "• `/unlock_code <order_no>` — Reset 3-attempt verification lockout\n"
+        msg += "• `/daily_sales [YYYY-MM-DD]` — View daily food sales breakdown\n"
+        msg += "• `/weekly_sales [YYYY-MM-DD]` — Download weekly Saturday CSV report\n"
         msg += "• `/unlink` — Clear this chat from all roles\n"
         if rider:
             msg += "• `/unlink_rider` — Disconnect your rider profile\n"
@@ -665,6 +670,55 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             ),
             parse_mode="Markdown"
         )
+        return
+
+    # --- H3. RESTAURANT SALES REPORTS (/daily_sales, /weekly_sales) ---
+    cmd_parts = text.strip().split(maxsplit=1)
+    base_cmd = cmd_parts[0].split("@")[0].lower() if cmd_parts else ""
+    cmd_arg = cmd_parts[1].strip() if len(cmd_parts) >= 2 else ""
+
+    if base_cmd in ("/daily_sales", "/sales_today", "/daily_report"):
+        target_date = None
+        if cmd_arg:
+            try:
+                target_date = date.fromisoformat(cmd_arg)
+            except ValueError:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="⚠️ Invalid date format. Use `YYYY-MM-DD`, e.g. `/daily_sales 2026-11-14`.",
+                    parse_mode="Markdown"
+                )
+                return
+        sent_count = await send_daily_restaurant_sales_report(
+            db, target_date=target_date, target_chat_id=chat_id
+        )
+        if sent_count == 0:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="⚠️ Could not send daily sales report right now. Please check bot logs."
+            )
+        return
+
+    if base_cmd in ("/weekly_sales", "/sales_week", "/weekly_report"):
+        end_date = None
+        if cmd_arg:
+            try:
+                end_date = date.fromisoformat(cmd_arg)
+            except ValueError:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="⚠️ Invalid date format. Use `YYYY-MM-DD` (week ending date), e.g. `/weekly_sales 2026-11-14`.",
+                    parse_mode="Markdown"
+                )
+                return
+        sent_count = await send_weekly_restaurant_sales_report(
+            db, end_date=end_date, target_chat_id=chat_id
+        )
+        if sent_count == 0:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="⚠️ Could not generate weekly sales CSV right now. Please check bot logs."
+            )
         return
 
     # --- I. RIDER DELIVERY CONFIRMATION CODE COMMAND (/code <5-digit> or plain 5 digits) ---

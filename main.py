@@ -151,6 +151,8 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS credit_balance INTEGER NOT NULL DEFAULT 0;'))
                 await conn.execute(text("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'pending_payment';"))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_amount INTEGER DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS food_subtotal INTEGER DEFAULT 0;'))
+                await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_fee INTEGER DEFAULT 0;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS receipt_image_id TEXT;'))
                 await conn.execute(text('ALTER TABLE orders ADD COLUMN IF NOT EXISTS transaction_reference VARCHAR(100);'))
                 await conn.execute(text('CREATE INDEX IF NOT EXISTS ix_orders_transaction_reference ON orders (transaction_reference);'))
@@ -193,6 +195,8 @@ async def lifespan(_app: FastAPI):
             'ALTER TABLE users ADD COLUMN credit_balance INTEGER DEFAULT 0;',
             'ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) DEFAULT "pending_payment";',
             'ALTER TABLE orders ADD COLUMN paid_amount INTEGER DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN food_subtotal INTEGER DEFAULT 0;',
+            'ALTER TABLE orders ADD COLUMN delivery_fee INTEGER DEFAULT 0;',
             'ALTER TABLE orders ADD COLUMN receipt_image_id TEXT;',
             'ALTER TABLE restaurants ADD COLUMN account_name VARCHAR(100);',
             'ALTER TABLE restaurants ADD COLUMN account_number VARCHAR(50);',

@@ -8,6 +8,7 @@ import os
 from database import AsyncSessionLocal
 import models
 import replyhandler
+from services import telegram_service
 
 
 from dotenv import load_dotenv
@@ -83,6 +84,28 @@ async def send_daily_rider_templates():
                 await session.rollback()
                 logger.error(f"Failed to send template or update rider status {rider_id}: {e}")
 
+async def run_daily_restaurant_sales_report():
+    """Sends the daily restaurant sales summary to active restaurant Telegram chats."""
+    logger.info("Running scheduled daily restaurant sales report...")
+    try:
+        async with AsyncSessionLocal() as db:
+            sent_count = await telegram_service.send_daily_restaurant_sales_report(db)
+            logger.info(f"Daily restaurant sales report sent to {sent_count} chat(s).")
+    except Exception as e:
+        logger.error(f"Error in run_daily_restaurant_sales_report: {e}")
+
+
+async def run_weekly_restaurant_sales_report():
+    """Sends the weekly restaurant sales CSV report every Saturday on Telegram."""
+    logger.info("Running scheduled weekly Saturday restaurant sales report...")
+    try:
+        async with AsyncSessionLocal() as db:
+            sent_count = await telegram_service.send_weekly_restaurant_sales_report(db)
+            logger.info(f"Weekly Saturday restaurant sales report sent to {sent_count} chat(s).")
+    except Exception as e:
+        logger.error(f"Error in run_weekly_restaurant_sales_report: {e}")
+
+
 def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     enable_checkin = os.getenv("ENABLE_RIDER_CHECKIN_SCHEDULER", "false").lower() in ("true", "1", "yes")
@@ -96,6 +119,26 @@ def start_scheduler():
         logger.info("Daily rider check-in scheduler is ACTIVE (7:00 AM Lagos).")
     else:
         logger.info("Daily rider check-in scheduler worker is currently PAUSED.")
+
+    daily_hour = int(os.getenv("DAILY_SALES_REPORT_HOUR", "21"))
+    daily_minute = int(os.getenv("DAILY_SALES_REPORT_MINUTE", "0"))
+    scheduler.add_job(
+        run_daily_restaurant_sales_report,
+        trigger=CronTrigger(hour=daily_hour, minute=daily_minute, timezone="Africa/Lagos"),
+        id="daily_restaurant_sales_report",
+        replace_existing=True,
+    )
+    logger.info(f"Daily restaurant sales report scheduled at {daily_hour:02d}:{daily_minute:02d} Africa/Lagos.")
+
+    weekly_hour = int(os.getenv("WEEKLY_SALES_REPORT_HOUR", "21"))
+    weekly_minute = int(os.getenv("WEEKLY_SALES_REPORT_MINUTE", "5"))
+    scheduler.add_job(
+        run_weekly_restaurant_sales_report,
+        trigger=CronTrigger(day_of_week="sat", hour=weekly_hour, minute=weekly_minute, timezone="Africa/Lagos"),
+        id="weekly_restaurant_sales_report",
+        replace_existing=True,
+    )
+    logger.info(f"Weekly Saturday restaurant sales report scheduled at {weekly_hour:02d}:{weekly_minute:02d} Africa/Lagos.")
 
     scheduler.start()
     return scheduler

@@ -1020,6 +1020,8 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
                     status="confirmed",
                     payment_status="pending_payment",
                     paid_amount=0,
+                    food_subtotal=int(subtotal),
+                    delivery_fee=int(delivery_fee),
                     sender_wa_number=sender_wa_number,
                     recipient_phone_number=contact_phone,
                     pickup_location_name=f"{selected_restaurant}, Lagos",
@@ -2372,6 +2374,10 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
         new_food_order = models.Orders(
 
             status=initial_status,
+
+            food_subtotal=int(total_food_amount),
+
+            delivery_fee=int(delivery_fee),
 
             sender_wa_number=sender_wa_number,
 
