@@ -3,7 +3,7 @@ import json
 import logging
 import base64
 import re
-import urllib.request
+import httpx
 from typing import Tuple, Optional, Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,38 +15,31 @@ logger = logging.getLogger("receipt_service")
 
 async def download_whatsapp_media(media_id: str, auth: str) -> Optional[bytes]:
     """
-    Downloads media file from WhatsApp Cloud API using media ID and system Bearer token.
+    Downloads media file from WhatsApp Cloud API asynchronously using media ID and system Bearer token.
     """
     if not media_id or not auth:
         return None
     try:
-        # Step 1: Query WhatsApp Graph API for media URL
-        media_info_url = f"https://graph.facebook.com/v21.0/{media_id}"
-        req1 = urllib.request.Request(
-            media_info_url,
-            headers={
-                "Authorization": f"Bearer {auth}",
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
-        with urllib.request.urlopen(req1, timeout=15) as resp1:
-            data = json.loads(resp1.read().decode("utf-8"))
+        headers = {
+            "Authorization": f"Bearer {auth}",
+            "User-Agent": "Mozilla/5.0"
+        }
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            # Step 1: Query WhatsApp Graph API for media URL
+            media_info_url = f"https://graph.facebook.com/v21.0/{media_id}"
+            resp1 = await client.get(media_info_url, headers=headers)
+            resp1.raise_for_status()
+            data = resp1.json()
             download_url = data.get("url")
 
-        if not download_url:
-            logger.warning(f"No download URL returned for media ID {media_id}")
-            return None
+            if not download_url:
+                logger.warning(f"No download URL returned for media ID {media_id}")
+                return None
 
-        # Step 2: Download raw media bytes from authenticated URL
-        req2 = urllib.request.Request(
-            download_url,
-            headers={
-                "Authorization": f"Bearer {auth}",
-                "User-Agent": "Mozilla/5.0"
-            }
-        )
-        with urllib.request.urlopen(req2, timeout=25) as resp2:
-            return resp2.read()
+            # Step 2: Download raw media bytes from authenticated URL
+            resp2 = await client.get(download_url, headers=headers)
+            resp2.raise_for_status()
+            return resp2.content
 
     except Exception as e:
         logger.error(f"Error downloading WhatsApp media {media_id}: {e}")
@@ -119,9 +112,9 @@ def parse_transfer_receipt(
                 "1. amount: total transferred amount in Naira (digits only, e.g. 3500, no currency symbols or commas).\n"
                 "2. status: transaction status ('successful', 'pending', or 'failed').\n"
                 "3. transaction_reference: unique session ID, transaction reference, or NIP reference number. Null if not clearly visible.\n"
-                "4. beneficiary_name: destination / recipient account name (e.g. 'Christiana Adamu'). Null if not found.\n"
-                "5. beneficiary_account: destination / recipient account number (digits only, e.g. '5330778741'). Null if not found.\n"
-                "6. beneficiary_bank: destination bank name (e.g. 'Moniepoint', 'OPay', 'Kuda'). Null if not found.\n"
+                "4. beneficiary_name: destination / recipient account name (e.g. 'INTIME TECHNOLOGIES LIMITED'). Null if not found.\n"
+                "5. beneficiary_account: destination / recipient account number (digits only, e.g. '3004582800'). Null if not found.\n"
+                "6. beneficiary_bank: destination bank name (e.g. 'Kuda', 'Moniepoint', 'OPay'). Null if not found.\n"
                 "7. transaction_date: transaction date and time string (e.g. '06 Nov 2026, 17:45'). Null if not found.\n\n"
                 "Reply ONLY with a valid JSON object matching this schema:\n"
                 "{\n"
@@ -135,36 +128,48 @@ def parse_transfer_receipt(
                 "}"
             )
 
-            resp = client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
-                max_tokens=220,
-                temperature=0.1,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+            vision_models = [
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+                "meta-llama/llama-4-maverick-17b-128e-instruct",
+                "llama-3.2-90b-vision-preview",
+                "llama-3.2-11b-vision-preview",
+                "qwen/qwen3.8-27b",
+            ]
+            for vision_model in vision_models:
+                try:
+                    resp = client.chat.completions.create(
+                        model=vision_model,
+                        max_tokens=220,
+                        temperature=0.1,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                                ]
+                            }
                         ]
-                    }
-                ]
-            )
+                    )
 
-            ans = resp.choices[0].message.content.strip()
-            # Extract JSON block
-            json_match = re.search(r'\{.*\}', ans, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(0))
-                amt = parsed.get("amount")
-                if amt and isinstance(amt, (int, float)) and amt > 0:
-                    result["amount"] = int(amt)
-                result["status"] = str(parsed.get("status") or "successful").lower()
-                result["transaction_reference"] = str(parsed.get("transaction_reference") or "").strip() or None
-                result["beneficiary_name"] = str(parsed.get("beneficiary_name") or "").strip() or None
-                result["beneficiary_account"] = str(parsed.get("beneficiary_account") or "").strip() or None
-                result["beneficiary_bank"] = str(parsed.get("beneficiary_bank") or "").strip() or None
-                result["transaction_date"] = str(parsed.get("transaction_date") or "").strip() or None
-                return result
+                    ans = resp.choices[0].message.content.strip()
+                    # Extract JSON block
+                    json_match = re.search(r'\{.*\}', ans, re.DOTALL)
+                    if json_match:
+                        parsed = json.loads(json_match.group(0))
+                        amt = parsed.get("amount")
+                        if amt and isinstance(amt, (int, float)) and amt > 0:
+                            result["amount"] = int(amt)
+                        result["status"] = str(parsed.get("status") or "successful").lower()
+                        result["transaction_reference"] = str(parsed.get("transaction_reference") or "").strip() or None
+                        result["beneficiary_name"] = str(parsed.get("beneficiary_name") or "").strip() or None
+                        result["beneficiary_account"] = str(parsed.get("beneficiary_account") or "").strip() or None
+                        result["beneficiary_bank"] = str(parsed.get("beneficiary_bank") or "").strip() or None
+                        result["transaction_date"] = str(parsed.get("transaction_date") or "").strip() or None
+                        return result
+                except Exception as model_err:
+                    logger.warning(f"Groq vision model '{vision_model}' failed: {model_err}")
+                    continue
         except Exception as e:
             logger.warning(f"Groq vision receipt parsing encountered error: {e}")
 
@@ -221,8 +226,8 @@ async def validate_receipt_security(
     if restaurant:
         b_name = (parsed_receipt.get("beneficiary_name") or "").lower().strip()
         b_acct = re.sub(r'[^\d]', '', str(parsed_receipt.get("beneficiary_account") or ""))
-        exp_acct = re.sub(r'[^\d]', '', str(restaurant.account_number or "5330778741"))
-        exp_name_parts = [p.lower() for p in (restaurant.account_name or "Christiana Adamu").split() if len(p) >= 3]
+        exp_acct = re.sub(r'[^\d]', '', str(restaurant.account_number or "3004582800"))
+        exp_name_parts = [p.lower() for p in (restaurant.account_name or "INTIME TECHNOLOGIES LIMITED").split() if len(p) >= 3]
         exp_rest_parts = [p.lower() for p in (restaurant.name or "Madam G").split() if len(p) >= 3]
 
         # If recipient account number is visible on receipt, check if it matches
@@ -230,7 +235,7 @@ async def validate_receipt_security(
             if b_acct != exp_acct and not (b_acct.endswith(exp_acct[-6:]) or exp_acct.endswith(b_acct[-6:])):
                 return False, (
                     f"❌ *Wrong Beneficiary Account!*\n\n"
-                    f"Your receipt shows payment to account `{b_acct}`, but {restaurant.name}'s account number is *`{exp_acct}`* ({restaurant.bank_name or 'Moniepoint'}).\n\n"
+                    f"Your receipt shows payment to account `{b_acct}`, but {restaurant.name}'s account number is *`{exp_acct}`* ({restaurant.bank_name or 'KUDA'}).\n\n"
                     f"Please make sure you transfer to {restaurant.name} and send the receipt."
                 )
 
@@ -240,8 +245,8 @@ async def validate_receipt_security(
             if not has_match and not ("intime" in b_name or "restaurant" in b_name):
                 return False, (
                     f"❌ *Wrong Beneficiary Name!*\n\n"
-                    f"Your receipt shows payment was sent to *{parsed_receipt.get('beneficiary_name')}*, but {restaurant.name}'s account name is *{restaurant.account_name or 'Christiana Adamu'}*.\n\n"
-                    f"Please send the transfer to *{restaurant.account_name}* ({restaurant.bank_name or 'Moniepoint'})."
+                    f"Your receipt shows payment was sent to *{parsed_receipt.get('beneficiary_name')}*, but {restaurant.name}'s account name is *{restaurant.account_name or 'INTIME TECHNOLOGIES LIMITED'}*.\n\n"
+                    f"Please send the transfer to *{restaurant.account_name or 'INTIME TECHNOLOGIES LIMITED'}* ({restaurant.bank_name or 'KUDA'})."
                 )
 
     return True, ""

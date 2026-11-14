@@ -253,6 +253,20 @@ async def lifespan(_app: FastAPI):
                 '''))
         except Exception:
             pass
+        try:
+            async with engine.begin() as conn:
+                init_chat = os.getenv("TELEGRAM_RESTAURANT_CHAT_ID", "").strip() or None
+                await conn.execute(text('''
+                    INSERT INTO restaurants (name, slug, telegram_chat_id, address, account_name, account_number, bank_name, is_active)
+                    VALUES ('Madam G Restaurant', 'madam_g', :chat_id, 'Madam G Kitchen, Lagos', 'INTIME TECHNOLOGIES LIMITED', '3004582800', 'KUDA', 1)
+                    ON CONFLICT (slug) DO UPDATE SET
+                        telegram_chat_id = COALESCE(restaurants.telegram_chat_id, excluded.telegram_chat_id),
+                        account_name = 'INTIME TECHNOLOGIES LIMITED',
+                        account_number = '3004582800',
+                        bank_name = 'KUDA';
+                '''), {"chat_id": init_chat})
+        except Exception as e:
+            print(f"Migration note (sqlite restaurants seed): {e}")
 
     scheduler = start_scheduler()
     yield

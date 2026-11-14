@@ -25,8 +25,32 @@ import replyhandler
 logger = logging.getLogger("telegram_router")
 router = APIRouter()
 
-AUTH = os.getenv("AUTH")
-GRAPH_URL = os.getenv("GRAPH_URL")
+def get_auth_token() -> str:
+    auth = (os.getenv("AUTHORIZATION") or os.getenv("AUTH") or os.getenv("WHATSAPP_TOKEN") or "").strip()
+    if auth.startswith("Bearer "):
+        auth = auth[len("Bearer "):].strip()
+    if auth.startswith("AUTHORIZATION="):
+        auth = auth[len("AUTHORIZATION="):].strip()
+    return auth.strip("\"'")
+
+
+def get_graph_url() -> str:
+    url = (os.getenv("GRAPH_URL") or "").strip()
+    if url.startswith("GRAPH_URL="):
+        url = url[len("GRAPH_URL="):].strip()
+    url = url.strip("\"'")
+    if not url:
+        phone_id = os.getenv("PHONE_NUMBER_ID", "1089747250880518")
+        return f"https://graph.facebook.com/v21.0/{phone_id}/messages"
+    if url.isdigit():
+        return f"https://graph.facebook.com/v21.0/{url}/messages"
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return f"https://{url}"
+    return url
+
+
+AUTH = get_auth_token()
+GRAPH_URL = get_graph_url()
 
 
 @router.get("/set-webhook")
@@ -82,6 +106,8 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
 
 
 async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
+    AUTH = get_auth_token()
+    GRAPH_URL = get_graph_url()
     chat = message.get("chat", {})
     chat_id = str(chat.get("id"))
     from_user = message.get("from", {})
@@ -180,8 +206,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         else:
             rest_stmt = select(models.Restaurants).where(
                 (models.Restaurants.telegram_chat_id == chat_id) |
-                (models.Restaurants.telegram_chat_id == str(chat_id).strip()) |
-                (models.Restaurants.slug == "madam_g")
+                (models.Restaurants.telegram_chat_id == str(chat_id).strip())
             )
 
         rest_res = await db.execute(rest_stmt)
@@ -242,7 +267,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         # Unlink restaurants
         rest_stmt = select(models.Restaurants).where(
             (models.Restaurants.telegram_chat_id == chat_id) |
-            (models.Restaurants.slug == "madam_g")
+            (models.Restaurants.telegram_chat_id == str(chat_id).strip())
         )
         r_res = await db.execute(rest_stmt)
         restaurants = r_res.scalars().all()
@@ -280,7 +305,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             rest_res = await db.execute(
                 select(models.Restaurants).where(
                     (models.Restaurants.telegram_chat_id == chat_id) |
-                    (models.Restaurants.slug == "madam_g")
+                    (models.Restaurants.telegram_chat_id == str(chat_id).strip())
                 )
             )
             restaurant = rest_res.scalars().first()
@@ -310,7 +335,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         else:
             await send_telegram_message(
                 chat_id=chat_id,
-                text="Usage: `/set_bank <Bank_Name> <Account_Number> <Account_Name>`\nExample: `/set_bank Moniepoint 5330778741 Christiana Adamu`",
+                text="Usage: `/set_bank <Bank_Name> <Account_Number> <Account_Name>`\nExample: `/set_bank KUDA 3004582800 INTIME TECHNOLOGIES LIMITED`",
                 parse_mode="Markdown"
             )
             return
@@ -336,7 +361,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         if linked_restaurants:
             r_details = []
             for r in linked_restaurants:
-                b_info = f" (Bank: {r.bank_name or 'Moniepoint'}, Acct: {r.account_number or '5330778741'})"
+                b_info = f" (Bank: {r.bank_name or 'KUDA'}, Acct: {r.account_number or '3004582800'})"
                 r_details.append(f"*{r.name}*{b_info}")
             msg += f"• *Restaurant:* ✅ Linked to {', '.join(r_details)}\n"
         else:
@@ -344,6 +369,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
 
         msg += "\n💡 *Useful Commands:*\n"
         msg += "• `/ringtone` — Get your custom InTime order alarm audio\n"
+        msg += "• `/order_code [order_no]` — View 5-digit verification code for an order\n"
+        msg += "• `/unlock_code <order_no>` — Reset 3-attempt verification lockout\n"
         msg += "• `/unlink` — Clear this chat from all roles\n"
         if rider:
             msg += "• `/unlink_rider` — Disconnect your rider profile\n"
@@ -531,6 +558,115 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             )
         return
 
+    # --- H2. SUPPORT TROUBLESHOOTING: ORDER CODE LOOKUP & UNLOCK (/order_code, /unlock_code) ---
+    if text.startswith(("/order_code", "/lookup_code", "/find_code")):
+        parts = text.split(maxsplit=1)
+        order_arg = parts[1].strip().lstrip("#") if len(parts) >= 2 else ""
+
+        if order_arg:
+            ord_res = await db.execute(
+                select(models.Orders).where(models.Orders.order_number.ilike(order_arg))
+            )
+            order = ord_res.scalars().first()
+            if not order:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ No order found matching `{order_arg}`.",
+                    parse_mode="Markdown"
+                )
+                return
+
+            if not order.verification_code:
+                order.verification_code = ''.join(random.choices(string.digits, k=5))
+                await db.commit()
+                await db.refresh(order)
+
+            attempts = getattr(order, "verification_attempts", 0) or 0
+            lock_note = " 🚫 *(LOCKED)*" if attempts >= 3 else ""
+            prog = order.delivery_progression_status or "not_started"
+            info_msg = (
+                f"🔐 *Order Verification Details*\n\n"
+                f"• *Order #:* `{order.order_number}`\n"
+                f"• *Status:* `{order.status}` (`{prog}`)\n"
+                f"• *5-Digit Code:* `{order.verification_code}`\n"
+                f"• *Attempts:* `{attempts}/3`{lock_note}\n"
+                f"• *Customer Phone:* `{order.sender_wa_number or 'N/A'}`\n"
+                f"• *Recipient Phone:* `{order.recipient_phone_number or 'N/A'}`\n"
+                f"• *Rider Phone:* `{order.rider_wa_number or 'Unassigned'}`\n"
+            )
+            if attempts >= 3:
+                info_msg += f"\n👉 Run `/unlock_code {order.order_number}` to reset attempts."
+            await send_telegram_message(chat_id=chat_id, text=info_msg, parse_mode="Markdown")
+            return
+        else:
+            active_res = await db.execute(
+                select(models.Orders)
+                .where(models.Orders.status.in_(["confirmed", "rider_accepted", "in_transit", "awaiting_pickup", "awaiting_dropoff"]))
+                .order_by(models.Orders.created_at.desc())
+                .limit(5)
+            )
+            active_orders = active_res.scalars().all()
+            if not active_orders:
+                await send_telegram_message(
+                    chat_id=chat_id,
+                    text="ℹ️ No active orders found right now. Pass a specific order number: `/order_code <ORDER_NO>`",
+                    parse_mode="Markdown"
+                )
+                return
+
+            lines = ["🔐 *Recent Active Orders & Codes:*\n"]
+            for o in active_orders:
+                code_disp = f"`{o.verification_code}`" if o.verification_code else "_Not set yet_"
+                attempts = getattr(o, "verification_attempts", 0) or 0
+                lines.append(
+                    f"• `{o.order_number}` | `{o.status}` | Code: {code_disp} | Attempts: `{attempts}/3`"
+                )
+            lines.append("\n💡 Inspect one: `/order_code <ORDER_NO>`\n🔓 Unlock locked order: `/unlock_code <ORDER_NO>`")
+            await send_telegram_message(chat_id=chat_id, text="\n".join(lines), parse_mode="Markdown")
+            return
+
+    if text.startswith("/unlock_code"):
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: `/unlock_code <ORDER_NUMBER>`",
+                parse_mode="Markdown"
+            )
+            return
+
+        order_arg = parts[1].strip().lstrip("#")
+        ord_res = await db.execute(
+            select(models.Orders).where(models.Orders.order_number.ilike(order_arg))
+        )
+        order = ord_res.scalars().first()
+        if not order:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"⚠️ No order found matching `{order_arg}`.",
+                parse_mode="Markdown"
+            )
+            return
+
+        if not order.verification_code:
+            order.verification_code = ''.join(random.choices(string.digits, k=5))
+        order.verification_attempts = 0
+        await db.commit()
+        await db.refresh(order)
+
+        await send_telegram_message(
+            chat_id=chat_id,
+            text=(
+                f"🔓 *Order Verification Unlocked!*\n\n"
+                f"• *Order #:* `{order.order_number}`\n"
+                f"• *Attempts Reset:* `0/3`\n"
+                f"• *Active 5-Digit Code:* `{order.verification_code}`\n\n"
+                f"The rider can now enter the verification code again."
+            ),
+            parse_mode="Markdown"
+        )
+        return
+
     # --- I. RIDER DELIVERY CONFIRMATION CODE COMMAND (/code <5-digit> or plain 5 digits) ---
     code_match = re.search(r'\b(\d{5})\b', text)
     if code_match and (text.startswith("/code") or len(text.strip()) == 5):
@@ -567,6 +703,18 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             await send_telegram_message(
                 chat_id=chat_id,
                 text="⚠️ This order does not have an active verification code set yet. Please make sure you tapped *Food Collected* first!"
+            )
+            return
+
+        if (getattr(active_order, "verification_attempts", 0) or 0) >= 3:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=(
+                    f"🚫 *Maximum Verification Attempts Reached (3/3)!*\n\n"
+                    f"Order *#{active_order.order_number}* code verification is locked for security.\n"
+                    f"Please contact support or ask an admin to run `/unlock_code {active_order.order_number}`."
+                ),
+                parse_mode="Markdown"
             )
             return
 
@@ -651,6 +799,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
 
 
 async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSession):
+    AUTH = get_auth_token()
+    GRAPH_URL = get_graph_url()
     cq_id = callback_query["id"]
     data = callback_query.get("data", "")
     from_user = callback_query.get("from", {})
@@ -700,11 +850,32 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
         rider_phone = rider_obj.rider_wa_number if rider_obj else f"TG:@{username or user_id}"
         rider_display_name = f"{rider_obj.first_name} {rider_obj.last_name}" if rider_obj else user_display
 
-        # 1. Lock and assign order in DB
-        order.status = "rider_accepted"
-        order.rider_wa_number = rider_phone
-        order.delivery_progression_status = "awaiting_pickup"
+        # 1. Atomically lock and assign order in DB (prevents two riders claiming simultaneously)
+        claim_res = await db.execute(
+            update(models.Orders)
+            .where(models.Orders.order_number == order_num)
+            .where(models.Orders.status == "confirmed")
+            .values(
+                status="rider_accepted",
+                rider_wa_number=rider_phone,
+                delivery_progression_status="awaiting_pickup"
+            )
+        )
         await db.commit()
+        if claim_res.rowcount == 0:
+            await answer_callback_query(
+                cq_id,
+                text=f"⚠️ Order #{order_num} has already been accepted by another rider!",
+                show_alert=True
+            )
+            if chat_id and message_id:
+                await edit_telegram_message(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=f"❌ *Order #{order_num} was claimed by another rider.*",
+                    parse_mode="Markdown"
+                )
+            return
         await db.refresh(order)
 
         # 2. Acknowledge button click
@@ -986,7 +1157,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
             f"🔐 *Final Step to Complete Delivery:*\n"
             f"1️⃣ Meet customer / call `{recipient_phone}`\n"
             f"2️⃣ Ask them for the *5-digit verification code* sent to their WhatsApp\n"
-            f"3️⃣ Reply here with: `/code <5-digit>` (e.g. `/code {order.verification_code or '12345'}` or simply the 5 digits)\n\n"
+            f"3️⃣ Reply here with: `/code <5-digit>` (e.g. `/code 12345` or simply the 5 digits)\n\n"
             f"⚠️ *Note:* You have 3 attempts to enter the correct code."
         )
         if chat_id and message_id:
@@ -1196,7 +1367,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
                 chat_id=admin_chat,
                 text=(
                     f"🚨 *RECEIPT DISPUTE ALERT!* 🚨\n\n"
-                    f"Restaurant kitchen flagged that transfer for *Order #{order_num}* was *NOT CREDITED* to their Moniepoint account!\n"
+                    f"Restaurant kitchen flagged that transfer for *Order #{order_num}* was *NOT CREDITED* to the bank account!\n"
                     f"Please investigate immediately."
                 ),
                 parse_mode="Markdown"

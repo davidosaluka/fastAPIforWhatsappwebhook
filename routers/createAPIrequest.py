@@ -2837,7 +2837,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
-        if result:
+        media_id = message.get("image", {}).get("id") or message.get("document", {}).get("id")
+
+        if result and media_id:
 
             await db.execute(
 
@@ -2845,7 +2847,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
                     .where(models.Orders.order_number == result.order_number)
 
-                    .values(package_image_id=message["image"]["id"])
+                    .values(package_image_id=media_id)
 
                     )
 

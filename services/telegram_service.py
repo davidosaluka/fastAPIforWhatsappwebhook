@@ -377,6 +377,7 @@ async def forward_receipt_to_restaurant(
         if not rest_chat:
             return False
 
+        bank_label = (restaurant_obj.bank_name if (restaurant_obj and restaurant_obj.bank_name) else "KUDA")
         ref_str = f"• *Ref:* `{reference}`\n" if reference else ""
         caption = (
             f"📸 *TRANSFER RECEIPT UPLOADED!* 🏦\n\n"
@@ -384,7 +385,7 @@ async def forward_receipt_to_restaurant(
             f"• *Amount:* *₦{amount:,}*\n"
             f"• *Customer Phone:* `{customer_phone}`\n"
             f"{ref_str}\n"
-            f"Check your Moniepoint app/SMS to confirm credit:"
+            f"Check your {bank_label} app/SMS to confirm credit:"
         )
         keyboard = {
             "inline_keyboard": [

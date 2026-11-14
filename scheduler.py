@@ -2,7 +2,7 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select, update
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 import logging
 import os
 from database import AsyncSessionLocal
@@ -47,7 +47,7 @@ async def send_daily_rider_templates():
         return
 
     global LAST_CHECKIN_DATE
-    lagos_tz = datetime.now(UTC).date()
+    lagos_tz = (datetime.now(UTC) + timedelta(hours=1)).date()
     if LAST_CHECKIN_DATE == lagos_tz:
         logger.info(f"Daily check-in already sent today ({lagos_tz}). Skipping duplicate execution.")
         return

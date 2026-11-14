@@ -633,50 +633,81 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
 
 
 async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
-
-    
-
-    req_body = {
-
-            "messaging_product": "whatsapp",
-
-            "recipient_type": "individual",
-
-            "to": sender_wa_number,
-
-            "type": "template",
-
-            "template": {
-
-                "name": "start_over_template",
-
-                "language": { "code": "en" }      
-
-            }
-
-            }
-
+    """
+    Sends a free native interactive 3-button recovery card ($0.00 FREE inside the 24h window)
+    instead of the paid 'start_over_template' Meta template.
+    Falls back to plain text if the interactive message fails.
+    """
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     headers = {
-
         "Authorization": f"Bearer {auth}",
-
-        "Content-Type": "application/json"
-
-
-
+        "Content-Type": "application/json",
     }
 
-    
+    interactive_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "header": {
+                "type": "text",
+                "text": "Let's Get Back On Track"
+            },
+            "body": {
+                "text": (
+                    "Oops! It looks like we couldn't match that image or document to an active order.\n\n"
+                    "How would you like to proceed? Tap an option below:"
+                )
+            },
+            "footer": {
+                "text": "OnTime, EveryTime."
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Send an Order",
+                            "title": "Send an Order"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Order Food",
+                            "title": "Order Food"
+                        }
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": "Customer Care",
+                            "title": "Customer Care"
+                        }
+                    }
+                ]
+            }
+        }
+    }
 
-    print(req_body)
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(graph_url, json=interactive_body, headers=headers)
+            print("Recovery interactive message:", response.status_code, response.text)
+            if response.status_code in [200, 201]:
+                return response
+    except Exception as e:
+        print(f"Error sending recovery interactive message: {e}")
 
-    async with httpx.AsyncClient() as client:
-
-        response = await client.post(graph_url, json=req_body, headers=headers)
-
-        print(response.status_code, response.text)
-
-    return
+    fallback_text = (
+        "Oops! We couldn't match that upload to an active order.\n\n"
+        "• Reply *Send an Order* to send a package\n"
+        "• Reply *Order Food* to order a meal\n"
+        "• Reply *Customer Care* for support"
+    )
+    return await send_custom_message(sender_wa_number, fallback_text, auth, graph_url)
 
 
 
@@ -1170,7 +1201,7 @@ async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow
         "flow_action": flow_action,
     }
 
-    if flow_action == "navigate":
+    if flow_action == "navigate" and screen_name:
         parameters["flow_action_payload"] = {
             "screen": screen_name
         }
@@ -1230,12 +1261,9 @@ async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow
     async with httpx.AsyncClient() as client:
 
         response = await client.post(graph_url, json=req_body, headers=headers)
+        print("send_custom_flow response:", response.status_code, response.text)
 
-
-
-
-
-    return
+    return response
 
 
 
@@ -1333,104 +1361,134 @@ async def schedule_registration_reminder(sender_wa_number: str, auth: str, graph
 
 async def send_registration_template(sender_wa_number, auth, graph_url):
     """
-    Opens the user registration WhatsApp Flow.
-
-    Previously sent Meta template "w" (paid ~$0.0516 per send).
-    Now sends a native interactive Flow message → $0.00 FREE inside the 24h customer-service window.
-
-    The Flow itself still returns template_id="user_registration"|"w" in its nfm_reply response,
-    so the downstream nfm_reply handler in createAPIrequest.py is completely unaffected.
+    Opens the user registration WhatsApp Flow via native interactive Flow ($0.00 FREE).
+    Falls back to template "w" if FLOW_REGISTRATION_ID is not configured yet or if native dispatch fails,
+    preventing a broken loop.
     """
+    flow_id = os.getenv("FLOW_REGISTRATION_ID", "").strip() or FLOW_REGISTRATION_ID.strip()
+    screen_name = os.getenv("FLOW_REGISTRATION_SCREEN", "").strip() or None
 
-    flow_id = FLOW_REGISTRATION_ID.strip()
+    if flow_id:
+        flow_token = {
+            "action": "user_registration",
+            "sender_wa_number": sender_wa_number
+        }
+        try:
+            res = await send_custom_flow(
+                wa_number=sender_wa_number,
+                flow_token=flow_token,
+                message=(
+                    "Welcome to InTime! 🛵📦\n\n"
+                    "We need a few quick details to set up your account so you can start sending packages.\n\n"
+                    "Tap the button below to complete your registration:"
+                ),
+                header="Register with InTime 📋",
+                flow_id=flow_id,
+                flow_cta="Complete Registration",
+                screen_name=screen_name,
+                flow_action="navigate",
+                auth=auth,
+                graph_url=graph_url
+            )
+            if res is not None and res.status_code in [200, 201]:
+                asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
+                return
+            print(f"⚠️ Native registration flow dispatch failed; falling back to template 'w'.")
+        except Exception as e:
+            print(f"⚠️ Native registration flow exception ({e}); falling back to template 'w'.")
+    else:
+        print("⚠️ FLOW_REGISTRATION_ID not set — falling back to template 'w' until env var is configured.")
 
-    if not flow_id:
-        print("⚠️ FLOW_REGISTRATION_ID not set — cannot open registration flow. Set it in Railway env vars.")
-        await send_custom_message(
-            sender_wa_number,
-            "Welcome to InTime! 🛵\n\nTo get started, please type *Send an Order* and we'll walk you through registration.",
-            auth,
-            graph_url
-        )
-        asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
-        return
-
-    flow_token = {
-        "action": "user_registration",
-        "sender_wa_number": sender_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": sender_wa_number,
+        "type": "template",
+        "template": {
+            "name": "w",
+            "language": {"code": "en"},
+            "components": [
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0"
+                }
+            ]
+        }
     }
-
-    await send_custom_flow(
-        wa_number=sender_wa_number,
-        flow_token=flow_token,
-        message=(
-            "Welcome to InTime! 🛵📦\n\n"
-            "We need a few quick details to set up your account so you can start sending packages.\n\n"
-            "Tap the button below to complete your registration:"
-        ),
-        header="Register with InTime 📋",
-        flow_id=flow_id,
-        flow_cta="Complete Registration",
-        screen_name="REGISTRATION_SCREEN",
-        flow_action="data_exchange",
-        auth=auth,
-        graph_url=graph_url
-    )
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Registration fallback template 'w':", response.status_code, response.text)
 
     asyncio.create_task(schedule_registration_reminder(sender_wa_number, auth, graph_url))
-
     return
-
-
-
 
 
 async def reply_user_that_has_just_registered(sender_wa_number, auth, graph_url):
     """
-    Opens the package order-details WhatsApp Flow immediately after the user completes registration.
-
-    Previously sent Meta template "other_details" (paid ~$0.0516 per send).
-    Now sends a native interactive Flow message → $0.00 FREE inside the 24h customer-service window.
-
-    The Flow itself still returns template_id="order_details"|"other_details" in its nfm_reply response,
-    so the downstream nfm_reply handler in createAPIrequest.py is completely unaffected.
+    Opens the package order-details WhatsApp Flow via native interactive Flow ($0.00 FREE).
+    Falls back to template "other_details" if FLOW_ORDER_DETAILS_ID is not configured yet or if native dispatch fails.
     """
+    flow_id = os.getenv("FLOW_ORDER_DETAILS_ID", "").strip() or FLOW_ORDER_DETAILS_ID.strip()
+    screen_name = os.getenv("FLOW_ORDER_DETAILS_SCREEN", "").strip() or None
 
-    flow_id = FLOW_ORDER_DETAILS_ID.strip()
+    if flow_id:
+        flow_token = {
+            "action": "order_details",
+            "sender_wa_number": sender_wa_number
+        }
+        try:
+            res = await send_custom_flow(
+                wa_number=sender_wa_number,
+                flow_token=flow_token,
+                message=(
+                    "Let's get your package moving! 🛵📦\n\n"
+                    "Tap the button below to enter your pickup and drop-off details:"
+                ),
+                header="Send a Package 📦",
+                flow_id=flow_id,
+                flow_cta="Fill in Package Details",
+                screen_name=screen_name,
+                flow_action="navigate",
+                auth=auth,
+                graph_url=graph_url
+            )
+            if res is not None and res.status_code in [200, 201]:
+                return
+            print(f"⚠️ Native order-details flow dispatch failed; falling back to template 'other_details'.")
+        except Exception as e:
+            print(f"⚠️ Native order-details flow exception ({e}); falling back to template 'other_details'.")
+    else:
+        print("⚠️ FLOW_ORDER_DETAILS_ID not set — falling back to template 'other_details' until env var is configured.")
 
-    if not flow_id:
-        print("⚠️ FLOW_ORDER_DETAILS_ID not set — cannot open order-details flow. Set it in Railway env vars.")
-        await send_custom_message(
-            sender_wa_number,
-            (
-                "🎉 Registration complete! Welcome to InTime.\n\n"
-                "To send a package, please type *Send an Order* and we'll collect your delivery details."
-            ),
-            auth,
-            graph_url
-        )
-        return
-
-    flow_token = {
-        "action": "order_details",
-        "sender_wa_number": sender_wa_number
+    req_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": sender_wa_number,
+        "type": "template",
+        "template": {
+            "name": "other_details",
+            "language": {"code": "en"},
+            "components": [
+                {
+                    "type": "button",
+                    "sub_type": "flow",
+                    "index": "0"
+                }
+            ]
+        }
     }
-
-    await send_custom_flow(
-        wa_number=sender_wa_number,
-        flow_token=flow_token,
-        message=(
-            "🎉 You're all set! Registration complete.\n\n"
-            "Now let's get your package moving. Fill in your pickup and drop-off details below:"
-        ),
-        header="Send a Package 📦",
-        flow_id=flow_id,
-        flow_cta="Fill in Package Details",
-        screen_name="ORDER_DETAILS_SCREEN",
-        flow_action="data_exchange",
-        auth=auth,
-        graph_url=graph_url
-    )
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json"
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(graph_url, json=req_body, headers=headers)
+        print("Order details fallback template 'other_details':", response.status_code, response.text)
 
     return
 
@@ -4968,7 +5026,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
         if order:
 
-            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+            if order.delivery_progression_status in ["package_picked_up", "arrived_at_dropoff"] and order.verification_code:
 
                 otp_msg = (
 
@@ -5322,6 +5380,10 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
                 status_display = "*In Transit to Drop-off*"
 
+            elif order.delivery_progression_status == "arrived_at_dropoff":
+
+                status_display = "*Rider Arrived at Drop-off*"
+
             else:
 
                 status_display = f"*{order.status.replace('_', ' ').title()}*"
@@ -5346,7 +5408,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
             )
 
-            if order.delivery_progression_status == "package_picked_up" and order.verification_code:
+            if order.delivery_progression_status in ["package_picked_up", "arrived_at_dropoff"] and order.verification_code:
 
                 msg += f"\n\n🔐 *Verification Code:* 👉 *{order.verification_code}* 👈\n\n_(Share this with the rider only upon drop-off arrival)_"
 
