@@ -820,7 +820,22 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
     else:
         greeting = "Welcome to InTime Food Delivery! 🍲\n"
 
-    message_body = f"{greeting}Please select your restaurant and confirm your delivery address to browse the menu and order 🛵💨"
+    stock_notice_line = ""
+    try:
+        from routers.flow_endpoint import get_restaurant_out_of_stock, format_out_of_stock_banner
+        if db:
+            oos = await get_restaurant_out_of_stock(db, "Madam G Restaurant")
+        else:
+            from database import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
+                oos = await get_restaurant_out_of_stock(session, "Madam G Restaurant")
+        banner = format_out_of_stock_banner(oos)
+        if banner:
+            stock_notice_line = f"\n\n{banner}"
+    except Exception as e:
+        print(f"Error resolving restaurant stock in send_food_order_flow: {e}")
+
+    message_body = f"{greeting}Please select your restaurant and confirm your delivery address to browse the menu and order 🛵💨{stock_notice_line}"
 
     await send_custom_flow(
         wa_number=sender_wa_number,

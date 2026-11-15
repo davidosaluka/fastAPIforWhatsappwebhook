@@ -1033,3 +1033,67 @@ async def send_weekly_restaurant_sales_report(
     return sent_docs
 
 
+def build_stock_management_payload(restaurant: models.Restaurants) -> tuple[str, Dict[str, Any]]:
+    """
+    Builds the interactive Telegram stock dashboard message text and inline keyboard
+    allowing restaurants to toggle menu items between In Stock (✅) and Sold Out (❌).
+    """
+    from routers.flow_endpoint import STOCK_CATALOG, parse_out_of_stock_raw
+
+    oos_list = parse_out_of_stock_raw(getattr(restaurant, "out_of_stock_items", "[]"))
+    oos_set = set(oos_list)
+    total_items = len(STOCK_CATALOG)
+    out_count = len(oos_set)
+    in_count = max(0, total_items - out_count)
+
+    rest_name = getattr(restaurant, "name", "Madam G Restaurant") or "Madam G Restaurant"
+    rest_id = getattr(restaurant, "id", None) or 1
+
+    lines = [
+        f"🏪 *LIVE MENU STOCK — {rest_name}*",
+        f"📦 *In Stock:* `{in_count}/{total_items}`  |  ❌ *Sold Out:* `{out_count}`",
+        "",
+    ]
+
+    if oos_set:
+        out_names = [item["short_label"] for item in STOCK_CATALOG if item["key"] in oos_set]
+        lines.append("🚫 *Currently Sold Out:*")
+        for n in out_names:
+            lines.append(f"• {n}")
+    else:
+        lines.append("✅ *Everything on the menu is currently IN STOCK!*")
+
+    lines.extend([
+        "",
+        "👇 *Tap any item below to toggle* (`✅` In Stock / `❌` Sold Out):",
+        "💬 Or type `/out moimoi, plantain` | `/in plantain` | `/in all`",
+    ])
+
+    keyboard_rows: List[List[Dict[str, str]]] = []
+    current_row: List[Dict[str, str]] = []
+    for item in STOCK_CATALOG:
+        key = item["key"]
+        short_label = item["short_label"]
+        if key in oos_set:
+            btn_text = f"❌ {short_label} (OUT)"
+        else:
+            btn_text = f"✅ {short_label}"
+        current_row.append({
+            "text": btn_text,
+            "callback_data": f"stock_toggle:{rest_id}:{key}",
+        })
+        if len(current_row) == 2:
+            keyboard_rows.append(current_row)
+            current_row = []
+    if current_row:
+        keyboard_rows.append(current_row)
+
+    keyboard_rows.append([
+        {"text": "✅ Mark All In Stock", "callback_data": f"stock_reset_all:{rest_id}"},
+        {"text": "🔄 Refresh", "callback_data": f"stock_refresh:{rest_id}"},
+    ])
+
+    return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+
+

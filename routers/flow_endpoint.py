@@ -84,6 +84,298 @@ PREDESIGNED_PACKS = {
     }
 }
 
+# Master stock catalog synced between Telegram /stock dashboard and WhatsApp Flow
+STOCK_CATALOG: List[Dict[str, Any]] = [
+    # Base Meals
+    {"key": "rice_jollof", "label": "Jollof Rice (₦1,300)", "short_label": "Jollof Rice", "price": 1300, "category": "Base Meals", "aliases": ["jollof rice", "jollof"]},
+    {"key": "rice_fried", "label": "Fried Rice (₦1,300)", "short_label": "Fried Rice", "price": 1300, "category": "Base Meals", "aliases": ["fried rice"]},
+    {"key": "rice_white", "label": "White Rice (₦1,300)", "short_label": "White Rice", "price": 1300, "category": "Base Meals", "aliases": ["white rice"]},
+    {"key": "rice_white_beans", "label": "White Rice & Beans (₦1,300)", "short_label": "Rice & Beans", "price": 1300, "category": "Base Meals", "aliases": ["white rice and beans", "white rice & beans", "rice and beans", "rice & beans", "beans"]},
+    {"key": "swallow_semo", "label": "Semo (₦700)", "short_label": "Semo", "price": 700, "category": "Base Meals", "aliases": ["semo", "semovita"]},
+    {"key": "swallow_fufu", "label": "Fufu (₦700)", "short_label": "Fufu", "price": 700, "category": "Base Meals", "aliases": ["fufu", "akpu"]},
+    # Soups
+    {"key": "soup_stew", "label": "Stew (₦0)", "short_label": "Stew", "price": 0, "category": "Soups", "aliases": ["stew"]},
+    {"key": "soup_egusi", "label": "Egusi Soup (₦200)", "short_label": "Egusi Soup", "price": 200, "category": "Soups", "aliases": ["egusi soup", "egusi"]},
+    {"key": "soup_ogbono", "label": "Ogbono Soup (₦200)", "short_label": "Ogbono Soup", "price": 200, "category": "Soups", "aliases": ["ogbono soup", "ogbono"]},
+    {"key": "soup_efo", "label": "Vegetable/Efo Riro (₦500)", "short_label": "Vegetable / Efo", "price": 500, "category": "Soups", "aliases": ["efo riro", "efo", "vegetable soup", "vegetable", "veggies"]},
+    # Proteins
+    {"key": "protein_small_beef", "label": "Small Beef (₦200)", "short_label": "Small Beef", "price": 200, "category": "Proteins", "aliases": ["small beef"]},
+    {"key": "protein_big_beef", "label": "Big Beef (₦500)", "short_label": "Big Beef", "price": 500, "category": "Proteins", "aliases": ["big beef"]},
+    {"key": "protein_egg", "label": "Egg (₦300)", "short_label": "Egg", "price": 300, "category": "Proteins", "aliases": ["boiled egg", "eggs", "egg"]},
+    {"key": "protein_goat", "label": "Goat Meat (₦500)", "short_label": "Goat Meat", "price": 500, "category": "Proteins", "aliases": ["goat meat", "goat"]},
+    {"key": "protein_chicken_small", "label": "Small Chicken (₦3,000)", "short_label": "Small Chicken", "price": 3000, "category": "Proteins", "aliases": ["small chicken"]},
+    {"key": "protein_chicken_med", "label": "Medium Chicken (₦3,500)", "short_label": "Med Chicken", "price": 3500, "category": "Proteins", "aliases": ["medium chicken", "med chicken"]},
+    {"key": "protein_chicken_big", "label": "Big Chicken (₦4,000)", "short_label": "Big Chicken", "price": 4000, "category": "Proteins", "aliases": ["big chicken", "large chicken"]},
+    {"key": "protein_fish", "label": "Fried Fish (₦1,000)", "short_label": "Fried Fish", "price": 1000, "category": "Proteins", "aliases": ["fried fish", "fish", "titus", "croaker"]},
+    # Sides & Extras
+    {"key": "side_plantain", "label": "Plantain (₦500)", "short_label": "Plantain", "price": 500, "category": "Sides & Extras", "aliases": ["plantain", "dodo"]},
+    {"key": "side_moimoi", "label": "Moi Moi (₦1,000)", "short_label": "Moi Moi", "price": 1000, "category": "Sides & Extras", "aliases": ["moi moi", "moimoi", "moi-moi"]},
+    {"key": "side_salad", "label": "Salad (₦500)", "short_label": "Salad", "price": 500, "category": "Sides & Extras", "aliases": ["salad", "coleslaw"]},
+    {"key": "side_pepper_soup", "label": "Goat Pepper Soup (₦2,000)", "short_label": "Pepper Soup", "price": 2000, "category": "Sides & Extras", "aliases": ["goat pepper soup", "pepper soup", "peppersoup"]},
+    {"key": "side_pepper_sauce", "label": "Pepper Sauce (₦200)", "short_label": "Pepper Sauce", "price": 200, "category": "Sides & Extras", "aliases": ["pepper sauce", "sauce"]},
+    # Drinks
+    {"key": "drink_water", "label": "Water (₦300)", "short_label": "Water", "price": 300, "category": "Drinks", "aliases": ["bottled water", "water", "mr v"]},
+    {"key": "drink_coke", "label": "Coke/Fanta/Sprite (₦500)", "short_label": "Coke/Fanta", "price": 500, "category": "Drinks", "aliases": ["coke", "fanta", "sprite", "soft drink"]},
+    {"key": "drink_malt", "label": "Maltina/Amstel (₦600)", "short_label": "Maltina", "price": 600, "category": "Drinks", "aliases": ["maltina", "amstel", "malt"]},
+    {"key": "drink_chivita", "label": "Chivita Juice (₦1,500)", "short_label": "Chivita", "price": 1500, "category": "Drinks", "aliases": ["chivita juice", "chivita", "juice"]},
+]
+
+STOCK_ITEM_BY_KEY: Dict[str, Dict[str, Any]] = {item["key"]: item for item in STOCK_CATALOG}
+
+PACK_DEPENDENCIES: Dict[str, set[str]] = {
+    "pack_classic_jollof": {"rice_jollof", "protein_chicken_med", "side_plantain"},
+    "pack_swallow_special": {"swallow_semo", "soup_egusi", "protein_goat"},
+    "pack_fried_feast": {"rice_fried", "protein_big_beef", "side_salad", "drink_coke"},
+    "pack_rice_beans": {"rice_white_beans", "soup_stew", "protein_small_beef", "side_plantain"},
+}
+
+PACK_MENU_OPTIONS = [
+    {"id": "bulk_office_order", "title": "📋 Bulk Office Order", "description": "Paste WhatsApp list for all colleagues"},
+    {"id": "skip_to_custom", "title": "🛠️ Build Custom Pack", "description": "Customize base, soup, meats & extras"},
+    {"id": "pack_classic_jollof", "title": "Classic Jollof (₦5,300)", "description": "Jollof Rice + Med Chicken + Plantain"},
+    {"id": "pack_swallow_special", "title": "Swallow Special (₦1,400)", "description": "1 Wrap Semo + Egusi Soup + 1x Goat Meat"},
+    {"id": "pack_fried_feast", "title": "Fried Feast (₦3,300)", "description": "Fried Rice + 2x Big Beef + Salad + Coke"},
+    {"id": "pack_rice_beans", "title": "Rice & Beans Combo (₦2,200)", "description": "White Rice & Beans + 2x Small Beef + Plantain"},
+]
+
+BASE_MEAL_FLOW_OPTIONS = [
+    {"id": "rice_jollof", "title": "Jollof Rice (₦1,300)"},
+    {"id": "rice_fried", "title": "Fried Rice (₦1,300)"},
+    {"id": "rice_white", "title": "White Rice (₦1,300)"},
+    {"id": "rice_mixed", "title": "Mixed Rice (₦1,300)"},
+    {"id": "rice_white_beans", "title": "White Rice & Beans (₦1,300)"},
+    {"id": "swallow_semo", "title": "Semo (₦700)"},
+    {"id": "swallow_fufu", "title": "Fufu (₦700)"},
+    {"id": "base_moimoi", "title": "Moi Moi Base (₦1,000)"},
+    {"id": "base_none", "title": "No Base Meal (₦0)"},
+]
+
+SOUP_FLOW_OPTIONS = [
+    {"id": "soup_stew", "title": "Stew (₦0)"},
+    {"id": "soup_egusi", "title": "Egusi Soup (₦200)"},
+    {"id": "soup_ogbono", "title": "Ogbono Soup (₦200)"},
+    {"id": "soup_mixed", "title": "Mixed Egusi & Ogbono (₦200)"},
+    {"id": "soup_efo", "title": "Vegetable/Efo Riro (₦500)"},
+    {"id": "soup_none", "title": "No Soup (₦0)"},
+]
+
+CHICKEN_FLOW_OPTIONS = [
+    {"id": "chicken_none", "title": "None (₦0)"},
+    {"id": "protein_chicken_small", "title": "Small Chicken (₦3,000)"},
+    {"id": "protein_chicken_med", "title": "Medium Chicken (₦3,500)"},
+    {"id": "protein_chicken_big", "title": "Big Chicken (₦4,000)"},
+]
+
+FISH_FLOW_OPTIONS = [
+    {"id": "fish_none", "title": "None (₦0)"},
+    {"id": "protein_fish", "title": "Fried Fish (₦1,000)"},
+]
+
+DRINK_FLOW_OPTIONS = [
+    {"id": "drink_none", "title": "No Drink (₦0)"},
+    {"id": "drink_water", "title": "Water (₦300)"},
+    {"id": "drink_coke", "title": "Coke/Fanta/Sprite (₦500)"},
+    {"id": "drink_malt", "title": "Maltina/Amstel (₦600)"},
+    {"id": "drink_chivita", "title": "Chivita Juice (₦1,500)"},
+]
+
+
+def parse_out_of_stock_raw(raw_json: str | None) -> list[str]:
+    """Parses stored out_of_stock_items JSON string into a deduplicated list of catalog keys."""
+    if not raw_json:
+        return []
+    try:
+        parsed = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        parsed = []
+    if not isinstance(parsed, list):
+        return []
+    seen: set[str] = set()
+    clean: list[str] = []
+    for k in parsed:
+        key_str = str(k).strip()
+        if key_str and key_str in STOCK_ITEM_BY_KEY and key_str not in seen:
+            seen.add(key_str)
+            clean.append(key_str)
+    return clean
+
+
+def expand_out_of_stock_set(raw_json: str | None) -> set[str]:
+    """Expands out-of-stock keys with composite menu dependencies (mixed rice, moimoi base, mixed soup)."""
+    items = set(parse_out_of_stock_raw(raw_json))
+    if "rice_jollof" in items or "rice_fried" in items:
+        items.add("rice_mixed")
+    if "side_moimoi" in items or "base_moimoi" in items:
+        items.add("side_moimoi")
+        items.add("base_moimoi")
+    if "soup_egusi" in items or "soup_ogbono" in items:
+        items.add("soup_mixed")
+    return items
+
+
+async def get_restaurant_out_of_stock(db: AsyncSession, restaurant_name: str = "Madam G Restaurant") -> set[str]:
+    """Loads expanded out-of-stock item keys for a restaurant from the database."""
+    try:
+        clean_name = (restaurant_name or "Madam G Restaurant").replace(", Lagos", "").strip()
+        stmt = select(models.Restaurants).where(
+            (models.Restaurants.name.ilike(f"%{clean_name}%")) |
+            (models.Restaurants.slug == clean_name.lower().replace(" ", "_"))
+        )
+        res = await db.execute(stmt)
+        rest = res.scalars().first()
+        if not rest:
+            res2 = await db.execute(
+                select(models.Restaurants).where(models.Restaurants.is_active == True).order_by(models.Restaurants.id.asc())
+            )
+            rest = res2.scalars().first()
+        if not rest:
+            return set()
+        return expand_out_of_stock_set(getattr(rest, "out_of_stock_items", "[]"))
+    except Exception as e:
+        logger.warning(f"Failed loading restaurant stock for {restaurant_name}: {e}")
+        return set()
+
+
+def format_out_of_stock_banner(out_of_stock: set[str]) -> str:
+    """Formats a customer-facing sold-out notice string."""
+    if not out_of_stock:
+        return ""
+    names = [item["short_label"] for item in STOCK_CATALOG if item["key"] in out_of_stock]
+    if not names:
+        return ""
+    return f"⚠️ *Currently Sold Out:* {', '.join(names)}"
+
+
+def build_dynamic_flow_stock_data(out_of_stock: set[str]) -> Dict[str, Any]:
+    """Builds filtered dropdown data-sources and input visibility flags for WhatsApp Flow screens."""
+    pack_options = [
+        opt for opt in PACK_MENU_OPTIONS
+        if opt["id"] in ("bulk_office_order", "skip_to_custom")
+        or not (PACK_DEPENDENCIES.get(opt["id"], set()) & out_of_stock)
+    ]
+    base_meal_options = [
+        opt for opt in BASE_MEAL_FLOW_OPTIONS
+        if opt["id"] == "base_none" or opt["id"] not in out_of_stock
+    ]
+    soup_options = [
+        opt for opt in SOUP_FLOW_OPTIONS
+        if opt["id"] == "soup_none" or opt["id"] not in out_of_stock
+    ]
+    chicken_options = [
+        opt for opt in CHICKEN_FLOW_OPTIONS
+        if opt["id"] == "chicken_none" or opt["id"] not in out_of_stock
+    ]
+    fish_options = [
+        opt for opt in FISH_FLOW_OPTIONS
+        if opt["id"] == "fish_none" or opt["id"] not in out_of_stock
+    ]
+    drink_options = [
+        opt for opt in DRINK_FLOW_OPTIONS
+        if opt["id"] == "drink_none" or opt["id"] not in out_of_stock
+    ]
+
+    banner = format_out_of_stock_banner(out_of_stock)
+    stock_notice = banner if banner else "✅ All menu items are currently available!"
+
+    return {
+        "schema_v": "dynamic_stock_v1",
+        "stock_notice": stock_notice,
+        "pack_options": pack_options,
+        "base_meal_options": base_meal_options,
+        "soup_options": soup_options,
+        "chicken_options": chicken_options,
+        "fish_options": fish_options,
+        "drink_options": drink_options,
+        "vis_beef": "protein_small_beef" not in out_of_stock,
+        "vis_big_beef": "protein_big_beef" not in out_of_stock,
+        "vis_egg": "protein_egg" not in out_of_stock,
+        "vis_goat": "protein_goat" not in out_of_stock,
+        "vis_plantain": "side_plantain" not in out_of_stock,
+        "vis_moimoi": "side_moimoi" not in out_of_stock,
+        "vis_salad": "side_salad" not in out_of_stock,
+        "vis_pepper_soup": "side_pepper_soup" not in out_of_stock,
+        "vis_sauce": "side_pepper_sauce" not in out_of_stock,
+    }
+
+
+def match_stock_items_from_text(raw_text: str) -> list[str]:
+    """Matches comma/newline-separated item names or aliases from Telegram commands against STOCK_CATALOG."""
+    if not raw_text or not raw_text.strip():
+        return []
+
+    raw_tokens = [t.strip().lower() for t in re.split(r'[,;\n]+', raw_text) if t.strip()]
+    matched: list[str] = []
+
+    def _add(k: str):
+        if k not in matched:
+            matched.append(k)
+
+    # Flatten aliases sorted longest-first for unambiguous matching
+    alias_pairs: list[tuple[str, str]] = []
+    for item in STOCK_CATALOG:
+        k = item["key"]
+        alias_pairs.append((item["short_label"].lower(), k))
+        alias_pairs.append((k.lower(), k))
+        for a in item.get("aliases", []):
+            alias_pairs.append((a.lower(), k))
+    alias_pairs.sort(key=lambda x: len(x[0]), reverse=True)
+
+    for tok in raw_tokens:
+        if tok in ("chicken", "all chicken"):
+            for ck in ("protein_chicken_small", "protein_chicken_med", "protein_chicken_big"):
+                _add(ck)
+            continue
+        if tok in ("beef", "all beef"):
+            _add("protein_small_beef")
+            _add("protein_big_beef")
+            continue
+
+        # Exact alias or short_label check first
+        exact_hit = None
+        for alias, key in alias_pairs:
+            if tok == alias:
+                exact_hit = key
+                break
+        if exact_hit:
+            _add(exact_hit)
+            continue
+
+        # Split natural connectors ("and" / "&") if no whole-token exact match (e.g. "jollof and plantain")
+        sub_tokens = [s.strip() for s in re.split(r'\s+(?:and|&)\s+', tok) if s.strip()]
+        for sub in sub_tokens:
+            if sub in ("chicken", "all chicken"):
+                for ck in ("protein_chicken_small", "protein_chicken_med", "protein_chicken_big"):
+                    _add(ck)
+                continue
+            if sub in ("beef", "all beef"):
+                _add("protein_small_beef")
+                _add("protein_big_beef")
+                continue
+
+            sub_exact = None
+            for alias, key in alias_pairs:
+                if sub == alias:
+                    sub_exact = key
+                    break
+            if sub_exact:
+                _add(sub_exact)
+                continue
+
+            # Whole-word / longest substring fallback inside sub-token
+            found = False
+            for alias, key in alias_pairs:
+                if len(alias) >= 3 and re.search(r'\b' + re.escape(alias) + r'\b', sub):
+                    _add(key)
+                    found = True
+                    break
+            if not found:
+                for alias, key in alias_pairs:
+                    if len(alias) >= 3 and alias in sub:
+                        _add(key)
+                        break
+
+    return matched
+
 # Load Base64 logo data URI for fast and offline image rendering on mobile WhatsApp
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 LOGO_THUMB_PATH = os.path.join(STATIC_DIR, "madam_g_logo_thumb.jpg")
@@ -119,16 +411,19 @@ def calculate_delivery_fee(pack_count: int) -> int:
         return 2000
 
 
-def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
+def calculate_pack_price(pack_data: dict, out_of_stock: set[str] | None = None) -> tuple[int, int, int, list[str]]:
     """Calculates total pack price, unit price, quantity, and item descriptions."""
     unit_price = 0
     items = []
+    oos = out_of_stock or set()
 
     # 1. Base meal
     base_key = pack_data.get("base_meal")
     if base_key and base_key in MEAL_PRICES:
         item = MEAL_PRICES[base_key]
-        if base_key in ["swallow_semo", "swallow_fufu"] or "swallow" in base_key:
+        if base_key != "base_none" and base_key in oos:
+            items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+        elif base_key in ["swallow_semo", "swallow_fufu"] or "swallow" in base_key:
             try:
                 wraps = int(str(pack_data.get("wrap_qty") or pack_data.get("swallow_wraps") or pack_data.get("semo_qty") or pack_data.get("fufu_qty") or pack_data.get("swallow_qty") or "1").strip())
             except (ValueError, TypeError):
@@ -148,7 +443,9 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     soup_key = pack_data.get("soup")
     if soup_key and soup_key in MEAL_PRICES:
         item = MEAL_PRICES[soup_key]
-        if item["price"] > 0:
+        if soup_key != "soup_none" and soup_key in oos:
+            items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+        elif item["price"] > 0:
             unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
         elif item["name"] not in ["No Soup"]:
@@ -161,9 +458,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         beef_qty = 0
     if beef_qty > 0:
-        beef_cost = beef_qty * 200
-        unit_price += beef_cost
-        items.append(f"{beef_qty}x Small Beef (₦{beef_cost:,})")
+        if "protein_small_beef" in oos:
+            items.append("⚠️ Small Beef (SOLD OUT - ₦0)")
+        else:
+            beef_cost = beef_qty * 200
+            unit_price += beef_cost
+            items.append(f"{beef_qty}x Small Beef (₦{beef_cost:,})")
 
     # Big Beef (₦500/pc)
     try:
@@ -171,9 +471,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         big_beef_qty = 0
     if big_beef_qty > 0:
-        big_beef_cost = big_beef_qty * 500
-        unit_price += big_beef_cost
-        items.append(f"{big_beef_qty}x Big Beef (₦{big_beef_cost:,})")
+        if "protein_big_beef" in oos:
+            items.append("⚠️ Big Beef (SOLD OUT - ₦0)")
+        else:
+            big_beef_cost = big_beef_qty * 500
+            unit_price += big_beef_cost
+            items.append(f"{big_beef_qty}x Big Beef (₦{big_beef_cost:,})")
 
     # Boiled Egg (₦300/pc)
     try:
@@ -181,9 +484,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         egg_qty = 0
     if egg_qty > 0:
-        egg_cost = egg_qty * 300
-        unit_price += egg_cost
-        items.append(f"{egg_qty}x Egg (₦{egg_cost:,})")
+        if "protein_egg" in oos:
+            items.append("⚠️ Egg (SOLD OUT - ₦0)")
+        else:
+            egg_cost = egg_qty * 300
+            unit_price += egg_cost
+            items.append(f"{egg_qty}x Egg (₦{egg_cost:,})")
 
     # Goat Meat (₦500/pc)
     try:
@@ -191,15 +497,20 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         goat_qty = 0
     if goat_qty > 0:
-        goat_cost = goat_qty * 500
-        unit_price += goat_cost
-        items.append(f"{goat_qty}x Goat Meat (₦{goat_cost:,})")
+        if "protein_goat" in oos:
+            items.append("⚠️ Goat Meat (SOLD OUT - ₦0)")
+        else:
+            goat_cost = goat_qty * 500
+            unit_price += goat_cost
+            items.append(f"{goat_qty}x Goat Meat (₦{goat_cost:,})")
 
     # Chicken (Small 3000, Med 3500, Big 4000)
     chicken_key = pack_data.get("chicken")
     if chicken_key and chicken_key in MEAL_PRICES:
         item = MEAL_PRICES[chicken_key]
-        if item["price"] > 0:
+        if chicken_key != "chicken_none" and chicken_key in oos:
+            items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+        elif item["price"] > 0:
             unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
@@ -207,7 +518,9 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     fish_key = pack_data.get("fish")
     if fish_key and fish_key in MEAL_PRICES:
         item = MEAL_PRICES[fish_key]
-        if item["price"] > 0:
+        if fish_key != "fish_none" and fish_key in oos:
+            items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+        elif item["price"] > 0:
             unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
@@ -218,9 +531,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         plantain_qty = 0
     if plantain_qty > 0:
-        plantain_cost = plantain_qty * 500
-        unit_price += plantain_cost
-        items.append(f"{plantain_qty}x Plantain (₦{plantain_cost:,})")
+        if "side_plantain" in oos:
+            items.append("⚠️ Plantain (SOLD OUT - ₦0)")
+        else:
+            plantain_cost = plantain_qty * 500
+            unit_price += plantain_cost
+            items.append(f"{plantain_qty}x Plantain (₦{plantain_cost:,})")
 
     # Moi Moi (₦1,000/wrap)
     try:
@@ -228,9 +544,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         moimoi_qty = 0
     if moimoi_qty > 0:
-        moimoi_cost = moimoi_qty * 1000
-        unit_price += moimoi_cost
-        items.append(f"{moimoi_qty}x Moi Moi (₦{moimoi_cost:,})")
+        if "side_moimoi" in oos:
+            items.append("⚠️ Moi Moi (SOLD OUT - ₦0)")
+        else:
+            moimoi_cost = moimoi_qty * 1000
+            unit_price += moimoi_cost
+            items.append(f"{moimoi_qty}x Moi Moi (₦{moimoi_cost:,})")
 
     # Extra Swallow / Semo wraps (₦700/wrap)
     try:
@@ -238,9 +557,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         extra_swallow = 0
     if extra_swallow > 0:
-        es_cost = extra_swallow * 700
-        unit_price += es_cost
-        items.append(f"{extra_swallow}x Extra Swallow Wrap(s) (₦{es_cost:,})")
+        if "swallow_semo" in oos and "swallow_fufu" in oos:
+            items.append("⚠️ Extra Swallow (SOLD OUT - ₦0)")
+        else:
+            es_cost = extra_swallow * 700
+            unit_price += es_cost
+            items.append(f"{extra_swallow}x Extra Swallow Wrap(s) (₦{es_cost:,})")
 
     # Salad (₦500/portion)
     try:
@@ -248,9 +570,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         salad_qty = 0
     if salad_qty > 0:
-        salad_cost = salad_qty * 500
-        unit_price += salad_cost
-        items.append(f"{salad_qty}x Salad (₦{salad_cost:,})")
+        if "side_salad" in oos:
+            items.append("⚠️ Salad (SOLD OUT - ₦0)")
+        else:
+            salad_cost = salad_qty * 500
+            unit_price += salad_cost
+            items.append(f"{salad_qty}x Salad (₦{salad_cost:,})")
 
     # Goat Meat Pepper Soup (₦2,000/bowl)
     try:
@@ -258,9 +583,12 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         pepper_soup_qty = 0
     if pepper_soup_qty > 0:
-        pepper_soup_cost = pepper_soup_qty * 2000
-        unit_price += pepper_soup_cost
-        items.append(f"{pepper_soup_qty}x Goat Pepper Soup (₦{pepper_soup_cost:,})")
+        if "side_pepper_soup" in oos:
+            items.append("⚠️ Goat Pepper Soup (SOLD OUT - ₦0)")
+        else:
+            pepper_soup_cost = pepper_soup_qty * 2000
+            unit_price += pepper_soup_cost
+            items.append(f"{pepper_soup_qty}x Goat Pepper Soup (₦{pepper_soup_cost:,})")
 
     # Pepper Sauce (₦200/portion)
     try:
@@ -268,18 +596,31 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     except (ValueError, TypeError):
         sauce_qty = 0
     if sauce_qty > 0:
-        sauce_cost = sauce_qty * 200
-        unit_price += sauce_cost
-        items.append(f"{sauce_qty}x Pepper Sauce (₦{sauce_cost:,})")
+        if "side_pepper_sauce" in oos:
+            items.append("⚠️ Pepper Sauce (SOLD OUT - ₦0)")
+        else:
+            sauce_cost = sauce_qty * 200
+            unit_price += sauce_cost
+            items.append(f"{sauce_qty}x Pepper Sauce (₦{sauce_cost:,})")
 
     # Backward compatibility with legacy extras checkbox list
     extras = pack_data.get("extras", [])
     if isinstance(extras, str):
         extras = [extras] if extras else []
+    extra_stock_map = {
+        "extra_plantain_1": "side_plantain",
+        "extra_plantain_2": "side_plantain",
+        "extra_moimoi_1": "side_moimoi",
+        "extra_moimoi_2": "side_moimoi",
+        "extra_salad": "side_salad",
+        "extra_pepper_sauce": "side_pepper_sauce",
+    }
     for ext_key in extras:
         if ext_key in MEAL_PRICES:
             item = MEAL_PRICES[ext_key]
-            if item["price"] > 0:
+            if extra_stock_map.get(ext_key) in oos:
+                items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+            elif item["price"] > 0:
                 unit_price += item["price"]
                 items.append(f"{item['name']} (₦{item['price']:,})")
 
@@ -287,7 +628,9 @@ def calculate_pack_price(pack_data: dict) -> tuple[int, int, int, list[str]]:
     drink_key = pack_data.get("drink")
     if drink_key and drink_key in MEAL_PRICES:
         item = MEAL_PRICES[drink_key]
-        if item["price"] > 0:
+        if drink_key != "drink_none" and drink_key in oos:
+            items.append(f"⚠️ {item['name']} (SOLD OUT - ₦0)")
+        elif item["price"] > 0:
             unit_price += item["price"]
             items.append(f"{item['name']} (₦{item['price']:,})")
 
@@ -553,11 +896,56 @@ def _estimate_single_plate_price(d: str) -> tuple[int, list[str]]:
     return total, detected_items
 
 
-def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
+def _detect_sold_out_in_line(desc: str, out_of_stock: set[str]) -> list[tuple[str, str]]:
+    """Returns list of (key, short_label) for any sold-out catalog items referenced in a free-text line."""
+    if not out_of_stock or not desc:
+        return []
+    d = desc.lower()
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in STOCK_CATALOG:
+        k = item["key"]
+        if k not in out_of_stock:
+            continue
+        for alias in item.get("aliases", []):
+            if len(alias) >= 3 and re.search(r'\b' + re.escape(alias) + r'\b', d):
+                if k not in seen:
+                    seen.add(k)
+                    hits.append((k, item["short_label"]))
+                break
+    return hits
+
+
+def _estimate_sold_out_deduction(desc: str, sold_out_hits: list[tuple[str, str]]) -> int:
+    """Estimates price portion to deduct when sold-out items are matched in an unpriced bulk line."""
+    if not sold_out_hits:
+        return 0
+    d = desc.lower()
+    deduction = 0
+    for k, _ in sold_out_hits:
+        info = STOCK_ITEM_BY_KEY.get(k)
+        if not info:
+            continue
+        unit_p = info.get("price", 0)
+        if unit_p <= 0:
+            continue
+        # Try quantity extraction for common proteins/swallows
+        qty = 1
+        for alias in info.get("aliases", []):
+            m = re.search(r'(\d+)\s*(?:x|-)?\s*(?:wraps?\s*(?:of\s*)?)?' + re.escape(alias) + r'\b', d)
+            if m:
+                qty = max(1, int(m.group(1)))
+                break
+        deduction += unit_p * qty
+    return deduction
+
+
+def parse_bulk_order(raw_text: str, out_of_stock: set[str] | None = None) -> tuple[list[dict], int]:
     lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
     packs = []
     current_person = ""
     subtotal = 0
+    oos = out_of_stock or set()
 
     for line in lines:
         clean_line = line.strip(' *_\t')
@@ -609,6 +997,14 @@ def parse_bulk_order(raw_text: str) -> tuple[list[dict], int]:
             estimated_price, _ = estimate_items_price(desc)
             price = estimated_price
             items_list = [desc]
+
+        if oos:
+            sold_out_hits = _detect_sold_out_in_line(desc, oos)
+            if sold_out_hits:
+                deduction = _estimate_sold_out_deduction(desc, sold_out_hits)
+                price = max(0, price - deduction) if price > deduction else 0
+                for _, s_label in sold_out_hits:
+                    items_list.append(f"⚠️ {s_label} (SOLD OUT - ₦0)")
 
         subtotal += price
         pack_name = f"{person}: {desc}"
@@ -863,6 +1259,8 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         if is_opening_request:
             # Full lookup for registered user and past saved address
             is_reg, cust_name, saved_address, saved_phone = await resolve_customer_details(sender_wa, db)
+            out_of_stock_init = await get_restaurant_out_of_stock(db, "Madam G Restaurant")
+            init_stock_banner = format_out_of_stock_banner(out_of_stock_init)
             
             # Merge with token data if available
             is_registered = is_reg or token_is_registered
@@ -880,6 +1278,8 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     f"📍 Saved Address:\n{saved_address}\n\n"
                     f"📞 Receiver's Phone: {saved_phone}"
                 )
+                if init_stock_banner:
+                    address_display += f"\n\n{init_stock_banner}"
                 resp_payload = {
                     "version": "3.0",
                     "screen": "CONFIRM_ADDRESS_SCREEN",
@@ -948,6 +1348,19 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 restaurant = str(rest_input)
             if "madam" in restaurant.lower():
                 restaurant = "Madam G Restaurant"
+
+            out_of_stock = await get_restaurant_out_of_stock(db, restaurant)
+            is_dynamic_flow = (data.get("schema_v") == "dynamic_stock_v1")
+            dynamic_stock_data = build_dynamic_flow_stock_data(out_of_stock) if is_dynamic_flow else {}
+            stock_banner = format_out_of_stock_banner(out_of_stock)
+
+            PACK_DYNAMIC_KEYS = {"schema_v", "stock_notice", "pack_options"}
+            CUSTOM_DYNAMIC_KEYS = {
+                "schema_v", "stock_notice",
+                "base_meal_options", "soup_options", "chicken_options", "fish_options", "drink_options",
+                "vis_beef", "vis_big_beef", "vis_egg", "vis_goat",
+                "vis_plantain", "vis_moimoi", "vis_salad", "vis_pepper_soup", "vis_sauce",
+            }
 
             # --- SCREEN: CONFIRM_ADDRESS_SCREEN ---
             if screen == "CONFIRM_ADDRESS_SCREEN":
@@ -1045,16 +1458,19 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
 
             # --- SCREEN: RATE (Pick Restaurant) ---
             elif screen == "RATE":
+                rate_data = {
+                    "delivery_address": delivery_address,
+                    "contact_phone": contact_phone,
+                    "restaurant": restaurant,
+                    "restaurant_logo": LOGO_DATA_URI,
+                    "cart_packs": current_cart
+                }
+                if is_dynamic_flow:
+                    rate_data.update({k: v for k, v in dynamic_stock_data.items() if k in PACK_DYNAMIC_KEYS})
                 resp_payload = {
                     "version": "3.0",
                     "screen": "PREDESIGNED_PACKS_SCREEN",
-                    "data": {
-                        "delivery_address": delivery_address,
-                        "contact_phone": contact_phone,
-                        "restaurant": restaurant,
-                        "restaurant_logo": LOGO_DATA_URI,
-                        "cart_packs": current_cart
-                    }
+                    "data": rate_data
                 }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
@@ -1077,16 +1493,19 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     }
                 elif combo_key == "skip_to_custom" or user_action == "switch_to_custom":
                     # Navigate to Custom Pack 1
+                    custom_data = {
+                        "restaurant": restaurant,
+                        "restaurant_logo": LOGO_DATA_URI,
+                        "delivery_address": delivery_address,
+                        "contact_phone": contact_phone,
+                        "cart_packs": current_cart
+                    }
+                    if is_dynamic_flow:
+                        custom_data.update({k: v for k, v in dynamic_stock_data.items() if k in CUSTOM_DYNAMIC_KEYS})
                     resp_payload = {
                         "version": "3.0",
                         "screen": "BUILD_CUSTOM_PACK_SCREEN",
-                        "data": {
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_DATA_URI,
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "cart_packs": current_cart
-                        }
+                        "data": custom_data
                     }
                 else:
                     combo_info = PREDESIGNED_PACKS.get(combo_key, PREDESIGNED_PACKS["pack_classic_jollof"])
@@ -1096,17 +1515,25 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         qty = 1
                     pack_note = (data.get("pack_note") or "").strip()
 
+                    pack_items = list(combo_info["items"])
+                    missing_keys = PACK_DEPENDENCIES.get(combo_key, set()) & out_of_stock
+                    if missing_keys:
+                        missing_labels = [STOCK_ITEM_BY_KEY[k]["short_label"] for k in sorted(missing_keys) if k in STOCK_ITEM_BY_KEY]
+                        if missing_labels:
+                            pack_items.append(f"⚠️ SOLD OUT ingredient(s): {', '.join(missing_labels)}")
+
                     new_pack = {
                         "pack_name": combo_info["title"],
                         "quantity": qty,
                         "unit_price": combo_info["price"],
                         "total_price": combo_info["price"] * qty,
-                        "items": combo_info["items"],
+                        "items": pack_items,
                         "note": pack_note
                     }
                     current_cart.append(new_pack)
 
                     cart_text, subtotal = format_cart_display(current_cart)
+                    cart_display = f"{cart_text}\n\n{stock_banner}" if stock_banner else cart_text
                     total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
                     delivery_fee = calculate_delivery_fee(total_pack_count)
                     grand_total = subtotal + delivery_fee
@@ -1123,7 +1550,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "contact_phone": contact_phone,
                             "restaurant": restaurant,
                             "cart_packs": current_cart,
-                            "cart_display": cart_text,
+                            "cart_display": cart_display,
                             "totals_display": totals_display
                         }
                     }
@@ -1138,7 +1565,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     str(data.get("bulk_order_text_3") or "").strip()
                 ]
                 bulk_text = "\n".join([p for p in bulk_parts if p and p.lower() not in ["null", "none"]]).strip()
-                bulk_packs, bulk_total = parse_bulk_order(bulk_text)
+                bulk_packs, bulk_total = parse_bulk_order(bulk_text, out_of_stock=out_of_stock)
 
                 if bulk_packs:
                     current_cart.extend(bulk_packs)
@@ -1153,6 +1580,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     })
 
                 cart_text, subtotal = format_cart_display(current_cart)
+                cart_display = f"{cart_text}\n\n{stock_banner}" if stock_banner else cart_text
                 total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
                 delivery_fee = calculate_delivery_fee(total_pack_count)
                 grand_total = subtotal + delivery_fee
@@ -1169,7 +1597,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "cart_packs": current_cart,
-                        "cart_display": cart_text,
+                        "cart_display": cart_display,
                         "totals_display": totals_display
                     }
                 }
@@ -1180,7 +1608,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             elif screen in ["BUILD_CUSTOM_PACK_SCREEN", "BUILD_CUSTOM_PACK_TWO", "BUILD_CUSTOM_PACK_THREE"]:
                 pack_idx = len(current_cart) + 1
                 pack_note = (data.get("pack_note") or "").strip()
-                pack_total, unit_price, qty, items_list = calculate_pack_price(data)
+                pack_total, unit_price, qty, items_list = calculate_pack_price(data, out_of_stock=out_of_stock)
 
                 pack_title = f"Pack {pack_idx}"
                 if pack_note:
@@ -1197,6 +1625,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 current_cart.append(new_pack)
 
                 cart_text, subtotal = format_cart_display(current_cart)
+                cart_display = f"{cart_text}\n\n{stock_banner}" if stock_banner else cart_text
                 total_pack_count = sum(p.get("quantity", 1) for p in current_cart) or 1
                 delivery_fee = calculate_delivery_fee(total_pack_count)
                 grand_total = subtotal + delivery_fee
@@ -1212,16 +1641,22 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "BUILD_CUSTOM_PACK_TWO": "BUILD_CUSTOM_PACK_THREE"
                     }
                     target_screen = next_screen_map.get(screen, "CART_REVIEW_SCREEN")
+                    target_data = {
+                        "restaurant": restaurant,
+                        "restaurant_logo": LOGO_DATA_URI,
+                        "delivery_address": delivery_address,
+                        "contact_phone": contact_phone,
+                        "cart_packs": current_cart
+                    }
+                    if target_screen == "CART_REVIEW_SCREEN":
+                        target_data["cart_display"] = cart_display
+                        target_data["totals_display"] = totals_display
+                    elif is_dynamic_flow:
+                        target_data.update({k: v for k, v in dynamic_stock_data.items() if k in CUSTOM_DYNAMIC_KEYS})
                     resp_payload = {
                         "version": "3.0",
                         "screen": target_screen,
-                        "data": {
-                            "restaurant": restaurant,
-                            "restaurant_logo": LOGO_DATA_URI,
-                            "delivery_address": delivery_address,
-                            "contact_phone": contact_phone,
-                            "cart_packs": current_cart
-                        }
+                        "data": target_data
                     }
                 else:
                     resp_payload = {
@@ -1232,7 +1667,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "delivery_address": delivery_address,
                             "contact_phone": contact_phone,
                             "cart_packs": current_cart,
-                            "cart_display": cart_text,
+                            "cart_display": cart_display,
                             "totals_display": totals_display
                         }
                     }

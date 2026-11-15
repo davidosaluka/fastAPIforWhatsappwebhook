@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import logging
 import string
 import random
 from datetime import date
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, Response, Depends
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,13 @@ from services.telegram_service import (
     get_bot_token,
     TELEGRAM_API_BASE,
     send_daily_restaurant_sales_report,
-    send_weekly_restaurant_sales_report
+    send_weekly_restaurant_sales_report,
+    build_stock_management_payload
+)
+from routers.flow_endpoint import (
+    STOCK_ITEM_BY_KEY,
+    parse_out_of_stock_raw,
+    match_stock_items_from_text
 )
 import replyhandler
 
@@ -106,6 +113,45 @@ async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db))
         return Response(status_code=200)
 
     return Response(status_code=200)
+
+
+async def _resolve_target_restaurant_for_chat(db: AsyncSession, chat_id: str) -> models.Restaurants:
+    """
+    Resolves the active restaurant controlled by a given Telegram chat ID,
+    falling back to Madam G / first active restaurant (creating default row if needed).
+    """
+    chat_str = str(chat_id or "").strip()
+    if chat_str:
+        res = await db.execute(
+            select(models.Restaurants)
+            .where(models.Restaurants.telegram_chat_id == chat_str)
+            .where(models.Restaurants.is_active == True)
+        )
+        rest = res.scalars().first()
+        if rest:
+            return rest
+
+    res_mg = await db.execute(
+        select(models.Restaurants).where(models.Restaurants.slug == "madam_g")
+    )
+    rest = res_mg.scalars().first()
+    if not rest:
+        res_any = await db.execute(
+            select(models.Restaurants).where(models.Restaurants.is_active == True).order_by(models.Restaurants.id.asc())
+        )
+        rest = res_any.scalars().first()
+    if not rest:
+        rest = models.Restaurants(
+            name="Madam G Restaurant",
+            slug="madam_g",
+            telegram_chat_id=chat_str or None,
+            is_active=True,
+            out_of_stock_items="[]",
+        )
+        db.add(rest)
+        await db.commit()
+        await db.refresh(rest)
+    return rest
 
 
 async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
@@ -376,6 +422,8 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         msg += "• `/unlock_code <order_no>` — Reset 3-attempt verification lockout\n"
         msg += "• `/daily_sales [YYYY-MM-DD]` — View daily food sales breakdown\n"
         msg += "• `/weekly_sales [YYYY-MM-DD]` — Download weekly Saturday CSV report\n"
+        msg += "• `/stock` — Interactive 1-tap menu stock dashboard\n"
+        msg += "• `/out <items>` & `/in <items>` — Mark items sold out / back in stock\n"
         msg += "• `/unlink` — Clear this chat from all roles\n"
         if rider:
             msg += "• `/unlink_rider` — Disconnect your rider profile\n"
@@ -721,6 +769,104 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             )
         return
 
+    # --- H4. LIVE MENU STOCK MANAGEMENT (/stock, /out, /in) ---
+    if base_cmd in ("/stock", "/menu", "/items", "/inventory"):
+        rest = await _resolve_target_restaurant_for_chat(db, chat_id)
+        stock_text, stock_kb = build_stock_management_payload(rest)
+        await send_telegram_message(
+            chat_id=chat_id,
+            text=stock_text,
+            parse_mode="Markdown",
+            reply_markup=stock_kb
+        )
+        return
+
+    if base_cmd in ("/out", "/soldout", "/stock_out"):
+        if not cmd_arg:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: `/out moimoi, plantain, fried fish`\nOr tap `/stock` for the 1-tap menu button board.",
+                parse_mode="Markdown"
+            )
+            return
+
+        matched_keys = match_stock_items_from_text(cmd_arg)
+        if not matched_keys:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"⚠️ Could not match any menu items in `{cmd_arg}`.\nTry `/out moimoi, plantain, egg` or open `/stock`.",
+                parse_mode="Markdown"
+            )
+            return
+
+        rest = await _resolve_target_restaurant_for_chat(db, chat_id)
+        current_oos = parse_out_of_stock_raw(getattr(rest, "out_of_stock_items", "[]"))
+        for k in matched_keys:
+            if k not in current_oos:
+                current_oos.append(k)
+        rest.out_of_stock_items = json.dumps(current_oos)
+        await db.commit()
+        await db.refresh(rest)
+
+        matched_names = [STOCK_ITEM_BY_KEY[k]["short_label"] for k in matched_keys if k in STOCK_ITEM_BY_KEY]
+        stock_text, stock_kb = build_stock_management_payload(rest)
+        await send_telegram_message(
+            chat_id=chat_id,
+            text=f"❌ *Marked Sold Out:* {', '.join(matched_names)}\n\n{stock_text}",
+            parse_mode="Markdown",
+            reply_markup=stock_kb
+        )
+        return
+
+    if base_cmd in ("/in", "/instock", "/stock_in"):
+        if not cmd_arg:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text="Usage: `/in plantain, moimoi` or `/in all`\nOr tap `/stock` for the 1-tap menu button board.",
+                parse_mode="Markdown"
+            )
+            return
+
+        rest = await _resolve_target_restaurant_for_chat(db, chat_id)
+        if cmd_arg.strip().lower() == "all":
+            rest.out_of_stock_items = "[]"
+            await db.commit()
+            await db.refresh(rest)
+            stock_text, stock_kb = build_stock_management_payload(rest)
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"✅ *All menu items restored to IN STOCK!*\n\n{stock_text}",
+                parse_mode="Markdown",
+                reply_markup=stock_kb
+            )
+            return
+
+        matched_keys = match_stock_items_from_text(cmd_arg)
+        if not matched_keys:
+            await send_telegram_message(
+                chat_id=chat_id,
+                text=f"⚠️ Could not match any menu items in `{cmd_arg}`.\nTry `/in moimoi, egg` or `/in all`.",
+                parse_mode="Markdown"
+            )
+            return
+
+        current_oos = parse_out_of_stock_raw(getattr(rest, "out_of_stock_items", "[]"))
+        remove_set = set(matched_keys)
+        updated_oos = [k for k in current_oos if k not in remove_set]
+        rest.out_of_stock_items = json.dumps(updated_oos)
+        await db.commit()
+        await db.refresh(rest)
+
+        matched_names = [STOCK_ITEM_BY_KEY[k]["short_label"] for k in matched_keys if k in STOCK_ITEM_BY_KEY]
+        stock_text, stock_kb = build_stock_management_payload(rest)
+        await send_telegram_message(
+            chat_id=chat_id,
+            text=f"✅ *Restored Back In Stock:* {', '.join(matched_names)}\n\n{stock_text}",
+            parse_mode="Markdown",
+            reply_markup=stock_kb
+        )
+        return
+
     # --- I. RIDER DELIVERY CONFIRMATION CODE COMMAND (/code <5-digit> or plain 5 digits) ---
     code_match = re.search(r'\b(\d{5})\b', text)
     if code_match and (text.startswith("/code") or len(text.strip()) == 5):
@@ -866,6 +1012,97 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
     msg = callback_query.get("message", {})
     chat_id = msg.get("chat", {}).get("id")
     message_id = msg.get("message_id")
+
+    if data.startswith("stock_toggle:"):
+        parts = data.split(":", 2)
+        if len(parts) < 3:
+            await answer_callback_query(cq_id, text="⚠️ Invalid stock action.")
+            return
+        rest_id_raw, item_key = parts[1].strip(), parts[2].strip()
+        rest = None
+        if rest_id_raw.isdigit():
+            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
+            rest = r_res.scalars().first()
+        if not rest:
+            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+
+        if item_key not in STOCK_ITEM_BY_KEY:
+            await answer_callback_query(cq_id, text="⚠️ Unknown menu item.")
+            return
+
+        current_oos = parse_out_of_stock_raw(getattr(rest, "out_of_stock_items", "[]"))
+        if item_key in current_oos:
+            current_oos = [k for k in current_oos if k != item_key]
+            now_out = False
+        else:
+            current_oos.append(item_key)
+            now_out = True
+
+        rest.out_of_stock_items = json.dumps(current_oos)
+        await db.commit()
+        await db.refresh(rest)
+
+        item_label = STOCK_ITEM_BY_KEY[item_key]["short_label"]
+        await answer_callback_query(
+            cq_id,
+            text=f"{'❌ Sold Out' if now_out else '✅ Back In Stock'}: {item_label}"
+        )
+        new_text, new_kb = build_stock_management_payload(rest)
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                parse_mode="Markdown",
+                reply_markup=new_kb
+            )
+        return
+
+    if data.startswith("stock_reset_all:"):
+        rest_id_raw = data.split(":", 1)[1].strip()
+        rest = None
+        if rest_id_raw.isdigit():
+            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
+            rest = r_res.scalars().first()
+        if not rest:
+            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+
+        rest.out_of_stock_items = "[]"
+        await db.commit()
+        await db.refresh(rest)
+
+        await answer_callback_query(cq_id, text="✅ All menu items marked IN STOCK!")
+        new_text, new_kb = build_stock_management_payload(rest)
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                parse_mode="Markdown",
+                reply_markup=new_kb
+            )
+        return
+
+    if data.startswith("stock_refresh:"):
+        rest_id_raw = data.split(":", 1)[1].strip()
+        rest = None
+        if rest_id_raw.isdigit():
+            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
+            rest = r_res.scalars().first()
+        if not rest:
+            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+
+        await answer_callback_query(cq_id, text="🔄 Stock view refreshed")
+        new_text, new_kb = build_stock_management_payload(rest)
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                parse_mode="Markdown",
+                reply_markup=new_kb
+            )
+        return
 
     if data.startswith("accept_food:"):
         order_num = data.split(":", 1)[1].strip()

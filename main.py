@@ -160,6 +160,7 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_name VARCHAR(100);'))
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS account_number VARCHAR(50);'))
                 await conn.execute(text('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS bank_name VARCHAR(100);'))
+                await conn.execute(text("ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS out_of_stock_items TEXT DEFAULT '[]';"))
                 await conn.execute(text("""
                     UPDATE restaurants 
                     SET account_name = 'INTIME TECHNOLOGIES LIMITED',
@@ -201,6 +202,7 @@ async def lifespan(_app: FastAPI):
             'ALTER TABLE restaurants ADD COLUMN account_name VARCHAR(100);',
             'ALTER TABLE restaurants ADD COLUMN account_number VARCHAR(50);',
             'ALTER TABLE restaurants ADD COLUMN bank_name VARCHAR(100);',
+            "ALTER TABLE restaurants ADD COLUMN out_of_stock_items TEXT DEFAULT '[]';",
         ]:
             try:
                 async with engine.begin() as conn:
