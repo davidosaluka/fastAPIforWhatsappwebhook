@@ -106,6 +106,17 @@ async def run_weekly_restaurant_sales_report():
         logger.error(f"Error in run_weekly_restaurant_sales_report: {e}")
 
 
+async def run_stock_checkin(period: str = "morning"):
+    """Pushes interactive checkbox stock check-in prompts to active restaurant Telegram chats."""
+    logger.info(f"Running scheduled stock check-in ({period})...")
+    try:
+        async with AsyncSessionLocal() as db:
+            sent_count = await telegram_service.send_scheduled_stock_checkin(db, period=period)
+            logger.info(f"Stock check-in ({period}) sent to {sent_count} restaurant chat(s).")
+    except Exception as e:
+        logger.error(f"Error in run_stock_checkin ({period}): {e}")
+
+
 def start_scheduler():
     scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
     enable_checkin = os.getenv("ENABLE_RIDER_CHECKIN_SCHEDULER", "false").lower() in ("true", "1", "yes")
@@ -139,6 +150,24 @@ def start_scheduler():
         replace_existing=True,
     )
     logger.info(f"Weekly Saturday restaurant sales report scheduled at {weekly_hour:02d}:{weekly_minute:02d} Africa/Lagos.")
+
+    enable_stock_checkin = os.getenv("ENABLE_STOCK_CHECKIN_SCHEDULER", "true").lower() in ("true", "1", "yes")
+    if enable_stock_checkin:
+        stock_schedule = [
+            ("stock_checkin_morning", "morning", 8, 30),
+            ("stock_checkin_morning_nudge", "nudge", 9, 0),
+            ("stock_checkin_midday", "midday", 13, 30),
+            ("stock_checkin_evening", "evening", 17, 0),
+        ]
+        for job_id, period, hour, minute in stock_schedule:
+            scheduler.add_job(
+                run_stock_checkin,
+                args=[period],
+                trigger=CronTrigger(hour=hour, minute=minute, timezone="Africa/Lagos"),
+                id=job_id,
+                replace_existing=True,
+            )
+        logger.info("Restaurant stock check-in prompts scheduled (08:30, 09:00 nudge, 13:30, 17:00 Africa/Lagos).")
 
     scheduler.start()
     return scheduler

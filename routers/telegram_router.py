@@ -4,7 +4,7 @@ import json
 import logging
 import string
 import random
-from datetime import date
+from datetime import date, datetime, UTC
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, Response, Depends
 from sqlalchemy import select, update
@@ -805,6 +805,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             if k not in current_oos:
                 current_oos.append(k)
         rest.out_of_stock_items = json.dumps(current_oos)
+        rest.stock_confirmed_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(rest)
 
@@ -830,6 +831,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         rest = await _resolve_target_restaurant_for_chat(db, chat_id)
         if cmd_arg.strip().lower() == "all":
             rest.out_of_stock_items = "[]"
+            rest.stock_confirmed_at = datetime.now(UTC)
             await db.commit()
             await db.refresh(rest)
             stock_text, stock_kb = build_stock_management_payload(rest)
@@ -854,6 +856,7 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
         remove_set = set(matched_keys)
         updated_oos = [k for k in current_oos if k not in remove_set]
         rest.out_of_stock_items = json.dumps(updated_oos)
+        rest.stock_confirmed_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(rest)
 
@@ -998,6 +1001,21 @@ async def handle_telegram_message(message: Dict[str, Any], db: AsyncSession):
             return
 
 
+async def _get_restaurant_by_callback(
+    db: AsyncSession,
+    rest_id_raw: str,
+    chat_id: Any,
+) -> models.Restaurants:
+    """Fetches target restaurant from callback ID, falling back to chat-linked restaurant."""
+    rest = None
+    if rest_id_raw.isdigit():
+        r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
+        rest = r_res.scalars().first()
+    if not rest:
+        rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+    return rest
+
+
 async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSession):
     AUTH = get_auth_token()
     GRAPH_URL = get_graph_url()
@@ -1019,12 +1037,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
             await answer_callback_query(cq_id, text="⚠️ Invalid stock action.")
             return
         rest_id_raw, item_key = parts[1].strip(), parts[2].strip()
-        rest = None
-        if rest_id_raw.isdigit():
-            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
-            rest = r_res.scalars().first()
-        if not rest:
-            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+        rest = await _get_restaurant_by_callback(db, rest_id_raw, chat_id)
 
         if item_key not in STOCK_ITEM_BY_KEY:
             await answer_callback_query(cq_id, text="⚠️ Unknown menu item.")
@@ -1039,6 +1052,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
             now_out = True
 
         rest.out_of_stock_items = json.dumps(current_oos)
+        rest.stock_confirmed_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(rest)
 
@@ -1058,20 +1072,36 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
             )
         return
 
-    if data.startswith("stock_reset_all:"):
+    if data.startswith("stock_confirm:"):
         rest_id_raw = data.split(":", 1)[1].strip()
-        rest = None
-        if rest_id_raw.isdigit():
-            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
-            rest = r_res.scalars().first()
-        if not rest:
-            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+        rest = await _get_restaurant_by_callback(db, rest_id_raw, chat_id)
 
-        rest.out_of_stock_items = "[]"
+        rest.stock_confirmed_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(rest)
 
-        await answer_callback_query(cq_id, text="✅ All menu items marked IN STOCK!")
+        await answer_callback_query(cq_id, text="✅ Stock verified and synced to WhatsApp!")
+        new_text, new_kb = build_stock_management_payload(rest)
+        if chat_id and message_id:
+            await edit_telegram_message(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=new_text,
+                parse_mode="Markdown",
+                reply_markup=new_kb
+            )
+        return
+
+    if data.startswith("stock_reset_all:"):
+        rest_id_raw = data.split(":", 1)[1].strip()
+        rest = await _get_restaurant_by_callback(db, rest_id_raw, chat_id)
+
+        rest.out_of_stock_items = "[]"
+        rest.stock_confirmed_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(rest)
+
+        await answer_callback_query(cq_id, text="✅ All menu items marked IN STOCK & confirmed!")
         new_text, new_kb = build_stock_management_payload(rest)
         if chat_id and message_id:
             await edit_telegram_message(
@@ -1085,12 +1115,7 @@ async def handle_telegram_callback(callback_query: Dict[str, Any], db: AsyncSess
 
     if data.startswith("stock_refresh:"):
         rest_id_raw = data.split(":", 1)[1].strip()
-        rest = None
-        if rest_id_raw.isdigit():
-            r_res = await db.execute(select(models.Restaurants).where(models.Restaurants.id == int(rest_id_raw)))
-            rest = r_res.scalars().first()
-        if not rest:
-            rest = await _resolve_target_restaurant_for_chat(db, str(chat_id or ""))
+        rest = await _get_restaurant_by_callback(db, rest_id_raw, chat_id)
 
         await answer_callback_query(cq_id, text="🔄 Stock view refreshed")
         new_text, new_kb = build_stock_management_payload(rest)

@@ -137,5 +137,7 @@ class Restaurants(Base):
     account_number: Mapped[str] = mapped_column(String(50), nullable=True)
     bank_name: Mapped[str] = mapped_column(String(100), nullable=True)
     out_of_stock_items: Mapped[str] = mapped_column(Text, default="[]", nullable=True)
+    last_stock_prompt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    stock_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

@@ -1033,10 +1033,14 @@ async def send_weekly_restaurant_sales_report(
     return sent_docs
 
 
-def build_stock_management_payload(restaurant: models.Restaurants) -> tuple[str, Dict[str, Any]]:
+def build_stock_management_payload(
+    restaurant: models.Restaurants,
+    header_title: Optional[str] = None,
+    cta_note: Optional[str] = None,
+) -> tuple[str, Dict[str, Any]]:
     """
-    Builds the interactive Telegram stock dashboard message text and inline keyboard
-    allowing restaurants to toggle menu items between In Stock (✅) and Sold Out (❌).
+    Builds the interactive Telegram checkbox stock dashboard message text and inline keyboard
+    allowing restaurants to check/uncheck items (☑️ In Stock / ⬜ Sold Out) and confirm stock.
     """
     from routers.flow_endpoint import STOCK_CATALOG, parse_out_of_stock_raw
 
@@ -1049,23 +1053,36 @@ def build_stock_management_payload(restaurant: models.Restaurants) -> tuple[str,
     rest_name = getattr(restaurant, "name", "Madam G Restaurant") or "Madam G Restaurant"
     rest_id = getattr(restaurant, "id", None) or 1
 
+    title_line = header_title or f"🏪 *LIVE MENU STOCK — {rest_name}*"
     lines = [
-        f"🏪 *LIVE MENU STOCK — {rest_name}*",
+        title_line,
         f"📦 *In Stock:* `{in_count}/{total_items}`  |  ❌ *Sold Out:* `{out_count}`",
-        "",
     ]
+
+    confirmed_at = getattr(restaurant, "stock_confirmed_at", None)
+    prompted_at = getattr(restaurant, "last_stock_prompt_at", None)
+    if confirmed_at is not None and (prompted_at is None or _to_lagos_dt(confirmed_at) >= _to_lagos_dt(prompted_at)):
+        conf_lagos = _to_lagos_dt(confirmed_at)
+        lines.append(f"✅ *Verified:* `{conf_lagos.strftime('%a, %d %b %I:%M %p')} WAT`")
+    elif prompted_at is not None:
+        lines.append("⏳ *Status:* Awaiting your confirmation below")
+
+    lines.append("")
 
     if oos_set:
         out_names = [item["short_label"] for item in STOCK_CATALOG if item["key"] in oos_set]
-        lines.append("🚫 *Currently Sold Out:*")
+        lines.append("🚫 *Currently Unchecked (Sold Out):*")
         for n in out_names:
             lines.append(f"• {n}")
     else:
-        lines.append("✅ *Everything on the menu is currently IN STOCK!*")
+        lines.append("☑️ *All menu items are currently checked IN STOCK!*")
+
+    if cta_note:
+        lines.extend(["", cta_note])
 
     lines.extend([
         "",
-        "👇 *Tap any item below to toggle* (`✅` In Stock / `❌` Sold Out):",
+        "👇 *Tap any checkbox below to toggle* (`☑️` In Stock / `⬜` Sold Out), then tap *Confirm*:",
         "💬 Or type `/out moimoi, plantain` | `/in plantain` | `/in all`",
     ])
 
@@ -1075,9 +1092,9 @@ def build_stock_management_payload(restaurant: models.Restaurants) -> tuple[str,
         key = item["key"]
         short_label = item["short_label"]
         if key in oos_set:
-            btn_text = f"❌ {short_label} (OUT)"
+            btn_text = f"⬜ {short_label} (OUT)"
         else:
-            btn_text = f"✅ {short_label}"
+            btn_text = f"☑️ {short_label}"
         current_row.append({
             "text": btn_text,
             "callback_data": f"stock_toggle:{rest_id}:{key}",
@@ -1089,11 +1106,102 @@ def build_stock_management_payload(restaurant: models.Restaurants) -> tuple[str,
         keyboard_rows.append(current_row)
 
     keyboard_rows.append([
-        {"text": "✅ Mark All In Stock", "callback_data": f"stock_reset_all:{rest_id}"},
+        {"text": "👍 Confirm Current Stock", "callback_data": f"stock_confirm:{rest_id}"},
+    ])
+    keyboard_rows.append([
+        {"text": "✅ All In Stock & Confirm", "callback_data": f"stock_reset_all:{rest_id}"},
         {"text": "🔄 Refresh", "callback_data": f"stock_refresh:{rest_id}"},
     ])
 
     return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+
+STOCK_CHECKIN_PROMPTS = {
+    "morning": (
+        "☀️ *MORNING KITCHEN STOCK CHECK*",
+        "👉 Please uncheck any item you aren't serving this morning, then tap *👍 Confirm Current Stock* (or *✅ All In Stock & Confirm*)."
+    ),
+    "midday": (
+        "🍽️ *MIDDAY RUSH STOCK CHECK*",
+        "👉 Any dish sold out or fresh batch ready? Update the checkboxes below and tap *👍 Confirm Current Stock*."
+    ),
+    "evening": (
+        "🌇 *EVENING STOCK CHECK*",
+        "👉 Please verify what's still available for evening orders, then tap *👍 Confirm Current Stock*."
+    ),
+    "nudge": (
+        "⏰ *REMINDER: PLEASE CONFIRM TODAY'S STOCK*",
+        "👉 Customers are browsing the WhatsApp menu! Please review the checkboxes below and tap *👍 Confirm Current Stock*."
+    ),
+}
+
+
+async def send_scheduled_stock_checkin(
+    db: AsyncSession,
+    period: str = "morning",
+    target_chat_id: Optional[str] = None,
+) -> int:
+    """
+    Sends an interactive checkbox call-to-action message to active restaurant chats
+    prompting kitchen staff to confirm or update live menu availability.
+    For period='nudge', only reminds restaurants that haven't confirmed since their last prompt.
+    Returns the number of check-in messages successfully sent.
+    """
+    rest_res = await db.execute(
+        select(models.Restaurants).where(models.Restaurants.is_active == True).order_by(models.Restaurants.id.asc())
+    )
+    restaurants = list(rest_res.scalars().all())
+    fallback_chat = get_fallback_restaurant_chat_id()
+    title_prefix, cta_note = STOCK_CHECKIN_PROMPTS.get(period, STOCK_CHECKIN_PROMPTS["morning"])
+    today_lagos = (datetime.now(UTC) + LAGOS_UTC_OFFSET).date()
+    now_utc = datetime.now(UTC)
+
+    sent_count = 0
+    seen_targets = set()
+    dirty = False
+
+    for rest in restaurants:
+        cid = str(target_chat_id or rest.telegram_chat_id or fallback_chat or "").strip()
+        if not cid or (rest.id, cid) in seen_targets:
+            continue
+        seen_targets.add((rest.id, cid))
+
+        if period == "nudge":
+            confirmed_at = getattr(rest, "stock_confirmed_at", None)
+            prompted_at = getattr(rest, "last_stock_prompt_at", None)
+            already_confirmed = False
+            if confirmed_at is not None:
+                conf_lagos = _to_lagos_dt(confirmed_at)
+                if prompted_at is not None:
+                    already_confirmed = conf_lagos >= _to_lagos_dt(prompted_at)
+                else:
+                    already_confirmed = conf_lagos.date() == today_lagos
+            if already_confirmed:
+                continue
+
+        if period != "nudge":
+            rest.last_stock_prompt_at = now_utc
+            dirty = True
+
+        full_title = f"{title_prefix} — *{rest.name}*"
+        msg_text, kb = build_stock_management_payload(
+            rest,
+            header_title=full_title,
+            cta_note=cta_note,
+        )
+        resp = await send_telegram_message(
+            chat_id=cid,
+            text=msg_text,
+            parse_mode="Markdown",
+            reply_markup=kb,
+        )
+        if resp and resp.get("ok"):
+            sent_count += 1
+
+    if dirty:
+        await db.commit()
+
+    return sent_count
 
 
 
