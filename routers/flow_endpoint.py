@@ -1295,14 +1295,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 resp_payload = {
                     "version": "3.0",
                     "screen": "RECOMMEND",
-                    "data": {
-                        "screen_0_HouseFlat_Number_0": "",
-                        "screen_0_Street_Name_1": "",
-                        "screen_0_Receivers_Number_2": saved_phone or sender_wa or "",
-                        "HouseFlat_Number_801bd0": "",
-                        "Street_Name_17f2ce": "",
-                        "Receivers_Number_eb5784": saved_phone or sender_wa or ""
-                    }
+                    "data": {}
                 }
 
             enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -1390,14 +1383,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     resp_payload = {
                         "version": "3.0",
                         "screen": "RECOMMEND",
-                        "data": {
-                            "screen_0_HouseFlat_Number_0": "",
-                            "screen_0_Street_Name_1": "",
-                            "screen_0_Receivers_Number_2": contact_phone or sender_wa or "",
-                            "HouseFlat_Number_801bd0": "",
-                            "Street_Name_17f2ce": "",
-                            "Receivers_Number_eb5784": contact_phone or sender_wa or ""
-                        }
+                        "data": {}
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
@@ -1717,14 +1703,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
         resp_payload = {
             "version": "3.0",
             "screen": "RECOMMEND",
-            "data": {
-                "screen_0_HouseFlat_Number_0": "",
-                "screen_0_Street_Name_1": "",
-                "screen_0_Receivers_Number_2": sender_wa or "",
-                "HouseFlat_Number_801bd0": "",
-                "Street_Name_17f2ce": "",
-                "Receivers_Number_eb5784": sender_wa or ""
-            }
+            "data": {}
         }
         enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
         return Response(content=enc_response, media_type="text/plain")

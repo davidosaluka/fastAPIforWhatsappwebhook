@@ -73,10 +73,6 @@ def get_user_chat_memory(sender_wa_number: str) -> list[dict]:
 
     return list(_chat_memory.get(sender_wa_number, []))
 
-
-
-
-
 def add_user_chat_memory(sender_wa_number: str, role: str, content: str) -> None:
 
     """Append a new turn to the user's conversation history, trimming if over MAX_HISTORY."""
@@ -970,6 +966,7 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
         greeting = "Welcome to InTime Food Delivery! 🍲\n"
 
     stock_notice_line = ""
+    banner = ""
     try:
         from routers.flow_endpoint import get_restaurant_out_of_stock, format_out_of_stock_banner
         if db:
@@ -986,6 +983,32 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
 
     message_body = f"{greeting}Please select your restaurant and confirm your delivery address to browse the menu and order 🛵💨{stock_notice_line}"
 
+    has_valid_saved_address = bool(
+        saved_address
+        and len(saved_address) >= 5
+        and saved_address.lower() not in ["customer address", "none", "null", "dropoff location", "undefined"]
+    )
+
+    if has_valid_saved_address:
+        addr_greeting = f"Welcome back, *{customer_name}*! 🍲" if customer_name else "Welcome back! 🍲"
+        address_display = (
+            f"{addr_greeting}\n\n"
+            f"📍 Saved Address:\n{saved_address}\n\n"
+            f"📞 Receiver's Phone: {saved_phone or sender_wa_number}"
+        )
+        if banner:
+            address_display += f"\n\n{banner}"
+        target_screen = "CONFIRM_ADDRESS_SCREEN"
+        target_data = {
+            "saved_address": saved_address,
+            "saved_phone": saved_phone or sender_wa_number,
+            "address_display": address_display,
+            "use_previous": "yes",
+        }
+    else:
+        target_screen = "RECOMMEND"
+        target_data = None
+
     await send_custom_flow(
         wa_number=sender_wa_number,
         flow_token=flow_token,
@@ -993,8 +1016,9 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
         header="Order Food 🍲",
         flow_id=flow_id,
         flow_cta="Select Address",
-        screen_name="CONFIRM_ADDRESS_SCREEN",
-        flow_action="data_exchange",
+        screen_name=target_screen,
+        flow_action="navigate",
+        flow_data=target_data,
         auth=auth,
         graph_url=graph_url
     )
@@ -1353,7 +1377,7 @@ async def send_image(sender_wa_number, auth, graph_url, image_id):
 
 
 
-async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url, flow_action="navigate", mode=None):
+async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow_cta, screen_name, auth, graph_url, flow_action="navigate", mode=None, flow_data=None):
 
     target_number = normalize_phone_number(wa_number) or wa_number
 
@@ -1366,9 +1390,10 @@ async def send_custom_flow(wa_number, flow_token, message, header, flow_id, flow
     }
 
     if flow_action == "navigate" and screen_name:
-        parameters["flow_action_payload"] = {
-            "screen": screen_name
-        }
+        payload = {"screen": screen_name}
+        if flow_data is not None:
+            payload["data"] = flow_data
+        parameters["flow_action_payload"] = payload
 
     flow_mode = mode or os.getenv("FLOW_MODE", "").strip()
     if flow_mode:

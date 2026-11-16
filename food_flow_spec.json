@@ -112,32 +112,6 @@
     {
       "id": "RECOMMEND",
       "title": "Your Address",
-      "data": {
-        "screen_0_HouseFlat_Number_0": {
-          "type": "string",
-          "__example__": "34"
-        },
-        "screen_0_Street_Name_1": {
-          "type": "string",
-          "__example__": "Oworo Street beside Shukura Hospital"
-        },
-        "screen_0_Receivers_Number_2": {
-          "type": "string",
-          "__example__": "081234567890"
-        },
-        "HouseFlat_Number_801bd0": {
-          "type": "string",
-          "__example__": "34"
-        },
-        "Street_Name_17f2ce": {
-          "type": "string",
-          "__example__": "Oworo Street beside Shukura Hospital"
-        },
-        "Receivers_Number_eb5784": {
-          "type": "string",
-          "__example__": "081234567890"
-        }
-      },
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
