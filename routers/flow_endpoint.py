@@ -1254,7 +1254,9 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             action in ["INIT", "navigate"] or
             (action == "data_exchange" and (not screen or screen == "CONFIRM_ADDRESS_SCREEN") and
              not data.get("user_action") and not data.get("selected_pack") and not data.get("base_meal") and
-             not data.get("use_previous") and not data.get("bulk_order_text") and not data.get("cart_packs"))
+             not data.get("use_previous") and not data.get("bulk_order_text") and not data.get("cart_packs") and
+             not data.get("Street_Name_17f2ce") and not data.get("Receivers_Number_eb5784") and
+             not data.get("HouseFlat_Number_801bd0"))
         )
         if is_opening_request:
             # Full lookup for registered user and past saved address
@@ -1271,7 +1273,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
             has_valid_saved_address = bool(saved_address and len(saved_address) >= 5 and saved_address.lower() not in ["customer address", "none", "null", "dropoff location", "undefined"])
 
             if has_valid_saved_address:
-                # Registered / returning customer with a saved address -> Show CONFIRM_ADDRESS_SCREEN
                 greeting = f"Welcome back, *{customer_name}*! 🍲" if customer_name else "Welcome back! 🍲"
                 address_display = (
                     f"{greeting}\n\n"
@@ -1284,6 +1285,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     "version": "3.0",
                     "screen": "CONFIRM_ADDRESS_SCREEN",
                     "data": {
+                        "has_saved_address": True,
                         "saved_address": saved_address,
                         "saved_phone": saved_phone,
                         "address_display": address_display,
@@ -1291,11 +1293,16 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     }
                 }
             else:
-                # User has no saved address -> Route directly to RECOMMEND (Address Input screen)
                 resp_payload = {
                     "version": "3.0",
-                    "screen": "RECOMMEND",
-                    "data": {}
+                    "screen": "CONFIRM_ADDRESS_SCREEN",
+                    "data": {
+                        "has_saved_address": False,
+                        "saved_address": "New address",
+                        "saved_phone": saved_phone or sender_wa or "08000000000",
+                        "address_display": "Enter your delivery address below.",
+                        "use_previous": "no"
+                    }
                 }
 
             enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -1352,44 +1359,12 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 "vis_plantain", "vis_moimoi", "vis_salad", "vis_pepper_soup", "vis_sauce",
             }
 
-            # --- SCREEN: CONFIRM_ADDRESS_SCREEN ---
-            if screen == "CONFIRM_ADDRESS_SCREEN":
-                use_prev = data.get("use_previous", "yes")
-                saved_addr = (data.get("saved_address") or data.get("delivery_address") or delivery_address or "").strip()
-                
-                # If saved_addr is missing from client data, try resolving from database
-                if not saved_addr or len(saved_addr) < 5 or saved_addr.lower() in ["customer address", "none", "null", "undefined"]:
-                    _, _, db_addr, db_phone = await resolve_customer_details(sender_wa, db)
-                    if db_addr and len(db_addr) >= 5:
-                        saved_addr = db_addr
-                        if db_phone:
-                            contact_phone = db_phone
-
-                if use_prev == "yes" and len(saved_addr) >= 5 and saved_addr.lower() not in ["customer address", "none", "null", "undefined"]:
-                    # Proceed directly to Restaurant selection (RATE) with verified address
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "RATE",
-                        "data": {
-                            "delivery_address": saved_addr,
-                            "contact_phone": contact_phone,
-                            "screen_0_HouseFlat_Number_0": "",
-                            "screen_0_Street_Name_1": saved_addr,
-                            "screen_0_Receivers_Number_2": contact_phone
-                        }
-                    }
-                else:
-                    # User chose "No, enter new address" OR had no valid address -> navigate to RECOMMEND
-                    resp_payload = {
-                        "version": "3.0",
-                        "screen": "RECOMMEND",
-                        "data": {}
-                    }
-                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
-                return Response(content=enc_response, media_type="text/plain")
-
-            # --- SCREEN: RECOMMEND (Address Entry) ---
-            elif screen == "RECOMMEND":
+            # --- SCREEN: RECOMMEND OR NEW-USER FORM ON CONFIRM_ADDRESS_SCREEN (Address Entry) ---
+            if screen == "RECOMMEND" or (
+                screen == "CONFIRM_ADDRESS_SCREEN"
+                and (data.get("Street_Name_17f2ce") or data.get("Receivers_Number_eb5784") or data.get("HouseFlat_Number_801bd0"))
+                and not data.get("use_previous")
+            ):
                 house_num = (data.get("HouseFlat_Number_801bd0") or data.get("screen_0_HouseFlat_Number_0") or "").strip()
                 street_name = (data.get("Street_Name_17f2ce") or data.get("screen_0_Street_Name_1") or "").strip()
                 contact_phone = (
@@ -1435,6 +1410,42 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "screen_0_Receivers_Number_2": contact_phone
                     }
                 }
+                enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
+                return Response(content=enc_response, media_type="text/plain")
+
+            # --- SCREEN: CONFIRM_ADDRESS_SCREEN (Returning User Radio Selection) ---
+            elif screen == "CONFIRM_ADDRESS_SCREEN":
+                use_prev = data.get("use_previous", "yes")
+                saved_addr = (data.get("saved_address") or data.get("delivery_address") or delivery_address or "").strip()
+                
+                # If saved_addr is missing from client data, try resolving from database
+                if not saved_addr or len(saved_addr) < 5 or saved_addr.lower() in ["customer address", "none", "null", "undefined"]:
+                    _, _, db_addr, db_phone = await resolve_customer_details(sender_wa, db)
+                    if db_addr and len(db_addr) >= 5:
+                        saved_addr = db_addr
+                        if db_phone:
+                            contact_phone = db_phone
+
+                if use_prev == "yes" and len(saved_addr) >= 5 and saved_addr.lower() not in ["customer address", "none", "null", "undefined"]:
+                    # Proceed directly to Restaurant selection (RATE) with verified address
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": "RATE",
+                        "data": {
+                            "delivery_address": saved_addr,
+                            "contact_phone": contact_phone,
+                            "screen_0_HouseFlat_Number_0": "",
+                            "screen_0_Street_Name_1": saved_addr,
+                            "screen_0_Receivers_Number_2": contact_phone
+                        }
+                    }
+                else:
+                    # User chose "No, enter new address" OR had no valid address -> navigate to RECOMMEND
+                    resp_payload = {
+                        "version": "3.0",
+                        "screen": "RECOMMEND",
+                        "data": {}
+                    }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
                 return Response(content=enc_response, media_type="text/plain")
 

@@ -154,8 +154,8 @@ async def lifespan(_app: FastAPI):
                 await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_restaurants_slug ON restaurants (slug);'))
                 init_chat = os.getenv("TELEGRAM_RESTAURANT_CHAT_ID", "").strip() or None
                 await conn.execute(text('''
-                    INSERT INTO restaurants (name, slug, telegram_chat_id, address, is_active)
-                    VALUES ('Madam G Restaurant', 'madam_g', :chat_id, 'Madam G Kitchen, Lagos', TRUE)
+                    INSERT INTO restaurants (name, slug, telegram_chat_id, address, is_active, created_at)
+                    VALUES ('Madam G Restaurant', 'madam_g', :chat_id, 'Madam G Kitchen, Lagos', TRUE, NOW())
                     ON CONFLICT (slug) DO UPDATE SET telegram_chat_id = COALESCE(restaurants.telegram_chat_id, EXCLUDED.telegram_chat_id);
                 '''), {"chat_id": init_chat})
                 print("🟢 [MIGRATION] restaurants table ensured.")

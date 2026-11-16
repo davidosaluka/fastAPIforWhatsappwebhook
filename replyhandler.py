@@ -998,16 +998,21 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
         )
         if banner:
             address_display += f"\n\n{banner}"
-        target_screen = "CONFIRM_ADDRESS_SCREEN"
         target_data = {
+            "has_saved_address": True,
             "saved_address": saved_address,
             "saved_phone": saved_phone or sender_wa_number,
             "address_display": address_display,
             "use_previous": "yes",
         }
     else:
-        target_screen = "RECOMMEND"
-        target_data = None
+        target_data = {
+            "has_saved_address": False,
+            "saved_address": "New address",
+            "saved_phone": saved_phone or sender_wa_number or "08000000000",
+            "address_display": "Enter your delivery address below.",
+            "use_previous": "no",
+        }
 
     await send_custom_flow(
         wa_number=sender_wa_number,
@@ -1016,7 +1021,7 @@ async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str,
         header="Order Food 🍲",
         flow_id=flow_id,
         flow_cta="Select Address",
-        screen_name=target_screen,
+        screen_name="CONFIRM_ADDRESS_SCREEN",
         flow_action="navigate",
         flow_data=target_data,
         auth=auth,

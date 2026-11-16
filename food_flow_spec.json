@@ -41,6 +41,10 @@
       "id": "CONFIRM_ADDRESS_SCREEN",
       "title": "Your Address",
       "data": {
+        "has_saved_address": {
+          "type": "boolean",
+          "__example__": true
+        },
         "address_display": {
           "type": "string",
           "__example__": "📍 Saved Address: 34 Oworo Street beside Shukura Hospital\n📞 Receiver's Phone: 081234567890"
@@ -66,43 +70,90 @@
             "name": "flow_path",
             "children": [
               {
-                "type": "TextHeading",
-                "text": "Delivery Details 🛵"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.address_display}",
-                "markdown": true
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "name": "use_previous",
-                "label": "Use these details?",
-                "required": true,
-                "data-source": [
+                "type": "If",
+                "condition": "${data.has_saved_address}",
+                "then": [
                   {
-                    "id": "yes",
-                    "title": "Yes, use this address"
+                    "type": "TextHeading",
+                    "text": "Delivery Details 🛵"
                   },
                   {
-                    "id": "no",
-                    "title": "No, enter new address"
+                    "type": "TextBody",
+                    "text": "${data.address_display}",
+                    "markdown": true
+                  },
+                  {
+                    "type": "RadioButtonsGroup",
+                    "name": "use_previous",
+                    "label": "Use these details?",
+                    "required": true,
+                    "data-source": [
+                      {
+                        "id": "yes",
+                        "title": "Yes, use this address"
+                      },
+                      {
+                        "id": "no",
+                        "title": "No, enter new address"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Footer",
+                    "label": "Continue",
+                    "on-click-action": {
+                      "name": "data_exchange",
+                      "payload": {
+                        "use_previous": "${form.use_previous}",
+                        "saved_address": "${data.saved_address}",
+                        "saved_phone": "${data.saved_phone}",
+                        "delivery_address": "${data.saved_address}",
+                        "contact_phone": "${data.saved_phone}"
+                      }
+                    }
+                  }
+                ],
+                "else": [
+                  {
+                    "type": "TextHeading",
+                    "text": "Your Delivery Address 📍"
+                  },
+                  {
+                    "type": "TextInput",
+                    "name": "HouseFlat_Number_801bd0",
+                    "label": "House/Flat Number",
+                    "required": false,
+                    "input-type": "text",
+                    "helper-text": "34/Flat 4"
+                  },
+                  {
+                    "type": "TextArea",
+                    "name": "Street_Name_17f2ce",
+                    "label": "Street Name",
+                    "required": true,
+                    "helper-text": "Oworo Street beside Shukura Hospital"
+                  },
+                  {
+                    "type": "TextInput",
+                    "name": "Receivers_Number_eb5784",
+                    "label": "Receiver's Number",
+                    "required": true,
+                    "input-type": "phone",
+                    "helper-text": "081234567890"
+                  },
+                  {
+                    "type": "Footer",
+                    "label": "Continue",
+                    "on-click-action": {
+                      "name": "data_exchange",
+                      "payload": {
+                        "HouseFlat_Number_801bd0": "${form.HouseFlat_Number_801bd0}",
+                        "Street_Name_17f2ce": "${form.Street_Name_17f2ce}",
+                        "Receivers_Number_eb5784": "${form.Receivers_Number_eb5784}"
+                      }
+                    }
                   }
                 ]
-              },
-              {
-                "type": "Footer",
-                "label": "Continue",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "use_previous": "${form.use_previous}",
-                    "saved_address": "${data.saved_address}",
-                    "saved_phone": "${data.saved_phone}",
-                    "delivery_address": "${data.saved_address}",
-                    "contact_phone": "${data.saved_phone}"
-                  }
-                }
               }
             ]
           }
