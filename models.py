@@ -22,6 +22,7 @@ class User(Base):
     wa_id : Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name : Mapped[str] = mapped_column(String, unique=False, nullable=False)
     address: Mapped[str] = mapped_column(Text, nullable=True)
+    state: Mapped[str] = mapped_column(String(50), nullable=True)
     credit_balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     
@@ -141,3 +142,13 @@ class Restaurants(Base):
     stock_confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+class UserLocationPreference(Base):
+    """Stores a customer's selected operating state (e.g., lagos, kogi, other) independently of full parcel registration."""
+    __tablename__ = "user_location_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    wa_number: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    state: Mapped[str] = mapped_column(String(50), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))

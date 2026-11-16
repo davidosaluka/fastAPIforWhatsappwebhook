@@ -7,7 +7,6 @@ from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import json
-
 import requests
 
 import models
@@ -538,25 +537,80 @@ async def show_typing_indicator(message_id: str, auth: str, graph_url):
 
 
 
+async def _send_interactive_buttons(
+    sender_wa_number: str,
+    header_text: str,
+    body_text: str,
+    buttons: list[tuple[str, str]],
+    auth: str,
+    graph_url: str,
+    footer_text: str = "OnTime, EveryTime.",
+    fallback_text: str | None = None,
+):
+    """Dispatches a native WhatsApp interactive reply-button message with plain-text fallback."""
+    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
+    headers = {
+        "Authorization": f"Bearer {auth}",
+        "Content-Type": "application/json",
+    }
+    interactive_body = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": target_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "header": {
+                "type": "text",
+                "text": header_text[:60],
+            },
+            "body": {
+                "text": body_text,
+            },
+            "footer": {
+                "text": footer_text[:60],
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": btn_id[:256],
+                            "title": btn_title[:20],
+                        },
+                    }
+                    for btn_id, btn_title in buttons[:3]
+                ]
+            },
+        },
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(graph_url, json=interactive_body, headers=headers)
+            print(f"Interactive button response -> {res.status_code}: {res.text}")
+            if res.status_code in [200, 201]:
+                return res
+    except Exception as e:
+        print(f"Error dispatching interactive button message: {e}")
+
+    if fallback_text:
+        return await send_custom_message(sender_wa_number, fallback_text, auth, graph_url)
+    return None
+
+
 async def send_default_template(sender_wa_number, username, auth, graph_url):
     """
     Sends the official InTime welcome card with 3 interactive action buttons:
-    1. Send an Order (parcel delivery)
-    2. Customer Care (support)
-    3. Order Food (launches food order flow)
+    1. Send a Package (Lagos)
+    2. Order Food (Kogi State)
+    3. Customer Care (support)
 
     Uses native WhatsApp interactive buttons (type: "interactive") to deliver inside
     the customer service window for $0.00 (100% FREE), preventing Meta marketing template charges.
     Falls back gracefully if interactive messages fail.
     """
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
     display_name = username.strip() if username and username.lower() not in ["user", "customer"] else "there"
     header_text = f"Welcome Back {display_name}!" if display_name != "there" else "Welcome to InTime!"
-
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json"
-    }
 
     body_text = (
         "Hi there 👋 !\n\n"
@@ -565,71 +619,27 @@ async def send_default_template(sender_wa_number, username, auth, graph_url):
         "How can we help you today? Tap an option below to get started:"
     )
 
-    interactive_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "header": {
-                "type": "text",
-                "text": header_text[:60]
-            },
-            "body": {
-                "text": body_text
-            },
-            "footer": {
-                "text": "OnTime, EveryTime."
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Send an Order",
-                            "title": "Send an Order"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Customer Care",
-                            "title": "Customer Care"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Order Food",
-                            "title": "Order Food"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(graph_url, json=interactive_body, headers=headers)
-            print(f"Native interactive welcome response -> {res.status_code}: {res.text}")
-            if res.status_code in [200, 201]:
-                print(f"✅ Dispatched native 3-button welcome message successfully to {target_number}: 200 OK ($0.00 free tier)")
-                return res
-    except Exception as e:
-        print(f"Error dispatching native interactive welcome message: {e}")
-
-    # Fallback to plain text if interactive fails
-    welcome_text = (
+    fallback_text = (
         f"👋 Welcome to *InTime*, {display_name}!\n\n"
         f"How can we help you today?\n\n"
-        f"• Reply *Send an Order* to book a package delivery\n"
-        f"• Reply *Order Food* to view the Madam G food menu\n"
+        f"• Reply *Send a Package* to book a package delivery (Lagos)\n"
+        f"• Reply *Order Food* to order a meal (Kogi State)\n"
         f"• Reply *Customer Care* if you need assistance"
     )
-    return await send_custom_message(sender_wa_number, welcome_text, auth, graph_url)
 
+    return await _send_interactive_buttons(
+        sender_wa_number=sender_wa_number,
+        header_text=header_text,
+        body_text=body_text,
+        buttons=[
+            ("Send a Package", "Send a Package"),
+            ("Order Food", "Order Food"),
+            ("Customer Care", "Customer Care"),
+        ],
+        auth=auth,
+        graph_url=graph_url,
+        fallback_text=fallback_text,
+    )
 
 
 async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
@@ -638,76 +648,28 @@ async def send_something_went_wrong_template(sender_wa_number, auth, graph_url):
     instead of the paid 'start_over_template' Meta template.
     Falls back to plain text if the interactive message fails.
     """
-    target_number = normalize_phone_number(sender_wa_number) or sender_wa_number
-    headers = {
-        "Authorization": f"Bearer {auth}",
-        "Content-Type": "application/json",
-    }
-
-    interactive_body = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": target_number,
-        "type": "interactive",
-        "interactive": {
-            "type": "button",
-            "header": {
-                "type": "text",
-                "text": "Let's Get Back On Track"
-            },
-            "body": {
-                "text": (
-                    "Oops! It looks like we couldn't match that image or document to an active order.\n\n"
-                    "How would you like to proceed? Tap an option below:"
-                )
-            },
-            "footer": {
-                "text": "OnTime, EveryTime."
-            },
-            "action": {
-                "buttons": [
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Send an Order",
-                            "title": "Send an Order"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Order Food",
-                            "title": "Order Food"
-                        }
-                    },
-                    {
-                        "type": "reply",
-                        "reply": {
-                            "id": "Customer Care",
-                            "title": "Customer Care"
-                        }
-                    }
-                ]
-            }
-        }
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(graph_url, json=interactive_body, headers=headers)
-            print("Recovery interactive message:", response.status_code, response.text)
-            if response.status_code in [200, 201]:
-                return response
-    except Exception as e:
-        print(f"Error sending recovery interactive message: {e}")
-
     fallback_text = (
         "Oops! We couldn't match that upload to an active order.\n\n"
-        "• Reply *Send an Order* to send a package\n"
+        "• Reply *Send a Package* to send a package\n"
         "• Reply *Order Food* to order a meal\n"
         "• Reply *Customer Care* for support"
     )
-    return await send_custom_message(sender_wa_number, fallback_text, auth, graph_url)
+    return await _send_interactive_buttons(
+        sender_wa_number=sender_wa_number,
+        header_text="Let's Get Back On Track",
+        body_text=(
+            "Oops! It looks like we couldn't match that image or document to an active order.\n\n"
+            "How would you like to proceed? Tap an option below:"
+        ),
+        buttons=[
+            ("Send a Package", "Send a Package"),
+            ("Order Food", "Order Food"),
+            ("Customer Care", "Customer Care"),
+        ],
+        auth=auth,
+        graph_url=graph_url,
+        fallback_text=fallback_text,
+    )
 
 
 
@@ -759,6 +721,193 @@ async def send_daily_rider_checkin_template(rider_wa_number, auth, graph_url):
 
 
 
+
+
+def normalize_user_state(raw_state: str | None) -> str | None:
+    """Normalizes a user's selected state string into 'lagos', 'kogi', or 'other'."""
+    if not raw_state:
+        return None
+    s = str(raw_state).strip().lower()
+    if "lagos" in s:
+        return "lagos"
+    if "kogi" in s or "lokoja" in s:
+        return "kogi"
+    if s in ("other", "others"):
+        return "other"
+    return None
+
+
+async def get_user_state(sender_wa_number: str, db: AsyncSession) -> str | None:
+    """Looks up the user's saved state from UserLocationPreference or active User profile."""
+    if not sender_wa_number:
+        return None
+    possible_numbers = get_phone_variants(sender_wa_number)
+    pref_res = await db.execute(
+        select(models.UserLocationPreference).where(
+            models.UserLocationPreference.wa_number.in_(possible_numbers)
+        )
+    )
+    pref = pref_res.scalars().first()
+    if pref:
+        normalized = normalize_user_state(pref.state)
+        if normalized:
+            return normalized
+
+    user_res = await db.execute(
+        select(models.User).where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        )
+    )
+    user_obj = user_res.scalars().first()
+    if user_obj:
+        return normalize_user_state(getattr(user_obj, "state", None))
+    return None
+
+
+async def save_user_state(sender_wa_number: str, raw_state: str, db: AsyncSession) -> str:
+    """Persists the user's selected state without creating a premature parcel User record."""
+    clean_state = normalize_user_state(raw_state) or "other"
+    possible_numbers = get_phone_variants(sender_wa_number)
+    canonical_wa = normalize_phone_number(sender_wa_number) or sender_wa_number
+
+    pref_res = await db.execute(
+        select(models.UserLocationPreference).where(
+            models.UserLocationPreference.wa_number.in_(possible_numbers)
+        )
+    )
+    pref = pref_res.scalars().first()
+    if pref:
+        pref.state = clean_state
+    else:
+        db.add(models.UserLocationPreference(wa_number=canonical_wa, state=clean_state))
+
+    await db.execute(
+        update(models.User)
+        .where(
+            ((models.User.display_phone_number.in_(possible_numbers)) |
+             (models.User.wa_id.in_(possible_numbers)) |
+             (models.User.phone_number_id.in_(possible_numbers))) &
+            (models.User.is_deleted == False)
+        )
+        .values(state=clean_state)
+    )
+    await db.commit()
+    return clean_state
+
+
+async def send_state_selection_prompt(sender_wa_number: str, pending_action: str, auth: str, graph_url: str):
+    """Prompts a customer once to pick their state before gating location-specific flows."""
+    action_key = pending_action if pending_action in ("package", "food", "menu") else "menu"
+    fallback_text = (
+        "📍 *Select Your Location*\n\n"
+        "Which state are you ordering from?\n"
+        "• *Send a Package* is currently live in *Lagos State*\n"
+        "• *Order Food* is currently live in *Kogi State*"
+    )
+    return await _send_interactive_buttons(
+        sender_wa_number=sender_wa_number,
+        header_text="Select Your Location 📍",
+        body_text=(
+            "To launch the right service for your area, please select the state you're currently ordering from:\n\n"
+            "• 📦 *Send a Package* — Live in *Lagos State*\n"
+            "• 🍲 *Order Food* — Live in *Kogi State*"
+        ),
+        buttons=[
+            (f"SET_STATE:lagos:{action_key}", "📍 Lagos State"),
+            (f"SET_STATE:kogi:{action_key}", "📍 Kogi State"),
+            (f"SET_STATE:other:{action_key}", "📍 Other State"),
+        ],
+        auth=auth,
+        graph_url=graph_url,
+        fallback_text=fallback_text,
+    )
+
+
+async def send_feature_coming_soon_message(
+    sender_wa_number: str,
+    user_state: str,
+    requested_action: str,
+    auth: str,
+    graph_url: str,
+):
+    """Informs customers when a requested service is not yet rolled out in their state."""
+    if requested_action == "package" and user_state == "kogi":
+        header_text = "Coming Soon to Kogi 📦"
+        body_text = (
+            "We're rolling out *Send a Package* in *Lagos State* first, so package delivery in *Kogi State* is *coming soon*! 🚀\n\n"
+            "Good news: *Order Food* 🍲 is live in *Kogi State* right now if you'd like to order a meal."
+        )
+        buttons = [
+            ("Order Food", "Order Food"),
+            ("CHANGE_STATE:package", "🔄 Change State"),
+            ("Customer Care", "Customer Care"),
+        ]
+    elif requested_action == "food" and user_state == "lagos":
+        header_text = "Coming Soon to Lagos 🍲"
+        body_text = (
+            "We're rolling out *Order Food* in *Kogi State* first, so food delivery in *Lagos State* is *coming soon*! 🚀\n\n"
+            "Good news: *Send a Package* 📦 is live in *Lagos State* right now if you'd like to book a delivery."
+        )
+        buttons = [
+            ("Send a Package", "Send a Package"),
+            ("CHANGE_STATE:food", "🔄 Change State"),
+            ("Customer Care", "Customer Care"),
+        ]
+    else:
+        header_text = "Coming Soon 🚀"
+        body_text = (
+            "InTime is expanding to your state *soon*! 🎉\n\n"
+            "Right now:\n"
+            "• 📦 *Send a Package* is live in *Lagos State*\n"
+            "• 🍲 *Order Food* is live in *Kogi State*"
+        )
+        buttons = [
+            (f"CHANGE_STATE:{requested_action}", "🔄 Change State"),
+            ("Customer Care", "Customer Care"),
+        ]
+
+    return await _send_interactive_buttons(
+        sender_wa_number=sender_wa_number,
+        header_text=header_text,
+        body_text=body_text,
+        buttons=buttons,
+        auth=auth,
+        graph_url=graph_url,
+        fallback_text=body_text,
+    )
+
+
+async def handle_package_order_request(sender_wa_number: str, db: AsyncSession, auth: str, graph_url: str):
+    """Gates Send a Package flow by user state (live in Lagos; coming soon elsewhere)."""
+    user_state = await get_user_state(sender_wa_number, db)
+    if user_state is None:
+        await send_state_selection_prompt(sender_wa_number, "package", auth, graph_url)
+        return
+    if user_state != "lagos":
+        await send_feature_coming_soon_message(sender_wa_number, user_state, "package", auth, graph_url)
+        return
+
+    is_existing_user = await is_user_registered(sender_wa_number, db)
+    if is_existing_user:
+        await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
+    else:
+        await send_registration_template(sender_wa_number, auth, graph_url)
+
+
+async def handle_food_order_request(sender_wa_number: str, db: AsyncSession, auth: str, graph_url: str):
+    """Gates Order Food flow by user state (live in Kogi State; coming soon elsewhere)."""
+    user_state = await get_user_state(sender_wa_number, db)
+    if user_state is None:
+        await send_state_selection_prompt(sender_wa_number, "food", auth, graph_url)
+        return
+    if user_state != "kogi":
+        await send_feature_coming_soon_message(sender_wa_number, user_state, "food", auth, graph_url)
+        return
+
+    await send_food_order_flow(sender_wa_number, auth, graph_url, db=db)
 
 
 async def send_food_order_flow(sender_wa_number: str, auth: str, graph_url: str, db: AsyncSession = None):
@@ -4477,13 +4626,21 @@ async def delete_user_data(sender_wa_number: str, db: AsyncSession) -> bool:
 
                 display_phone_number="DELETED",
 
-                phone_number_id="DELETED"
+                phone_number_id="DELETED",
+
+                state=None
 
             )
 
         )
 
 
+
+    await db.execute(
+        delete(models.UserLocationPreference).where(
+            models.UserLocationPreference.wa_number.in_(possible_numbers)
+        )
+    )
 
     await db.commit()
 
@@ -4683,17 +4840,26 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
 
 
+    # --- 0a0. STATE / LOCATION CHANGE TRIGGER ---
+    if lower_clean in ["change state", "change location", "switch state", "switch location", "set state", "set location"]:
+        await send_state_selection_prompt(sender_wa_number, "menu", auth, graph_url)
+        return
+
     # --- 0a. EXPLICIT ORDER CREATION TRIGGERS (ALWAYS take top priority) ---
 
     order_triggers = [
 
+        "send a package", "send package", "send a parcel", "send parcel",
+
         "send an order", "send order", "create order", "book order",
 
-        "send a package", "ship a package", "book a delivery", "dispatch a package",
+        "ship a package", "book a delivery", "dispatch a package",
 
-        "send package", "ship package", "book delivery", "dispatch package",
+        "ship package", "book delivery", "dispatch package",
 
         "need to send an order", "like to send an order", "want to send an order",
+
+        "need to send a package", "like to send a package", "want to send a package",
 
         "need to send order", "like to send order", "want to send order",
 
@@ -4703,15 +4869,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     if any(trigger in lower_clean for trigger in order_triggers):
 
-        registered = await is_user_registered(sender_wa_number, db)
-
-        if registered:
-
-            await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-
-        else:
-
-            await send_registration_template(sender_wa_number, auth, graph_url)
+        await handle_package_order_request(sender_wa_number, db, auth, graph_url)
 
         return
 
@@ -4723,7 +4881,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
     if any(trigger in lower_clean for trigger in food_triggers):
 
-        await send_food_order_flow(sender_wa_number, auth, graph_url, db=db)
+        await handle_food_order_request(sender_wa_number, db, auth, graph_url)
 
         return
 
@@ -5283,15 +5441,7 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
         else:
 
-            registered = await is_user_registered(sender_wa_number, db)
-
-            if registered:
-
-                await reply_user_that_has_just_registered(sender_wa_number, auth, graph_url)
-
-            else:
-
-                await send_registration_template(sender_wa_number, auth, graph_url)
+            await handle_package_order_request(sender_wa_number, db, auth, graph_url)
 
             return
 
@@ -5509,13 +5659,13 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
             role_instructions = "USER ROLE: Customer / Prospect."
 
-            rule_6 = "6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to sending packages with InTime by reminding them to type *Send an Order* whenever they're ready!"
+            rule_6 = "6. STEER BACK TO BUSINESS: For small talk or general questions, respond warmly and enthusiastically (1-2 sentences), but ALWAYS guide the customer back to using InTime by reminding them to type *Send a Package* (Lagos) or *Order Food* (Kogi State) whenever they're ready!"
 
 
 
         system_prompt = (
 
-            f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and package delivery service.\n"
+            f"Your name is Femi, the friendly, energetic AI assistant for InTime 🛵💨, Nigeria's premier dispatch and food delivery service.\n"
 
             f"Customer Name: {username}.\n"
 
@@ -5531,15 +5681,15 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
             f"- Support Phone: +234 815 103 3428\n"
 
-            f"- Coverage: 12+ major cities across Nigeria (Lagos, Abuja, Port Harcourt, Kano, Ibadan, Benin City, Enugu, Kaduna, Onitsha, Warri, Calabar, Owerri).\n"
+            f"- Active Services by State: *Send a Package* is currently live in Lagos State; *Order Food* is currently live in Kogi State (expanding to more states soon!).\n"
 
-            f"- Services: InTime connects customers with verified dispatch riders to compare prices, negotiate fares, and send packages fast and safely.\n\n"
+            f"- Services: InTime connects customers with verified dispatch riders to send packages fast in Lagos and order meals seamlessly in Kogi State.\n\n"
 
             f"STRICT BEHAVIOR RULES:\n"
 
             f"1. BREATHING SPACE & PARAGRAPHS: Format ALL your responses with double line breaks (\\n\\n) between paragraphs and thoughts to give clean, readable breathing space! Never lump text into one long dense block.\n"
 
-            f"2. AVATAR IDENTITY & DYNAMISM: Introduce yourself as Femi when starting a new conversation or when greeted (e.g., 'Hi 👋, I'm Femi!\\n\\nWelcome to *InTime*.\\n\\nHow can I help you today? To start sending orders, just type *Send an Order* right here! 📦✨'). Keep your greetings fresh, dynamic, and varied across users.\n"
+            f"2. AVATAR IDENTITY & DYNAMISM: Introduce yourself as Femi when starting a new conversation or when greeted (e.g., 'Hi 👋, I'm Femi!\\n\\nWelcome to *InTime*.\\n\\nHow can I help you today? Type *Send a Package* (Lagos) or *Order Food* (Kogi State) right here! 📦🍲✨'). Keep your greetings fresh, dynamic, and varied across users.\n"
 
             f"3. CONTEXTUALLY AWARE: You have multi-turn chat memory. Pay close attention to previous messages in the chat history so your answers connect naturally to what was just discussed.\n"
 
@@ -5549,13 +5699,13 @@ async def handle_text_message(sender_wa_number: str, text_body: str, username: s
 
             f"{rule_6}\n"
 
-            f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send an Order* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
+            f"7. WHATSAPP BOLD FORMATTING: WhatsApp only bolds text wrapped in SINGLE asterisks like *Send a Package* or *InTime*. NEVER use double asterisks **text** as WhatsApp will display raw ** characters.\n"
 
             f"8. REFERRAL NAME: Address the customer as {username}.\n"
 
-            f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send an Order* in this chat to open the order form.\n"
+            f"9. NO BUTTON REFERENCES: Text chat messages do not have buttons. Always tell them to type *Send a Package* or *Order Food* in this chat to begin.\n"
 
-            f"10. TRANSACTION BOUNDARIES: All bookings happen when the user types *Send an Order*.\n"
+            f"10. TRANSACTION BOUNDARIES: Bookings happen when the user types *Send a Package* or *Order Food*.\n"
 
             f"STYLE: Keep replies short and spacious (2-3 short paragraphs with \\n\\n line breaks), highly engaging, friendly, and spiced with icons!"
 

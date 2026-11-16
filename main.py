@@ -74,14 +74,31 @@ async def lifespan(_app: FastAPI):
         except Exception as e:
             print(f"Migration note (orders add/alter cols): {e}")
 
-        # users.is_deleted (soft-delete flag) and address column
+        # users.is_deleted (soft-delete flag), address, and state columns
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;'))
                 await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;'))
-                print("🟢 [MIGRATION] users.is_deleted and users.address columns ensured.")
+                await conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS state VARCHAR(50);'))
+                print("🟢 [MIGRATION] users.is_deleted, users.address, and users.state columns ensured.")
         except Exception as e:
             print(f"Migration note (users columns): {e}")
+
+        # user_location_preferences table
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS user_location_preferences (
+                        id SERIAL PRIMARY KEY,
+                        wa_number VARCHAR(50) NOT NULL UNIQUE,
+                        state VARCHAR(50) NOT NULL,
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                '''))
+                await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_location_preferences_wa_number ON user_location_preferences (wa_number);'))
+                print("🟢 [MIGRATION] user_location_preferences table ensured.")
+        except Exception as e:
+            print(f"Migration note (user_location_preferences): {e}")
 
         # rider_ratings table
         try:
@@ -216,6 +233,23 @@ async def lifespan(_app: FastAPI):
         try:
             async with engine.begin() as conn:
                 await conn.execute(text('ALTER TABLE users ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0;'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('ALTER TABLE users ADD COLUMN state VARCHAR(50);'))
+        except Exception:
+            pass
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('''
+                    CREATE TABLE IF NOT EXISTS user_location_preferences (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        wa_number VARCHAR(50) NOT NULL UNIQUE,
+                        state VARCHAR(50) NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                '''))
         except Exception:
             pass
         try:

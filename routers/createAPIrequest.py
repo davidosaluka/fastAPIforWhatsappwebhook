@@ -233,17 +233,9 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
-        if button_val == "Send an Order":
+        if button_val in ["Send a Package", "Send a package", "send a package", "SEND_A_PACKAGE", "Send an Order", "Send an order", "send an order"]:
 
-            is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
-
-            if is_existing_user:
-
-                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
-
-            else:
-
-                await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
+            await replyhandler.handle_package_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
 
         elif button_val in ["Contact Support", "Customer Care", "contact support", "customer care"]:
             custom_message = "Please contact support through this email: intimesender@gmail.com \n Send any message to restart this flow"
@@ -253,7 +245,7 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
         elif button_val in ["Order Food", "Order food", "order food", "ORDER_FOOD"]:
 
-            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL, db=db)
+            await replyhandler.handle_food_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
 
 
 
@@ -331,16 +323,37 @@ async def createAPIrequest(apirequest: apiRequestCreate, db: Annotated[AsyncSess
 
 
 
-        if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD", "order_food"] or button_title in ["Order Food", "Order food"]:
-            await replyhandler.send_food_order_flow(sender_wa_number, AUTH, GRAPH_URL, db=db)
+        if button_id.startswith("SET_STATE:"):
+            parts = button_id.split(":", 2)
+            chosen_state = parts[1] if len(parts) > 1 else "other"
+            pending_action = parts[2] if len(parts) > 2 else "menu"
+            saved_state = await replyhandler.save_user_state(sender_wa_number, chosen_state, db)
+            if pending_action == "package":
+                await replyhandler.handle_package_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
+            elif pending_action == "food":
+                await replyhandler.handle_food_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
+            else:
+                state_labels = {"lagos": "Lagos State", "kogi": "Kogi State", "other": "Other State"}
+                await replyhandler.send_custom_message(
+                    sender_wa_number,
+                    f"📍 Location updated to *{state_labels.get(saved_state, saved_state)}*!",
+                    AUTH,
+                    GRAPH_URL,
+                )
+                await replyhandler.send_default_template(sender_wa_number, "", AUTH, GRAPH_URL)
             return
 
-        if button_id in ["Send an Order", "send_an_order", "SEND_AN_ORDER"] or button_title in ["Send an Order", "Send an order"]:
-            is_existing_user = await replyhandler.is_user_registered(sender_wa_number, db)
-            if is_existing_user:
-                await replyhandler.reply_user_that_has_just_registered(sender_wa_number, AUTH, GRAPH_URL)
-            else:
-                await replyhandler.send_registration_template(sender_wa_number, AUTH, GRAPH_URL)
+        if button_id.startswith("CHANGE_STATE:"):
+            pending_action = button_id.split(":", 1)[1] or "menu"
+            await replyhandler.send_state_selection_prompt(sender_wa_number, pending_action, AUTH, GRAPH_URL)
+            return
+
+        if button_id in ["Order Food", "Order food", "order food", "ORDER_FOOD", "order_food"] or button_title in ["Order Food", "Order food"]:
+            await replyhandler.handle_food_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
+            return
+
+        if button_id in ["Send a Package", "Send a package", "send a package", "send_a_package", "SEND_A_PACKAGE", "Send an Order", "send_an_order", "SEND_AN_ORDER"] or button_title in ["Send a Package", "Send a package", "Send an Order", "Send an order"]:
+            await replyhandler.handle_package_order_request(sender_wa_number, db, AUTH, GRAPH_URL)
             return
 
         if button_id in ["Customer Care", "customer_care", "CUSTOMER_CARE", "Contact Support", "contact_support"] or button_title in ["Customer Care", "Contact Support"]:
@@ -2981,6 +2994,8 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
 
 
 
+    pref_state = await replyhandler.get_user_state(clean_wa_id or clean_display or clean_phone_id, db)
+
     if existing_user:
 
         was_previously_deleted = existing_user.is_deleted or "DELETED_" in str(existing_user.wa_id)
@@ -3002,6 +3017,10 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         if clean_address:
 
             existing_user.address = clean_address
+
+        if pref_state and not getattr(existing_user, "state", None):
+
+            existing_user.state = pref_state
 
         try:
 
@@ -3066,6 +3085,8 @@ async def createUser(name, wa_id, display_phone_number, phone_number_id, db: Asy
         phone_number_id=clean_phone_id,
 
         address=clean_address,
+
+        state=pref_state,
 
         is_deleted=False
 
