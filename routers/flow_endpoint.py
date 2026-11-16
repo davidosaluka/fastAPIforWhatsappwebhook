@@ -1286,8 +1286,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                     "data": {
                         "saved_address": saved_address,
                         "saved_phone": saved_phone,
-                        "delivery_address": saved_address,
-                        "contact_phone": saved_phone,
                         "address_display": address_display,
                         "use_previous": "yes"
                     }
@@ -1303,8 +1301,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "screen_0_Receivers_Number_2": saved_phone or sender_wa or "",
                         "HouseFlat_Number_801bd0": "",
                         "Street_Name_17f2ce": "",
-                        "Receivers_Number_eb5784": saved_phone or sender_wa or "",
-                        "contact_phone": saved_phone or sender_wa or ""
+                        "Receivers_Number_eb5784": saved_phone or sender_wa or ""
                     }
                 }
 
@@ -1399,8 +1396,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                             "screen_0_Receivers_Number_2": contact_phone or sender_wa or "",
                             "HouseFlat_Number_801bd0": "",
                             "Street_Name_17f2ce": "",
-                            "Receivers_Number_eb5784": contact_phone or sender_wa or "",
-                            "contact_phone": contact_phone or sender_wa or ""
+                            "Receivers_Number_eb5784": contact_phone or sender_wa or ""
                         }
                     }
                 enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
@@ -1703,7 +1699,6 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                         "delivery_address": delivery_address,
                         "contact_phone": contact_phone,
                         "restaurant": restaurant,
-                        "cart_packs": current_cart,
                         "subtotal": subtotal,
                         "delivery_fee": delivery_fee,
                         "total_amount": grand_total,
@@ -1728,8 +1723,7 @@ async def flow_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
                 "screen_0_Receivers_Number_2": sender_wa or "",
                 "HouseFlat_Number_801bd0": "",
                 "Street_Name_17f2ce": "",
-                "Receivers_Number_eb5784": sender_wa or "",
-                "contact_phone": sender_wa or ""
+                "Receivers_Number_eb5784": sender_wa or ""
             }
         }
         enc_response = encrypt_flow_response(resp_payload, aes_key, iv_bytes)
