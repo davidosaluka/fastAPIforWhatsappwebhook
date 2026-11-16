@@ -180,12 +180,7 @@
                   }
                 }
               }
-            ],
-            "init-values": {
-              "HouseFlat_Number_801bd0": "${data.HouseFlat_Number_801bd0}",
-              "Street_Name_17f2ce": "${data.Street_Name_17f2ce}",
-              "Receivers_Number_eb5784": "${data.Receivers_Number_eb5784}"
-            }
+            ]
           }
         ]
       }
